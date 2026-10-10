@@ -96,11 +96,14 @@ winget install --manifest winget/RicardoFrantz.pdf-next/0.14.3
 To publish a version, copy its folder into a fork of winget-pkgs at
 `manifests/r/RicardoFrantz/pdf-next/<version>/` and open a pull request.
 The [first submission](https://github.com/microsoft/winget-pkgs/pull/428398)
-is updated to 0.14.0 and awaits Microsoft's policy review. Its manifests use
-schema 1.12.0 and omit `DisplayVersion` when it equals `PackageVersion`.
-Keep the publisher and product code entries: they describe the installer
-registry values. The 0.14.0 installer registers publisher `Ricardo Frantz`
-and product code `pdf-next`. Once merged:
+added 0.14.0 and was merged on 2026-10-08, after the moderator waived the
+unsigned-installer policy check. Merging needs every review comment on the PR
+resolved, including automated ones. The
+[0.14.3 update](https://github.com/microsoft/winget-pkgs/pull/450346) is open.
+The manifests use schema 1.12.0 and omit `DisplayVersion` when it equals
+`PackageVersion`. Keep the publisher and product code entries: they describe
+the installer registry values. The 0.14.0 installer registers publisher
+`Ricardo Frantz` and product code `pdf-next`. Install with:
 
 ```
 winget install RicardoFrantz.pdf-next

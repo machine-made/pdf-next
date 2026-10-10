@@ -121,7 +121,7 @@ that survives a build deleting and recreating the file mid-compile.
 
 | System | Command |
 | ------ | ------- |
-| Windows | [Download the `.exe` installer](https://github.com/ricardofrantz/pdf-next/releases/latest) (winget submission pending) |
+| Windows | `winget install RicardoFrantz.pdf-next`, or [download the `.exe` installer](https://github.com/ricardofrantz/pdf-next/releases/latest) |
 | macOS | `brew install --cask ricardofrantz/tap/pdf-next` |
 | Debian, Ubuntu | add the repository below, then `sudo apt install pdf-next` |
 
@@ -153,10 +153,10 @@ version arrives there within a day of its tag rather than the moment it lands.
 
 ### Windows, with winget
 
-The [first winget submission](https://github.com/microsoft/winget-pkgs/pull/428398)
-is awaiting review. Until it is merged, use the `.exe` installer from
+pdf-next is in the winget catalog as `RicardoFrantz.pdf-next`. Each release
+reaches winget after Microsoft merges its manifest pull request, so winget can
+lag a few days behind the `.exe` on
 [Releases](https://github.com/ricardofrantz/pdf-next/releases/latest).
-After the package is accepted:
 
 ```bash
 winget install RicardoFrantz.pdf-next
