@@ -194,12 +194,17 @@ The apt repository is the `gh-pages` branch of this repository, served by
 GitHub Pages at <https://ricardofrantz.github.io/pdf-next>. The `apt` job in
 `release.yml` rebuilds it after every tag: it takes the `.deb` that was just
 published, regenerates `Packages` and `Release`, signs them, and pushes.
-Every version stays in `pool/`, so `apt install pdf-next=0.9.0` keeps working
+Every version stays in `pool/`, so `apt install pdf-next=0.14.3` keeps working
 after a newer one lands.
 
 Apt refuses an unsigned repository, so the job needs a signing key. The
 public half lives at `pdf-next.asc` on that branch and is what a user adds to
 `/etc/apt/keyrings/`; the private half is the `APT_GPG_PRIVATE_KEY` secret.
+Without the secret the job prints a warning and still reports success. Until
+2026-10-11 the secret was missing, so no release reached the repository; the
+first one there is 0.14.3, signed with key
+`7AF6A7AFBE85B19258B2E84114E81BC9E259FDE2`. The job writes the public key to
+`pdf-next.asc` on every run, so a new key replaces the old one by itself.
 
 To create a key and install it:
 

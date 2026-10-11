@@ -184,8 +184,9 @@ sudo apt update && sudo apt install pdf-next
 ```
 
 Then `sudo apt upgrade pdf-next` for a new version and `sudo apt remove
-pdf-next` to take it off. Every version stays in the repository, so
-`sudo apt install pdf-next=0.9.0` still installs that one.
+pdf-next` to take it off. Every version from 0.14.3 on stays in the
+repository, so `sudo apt install pdf-next=0.14.3` still installs that one
+after a newer release.
 
 ### The file itself
 
