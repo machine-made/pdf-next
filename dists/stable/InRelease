@@ -1,0 +1,39 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sun, 11 Oct 2026 09:44:00 +0000
+Description: pdf-next releases
+Label: pdf-next
+Origin: pdf-next
+Suite: stable
+MD5Sum:
+ 5162115552a97951aa6309b0140810a6              710 main/binary-amd64/Packages
+ c0b5158e1663e41523b2333e56b24ad2              495 main/binary-amd64/Packages.gz
+SHA1:
+ 4f278f4845c327f051aaa7f2c803186cc607a480              710 main/binary-amd64/Packages
+ 9a3e914ef121869af451523c4ded2d22d0b1b089              495 main/binary-amd64/Packages.gz
+SHA256:
+ e050acc19da2c1eba3abd877d49776b1220716a83c5302e245eadae1fe01bf41              710 main/binary-amd64/Packages
+ a8f30cf877de60c2c030659834ca53aa898966a431c328925beecdefb4e6d310              495 main/binary-amd64/Packages.gz
+SHA512:
+ bcb30a545f8f58902bcce0eca8c22ec0c18db8fbac1673cfcaaed525859f439b69360c6903b74857bffa6945225c8c5761827238926c0ff1bbde0867f77c110a              710 main/binary-amd64/Packages
+ abfc874c4c7940d0857227ed391f3d5a6a9a94035b311a1821337a4580189e3a657dc4db0833e32072af8cf7e80334a3c368e6c421491c4cc484a6c30fc9df0c              495 main/binary-amd64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEevanr76FsZJYsuhBFOgbyeJZ/eIFAmrLWmAACgkQFOgbyeJZ
+/eJoMw/8Dsy/KqZXWp4JqMtlrKb10ypuR2/t1pMG7GWDROfEtczqzJoocC0zbUhA
+ntRbhsrpkKa+wm/4/yqR2mj+wRzLj7+wF8ibFe5Vk0Dd88f6piGHZyAFXJewfja3
+6m4sGLT674SssgzK0em3W8iUx/RzOVDZLi0Tw4tATBHC4kFfle5st1aBgldQzWz/
+qNxHFJlswA9Z1HazblUTkDo7C4vAYcuKS4QD0/yqcwqayK/XIZ3aAqmNPV+wND2q
+BL56azPH0aGqtICLGJkwrCE/AT7mnUktFNdKhcB176nsmrsVmBc9BhvA3PFk1l9V
+5wDo/D8RGbxnTLjBs+J2h11lnpPKT+WqBpmF+Z1Kq0YqU30WcykAzHtIPOkCXKBT
+f0ZLVuTuxyejQTjqhPpqD+DnwMan3iVNSWZ5dX8XvUq5RWqXwIZHa8x3XKHFMgs1
+RLNtyhosUaxTZA3wpAuYd+byhZlG2td3XzWkia11j1Wglyd0LjjnPDLFt0BRHBNc
+MVAVT1k7C6EzDbc354kU5CDR9foJApwS7CPXBC0GreClA0ya2RExyQI5ZYyF1uR9
+XaaIjIX31Wx6pM9GrfMXRdF2dVHc9hUBgha1RKF3SZ9dPbMuRTtfZiZThV6sLgdg
+z53iAYnBiSusYgR+ZQsyAAGoq5GkvJ8XxtpEQeyxIjwugIlFy6c=
+=icV3
+-----END PGP SIGNATURE-----
