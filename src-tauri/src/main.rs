@@ -333,6 +333,102 @@ fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     Ok(())
 }
 
+/// The one document that may go to the trash: the one on screen. The path
+/// the frontend sends is canonicalized and compared with the watched path,
+/// so no other file can be named.
+fn trash_target(path: &str, shown: Option<&Path>) -> Result<PathBuf, String> {
+    let target = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+    if shown != Some(target.as_path()) {
+        return Err("only the document on screen can be moved to the trash".into());
+    }
+    Ok(target)
+}
+
+/// Move the document on screen to the Recycle Bin (Windows), the Trash
+/// (macOS) or the user's trash (Linux). The file can be restored from there.
+/// Watching stops, so the removal is not reported back as a missing file.
+#[tauri::command]
+fn trash_document(path: String, watched: State<'_, Watched>) -> Result<(), String> {
+    let shown = watched
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .path
+        .clone();
+    let target = trash_target(&path, shown.as_deref())?;
+    move_to_trash(&target)?;
+    let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+    if state.path.as_deref() == Some(target.as_path()) {
+        state.path = None;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FOF_WANTNUKEWARNING,
+        FO_DELETE, SHFILEOPSTRUCTW,
+    };
+
+    // SHFileOperationW does not accept the \\?\ form, and it reads a list
+    // of names that ends with two NULs.
+    let mut from: Vec<u16> = std::ffi::OsStr::new(&display_path(path))
+        .encode_wide()
+        .collect();
+    from.extend([0, 0]);
+    let mut operation = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        // ALLOWUNDO sends the file to the Recycle Bin. A drive without one
+        // (a network share, \\wsl.localhost) would delete it for good, so
+        // WANTNUKEWARNING makes Windows ask first in that case.
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT) as u16,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    // SAFETY: `operation` and the NUL-terminated `from` outlive the call.
+    let code = unsafe { SHFileOperationW(&mut operation) };
+    if code != 0 {
+        return Err(format!(
+            "could not move the file to the Recycle Bin (code {code})"
+        ));
+    }
+    if operation.fAnyOperationsAborted != 0 {
+        return Err("the file was not deleted".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let text = path.to_str().ok_or("the path is not valid UTF-8")?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|error| error.localizedDescription().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    use gio::prelude::FileExt;
+
+    gio::File::for_path(path)
+        .trash(gio::Cancellable::NONE)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn move_to_trash(_path: &Path) -> Result<(), String> {
+    Err("moving files to the trash is not supported on this system".into())
+}
+
 #[derive(Clone, Serialize)]
 struct ReducePdfResult {
     /// Absolute path of `{stem}_reduced.pdf` when a smaller file was written.
@@ -3328,6 +3424,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_path,
             close_document,
+            trash_document,
             initial_file,
             pending_files,
             pick_file,
@@ -3431,8 +3528,8 @@ mod tests {
         change_review_comment, document_watch_due, is_windows_replace_contention, list_reviews,
         natural_key, next_review_id, open_download, open_link, parse_cli, parse_store,
         patch_review_record, read_snapshot, reduced_pdf_path, remove_review, remove_review_cas,
-        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, write_review, Cli,
-        Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
+        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, trash_target,
+        write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
@@ -4403,6 +4500,24 @@ mod tests {
                 .collect(),
             other => other,
         }
+    }
+
+    #[test]
+    fn only_the_document_on_screen_can_be_moved_to_the_trash() {
+        let dir = scratch("trash_target");
+        let shown = dir.join("figure.png");
+        let other = dir.join("other.png");
+        std::fs::write(&shown, b"png").unwrap();
+        std::fs::write(&other, b"png").unwrap();
+        let canonical = std::fs::canonicalize(&shown).unwrap();
+        assert_eq!(
+            trash_target(shown.to_str().unwrap(), Some(&canonical)).unwrap(),
+            canonical
+        );
+        assert!(trash_target(other.to_str().unwrap(), Some(&canonical)).is_err());
+        assert!(trash_target(shown.to_str().unwrap(), None).is_err());
+        assert!(trash_target(dir.join("gone.png").to_str().unwrap(), Some(&canonical)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
