@@ -1081,15 +1081,27 @@ async function showInActiveTab(path) {
 }
 
 /// Delete key: move the file on screen to the Recycle Bin, Trash or trash,
-/// after the reader confirms. A figure is followed by the next one in its
-/// folder, or the one before at the end; any other file closes its tab.
+/// after the reader confirms. A folder with none (a network share, WSL's
+/// \\wsl.localhost) gets a question about deleting for good instead. A figure
+/// is followed by the next one in its folder, or the one before at the end;
+/// any other file closes its tab.
 async function trashShownFile() {
   const file = state.file;
   if (!file) {
     return;
   }
   const bin = { windows: 'Recycle Bin', macos: 'Trash' }[state.platform] || 'trash';
-  if (!window.confirm(`Move ${file.name} to the ${bin}?`)) {
+  let permanent;
+  try {
+    permanent = (await invoke('trash_plan', { path: file.path })) === 'permanent';
+  } catch (error) {
+    setStatus(`Could not delete ${file.name}: ${error}`, { error: true });
+    return;
+  }
+  const question = permanent
+    ? `${file.name} is in a folder without a ${bin}. Delete it permanently?`
+    : `Move ${file.name} to the ${bin}?`;
+  if (!window.confirm(question)) {
     return;
   }
   // Read the folder now: the list loaded at open time may not have arrived.
@@ -1104,9 +1116,9 @@ async function trashShownFile() {
   }
   const index = siblings.indexOf(file.path);
   try {
-    await invoke('trash_document', { path: file.path });
+    await invoke('trash_document', { path: file.path, permanent });
   } catch (error) {
-    setStatus(`Could not move ${file.name} to the ${bin}: ${error}`, { error: true });
+    setStatus(`Could not delete ${file.name}: ${error}`, { error: true });
     return;
   }
   const next = index >= 0 ? siblings[index + 1] ?? siblings[index - 1] : null;
@@ -1120,7 +1132,7 @@ async function trashShownFile() {
     setStatus(String(error), { error: true });
     return;
   }
-  setStatus(`Moved ${file.name} to the ${bin}`);
+  setStatus(permanent ? `Deleted ${file.name}` : `Moved ${file.name} to the ${bin}`);
 }
 
 /// The opening scale estimates the window frame from the webview. When the
@@ -4711,7 +4723,7 @@ async function reportSmoke() {
         Math.abs(ui.imageBox.offsetHeight - (ui.imageStage.clientHeight - padY)) <= 1, 5_000);
       await invoke('smoke_report', {
         ok: stepped && fills,
-        detail: `trash-me.png moved to the trash; then ${state.file?.name || 'nothing'} shown at ${
+        detail: `Delete on trash-me.png; then ${state.file?.name || 'nothing'} shown at ${
           state.imageScale} scale ${imageScale().toFixed(3)}, box ${ui.imageBox.offsetWidth}x${
           ui.imageBox.offsetHeight}, stage ${ui.imageStage.clientWidth}x${ui.imageStage.clientHeight}${
           fills ? ', fills the window' : ', does not fill the window'}${note()}`,

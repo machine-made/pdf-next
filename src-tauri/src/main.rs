@@ -344,19 +344,48 @@ fn trash_target(path: &str, shown: Option<&Path>) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Move the document on screen to the Recycle Bin (Windows), the Trash
-/// (macOS) or the user's trash (Linux). The file can be restored from there.
-/// Watching stops, so the removal is not reported back as a missing file.
-#[tauri::command]
-fn trash_document(path: String, watched: State<'_, Watched>) -> Result<(), String> {
-    let shown = watched
+fn shown_document(watched: &Watched) -> Result<Option<PathBuf>, String> {
+    Ok(watched
         .0
         .lock()
         .map_err(|error| error.to_string())?
         .path
-        .clone();
-    let target = trash_target(&path, shown.as_deref())?;
-    move_to_trash(&target)?;
+        .clone())
+}
+
+/// What Delete will do to the document on screen: "trash" when its folder
+/// has a Recycle Bin or trash, "permanent" when it has none. The frontend
+/// asks the reader with the matching question before it calls
+/// `trash_document`.
+#[tauri::command]
+fn trash_plan(path: String, watched: State<'_, Watched>) -> Result<&'static str, String> {
+    let target = trash_target(&path, shown_document(&watched)?.as_deref())?;
+    Ok(if has_trash(&target) {
+        "trash"
+    } else {
+        "permanent"
+    })
+}
+
+/// Move the document on screen to the Recycle Bin (Windows), the Trash
+/// (macOS) or the user's trash (Linux), or delete it when `permanent` is set.
+/// Without `permanent`, a folder with no trash is refused, so a file is never
+/// deleted for good unless the reader agreed to that. Watching stops, so the
+/// removal is not reported back as a missing file.
+#[tauri::command]
+fn trash_document(
+    path: String,
+    permanent: bool,
+    watched: State<'_, Watched>,
+) -> Result<(), String> {
+    let target = trash_target(&path, shown_document(&watched)?.as_deref())?;
+    if permanent {
+        std::fs::remove_file(&target).map_err(|error| error.to_string())?;
+    } else if has_trash(&target) {
+        move_to_trash(&target)?;
+    } else {
+        return Err("this folder has no Recycle Bin".into());
+    }
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     if state.path.as_deref() == Some(target.as_path()) {
         state.path = None;
@@ -364,12 +393,44 @@ fn trash_document(path: String, watched: State<'_, Watched>) -> Result<(), Strin
     Ok(())
 }
 
+/// A network share, including WSL's \\wsl.localhost, has no Recycle Bin;
+/// Windows deletes a file there for good, without a warning.
+#[cfg(any(windows, test))]
+fn is_network_path(shown: &str) -> bool {
+    shown.starts_with(r"\\")
+}
+
+#[cfg(windows)]
+fn has_trash(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOTE;
+
+    let shown = display_path(path);
+    if is_network_path(&shown) {
+        return false;
+    }
+    // A mapped network drive (Z:) is remote as well.
+    let root: Vec<u16> = std::ffi::OsStr::new(&shown[..shown.len().min(3)])
+        .encode_wide()
+        .chain([0])
+        .collect();
+    // SAFETY: `root` is NUL-terminated and outlives the call.
+    unsafe { GetDriveTypeW(root.as_ptr()) != DRIVE_REMOTE }
+}
+
+/// macOS and GIO refuse a folder with no trash instead of deleting, so the
+/// move is tried and its error reported.
+#[cfg(not(windows))]
+fn has_trash(_path: &Path) -> bool {
+    true
+}
+
 #[cfg(windows)]
 fn move_to_trash(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::{
-        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FOF_WANTNUKEWARNING,
-        FO_DELETE, SHFILEOPSTRUCTW,
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW,
     };
 
     // SHFileOperationW does not accept the \\?\ form, and it reads a list
@@ -383,10 +444,10 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
         wFunc: FO_DELETE,
         pFrom: from.as_ptr(),
         pTo: std::ptr::null(),
-        // ALLOWUNDO sends the file to the Recycle Bin. A drive without one
-        // (a network share, \\wsl.localhost) would delete it for good, so
-        // WANTNUKEWARNING makes Windows ask first in that case.
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT) as u16,
+        // ALLOWUNDO sends the file to the Recycle Bin. `has_trash` has
+        // already turned away a drive without one: Windows would delete the
+        // file there for good, with no warning even under WANTNUKEWARNING.
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT) as u16,
         fAnyOperationsAborted: 0,
         hNameMappings: std::ptr::null_mut(),
         lpszProgressTitle: std::ptr::null(),
@@ -3425,6 +3486,7 @@ fn main() {
             open_path,
             close_document,
             trash_document,
+            trash_plan,
             initial_file,
             pending_files,
             pick_file,
@@ -3525,11 +3587,11 @@ mod tests {
         adopt, empty_store, review_sidecar, save_store, ReviewDocument, Watched, LEGACY_REVIEW_FILE,
     };
     use super::{
-        change_review_comment, document_watch_due, is_windows_replace_contention, list_reviews,
-        natural_key, next_review_id, open_download, open_link, parse_cli, parse_store,
-        patch_review_record, read_snapshot, reduced_pdf_path, remove_review, remove_review_cas,
-        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, trash_target,
-        write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
+        change_review_comment, document_watch_due, is_network_path, is_windows_replace_contention,
+        list_reviews, natural_key, next_review_id, open_download, open_link, parse_cli,
+        parse_store, patch_review_record, read_snapshot, reduced_pdf_path, remove_review,
+        remove_review_cas, rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready,
+        trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
@@ -4518,6 +4580,14 @@ mod tests {
         assert!(trash_target(shown.to_str().unwrap(), None).is_err());
         assert!(trash_target(dir.join("gone.png").to_str().unwrap(), Some(&canonical)).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn network_and_wsl_paths_have_no_recycle_bin() {
+        assert!(is_network_path(r"\\wsl.localhost\Ubuntu\home\me\fig.png"));
+        assert!(is_network_path(r"\\server\share\fig.png"));
+        assert!(!is_network_path(r"C:\Users\me\fig.png"));
+        assert!(!is_network_path("/home/me/fig.png"));
     }
 
     #[test]
