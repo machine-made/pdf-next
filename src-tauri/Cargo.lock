@@ -2979,6 +2979,7 @@ name = "pdf-next"
 version = "0.14.3"
 dependencies = [
  "ammonia",
+ "gio",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

@@ -1059,21 +1059,68 @@ async function stepSibling(delta) {
     return;
   }
   try {
-    const file = await invoke('open_path', { path });
-    // Walking a folder replaces what the tab is showing rather than opening a
-    // tab per file — browsing 200 PNGs must not leave 200 tabs behind.
-    const tab = state.tabs[state.active];
-    if (tab) {
-      state.views.delete(tab.path);
-      tab.path = file.path;
-      tab.name = file.name;
-      tab.kind = file.kind;
-      renderTabs();
-    }
-    await openFile(file, { keepWindow: true });
+    await showInActiveTab(path);
   } catch (error) {
     setStatus(String(error), { error: true });
   }
+}
+
+/// Walking a folder replaces what the tab is showing rather than opening a
+/// tab per file — browsing 200 PNGs must not leave 200 tabs behind.
+async function showInActiveTab(path) {
+  const file = await invoke('open_path', { path });
+  const tab = state.tabs[state.active];
+  if (tab) {
+    state.views.delete(tab.path);
+    tab.path = file.path;
+    tab.name = file.name;
+    tab.kind = file.kind;
+    renderTabs();
+  }
+  await openFile(file, { keepWindow: true });
+}
+
+/// Delete key: move the file on screen to the Recycle Bin, Trash or trash,
+/// after the reader confirms. A figure is followed by the next one in its
+/// folder, or the one before at the end; any other file closes its tab.
+async function trashShownFile() {
+  const file = state.file;
+  if (!file) {
+    return;
+  }
+  const bin = { windows: 'Recycle Bin', macos: 'Trash' }[state.platform] || 'trash';
+  if (!window.confirm(`Move ${file.name} to the ${bin}?`)) {
+    return;
+  }
+  // Read the folder now: the list loaded at open time may not have arrived.
+  let siblings = [];
+  if (file.kind === 'image') {
+    try {
+      const found = await invoke('siblings', { path: file.path });
+      siblings = Array.isArray(found) ? found : [];
+    } catch {
+      siblings = [];
+    }
+  }
+  const index = siblings.indexOf(file.path);
+  try {
+    await invoke('trash_document', { path: file.path });
+  } catch (error) {
+    setStatus(`Could not move ${file.name} to the ${bin}: ${error}`, { error: true });
+    return;
+  }
+  const next = index >= 0 ? siblings[index + 1] ?? siblings[index - 1] : null;
+  try {
+    if (next) {
+      await showInActiveTab(next);
+    } else {
+      await closeTab(state.active);
+    }
+  } catch (error) {
+    setStatus(String(error), { error: true });
+    return;
+  }
+  setStatus(`Moved ${file.name} to the ${bin}`);
 }
 
 /// The opening scale estimates the window frame from the webview. When the
@@ -4076,6 +4123,13 @@ window.addEventListener('keydown', (event) => {
   if (typing) {
     return;
   }
+  // Delete, or Cmd+Backspace as in the macOS Finder.
+  if ((key === 'delete' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) ||
+      (state.platform === 'macos' && event.metaKey && key === 'backspace')) {
+    event.preventDefault();
+    void trashShownFile();
+    return;
+  }
   if (key === 'escape') {
     if (!ui.reviewMenu.hidden || !ui.reviewChip.hidden) {
       hideReviewChrome();
@@ -4644,6 +4698,26 @@ async function reportSmoke() {
       ui.imageBox.offsetWidth <= ui.imageStage.clientWidth + 1 &&
       ui.imageBox.offsetHeight <= ui.imageStage.clientHeight + 1, 5_000);
     const scaleNote = file.kind === 'image' ? `, scale ${imageScale().toFixed(3)}` : '';
+    // trash-me.png sits beside trash-next.png. Delete moves it to the trash
+    // and shows trash-next.png, which fills the window at 'page-fit'.
+    if (file.name === 'trash-me.png' && shown && whole && failures.length === 0) {
+      window.confirm = () => true;
+      await trashShownFile();
+      const stepped = await settles(() =>
+        state.file?.name === 'trash-next.png' && ui.image.naturalWidth > 0, 10_000);
+      const [padX, padY] = stagePadding();
+      const fills = stepped && state.imageScale === 'page-fit' && await settles(() =>
+        Math.abs(ui.imageBox.offsetWidth - (ui.imageStage.clientWidth - padX)) <= 1 ||
+        Math.abs(ui.imageBox.offsetHeight - (ui.imageStage.clientHeight - padY)) <= 1, 5_000);
+      await invoke('smoke_report', {
+        ok: stepped && fills,
+        detail: `trash-me.png moved to the trash; then ${state.file?.name || 'nothing'} shown at ${
+          state.imageScale} scale ${imageScale().toFixed(3)}, box ${ui.imageBox.offsetWidth}x${
+          ui.imageBox.offsetHeight}, stage ${ui.imageStage.clientWidth}x${ui.imageStage.clientHeight}${
+          fills ? ', fills the window' : ', does not fill the window'}${note()}`,
+      });
+      return;
+    }
     await invoke('smoke_report', {
       ok: shown && whole && failures.length === 0,
       detail: shown && whole && failures.length === 0

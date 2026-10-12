@@ -59,8 +59,12 @@ that survives a build deleting and recreating the file mid-compile.
 - **Walk a folder of figures.** With a single file open, `←` / `→` (or the toolbar arrows) step
   through every image next to it, in reading order — `fig2` before `fig10`, not after it. The
   toolbar shows your position, and the window stays where it is instead of resizing on every
-  press. A rotate button next to the arrows turns the picture a quarter turn clockwise per
-  press; the next file comes up upright again.
+  press; each figure fills it whole (Fit page), larger or smaller than 100%. A rotate button
+  next to the arrows turns the picture a quarter turn clockwise per press; the next file comes
+  up upright again.
+- **Delete the file you are looking at.** `Delete` (`⌘⌫` on macOS) asks first, then moves the
+  file to the Recycle Bin, the Trash, or your desktop's trash, where it can be restored. In a
+  folder of figures the next one opens; any other file closes its tab.
 - **PDF, images and markdown.** `.pdf`, plus `.png`, `.jpg`, `.webp` and `.avif`, plus `.md`.
   Images zoom too, with the same control and keys as a PDF.
 - **Markdown, rendered or raw.** A `.md` opens as a typeset reading column — GitHub-style
@@ -113,7 +117,7 @@ that survives a build deleting and recreating the file mid-compile.
   Nothing polls: that one request at launch is the only network access the app makes on its
   own, downloads only ever happen on a press, and GitHub is the only host it can reach.
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
-  `←`/`→` tabs (or folder, with one file open), `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
+  `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
   `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection) add a review, `Ctrl+Shift+N` add a review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+F` fit window to content,
   `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.

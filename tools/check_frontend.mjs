@@ -287,6 +287,43 @@ function appFunction(name, next, context, source = app) {
 }
 
 {
+  // Delete moves the file on screen to the trash, then shows its neighbour.
+  const run = async ({ path = 'b.png', siblings = ['a.png', 'b.png', 'c.png'], platform = 'windows',
+    confirm = true, fails = false } = {}) => {
+    const calls = [];
+    let question = '';
+    await appFunction('trashShownFile', 'function ', {
+      state: { file: { path, name: path, kind: siblings.length ? 'image' : 'pdf' }, siblings: [], platform,
+        active: 0 },
+      window: { confirm: (text) => { question = text; return confirm; } },
+      invoke: async (command, args) => {
+        if (command === 'siblings') return siblings;
+        calls.push([command, args.path]);
+        if (fails) throw new Error('access denied');
+      },
+      showInActiveTab: async (next) => { calls.push(['show', next]); },
+      closeTab: async (index) => { calls.push(['close', index]); },
+      setStatus: (text) => { calls.push(['status', text]); },
+    })();
+    return { calls, question };
+  };
+  assert.deepEqual((await run({ confirm: false })).calls, [], 'Nothing is deleted without confirmation.');
+  const middle = await run();
+  assert.equal(middle.question, 'Move b.png to the Recycle Bin?');
+  assert.deepEqual(middle.calls.slice(0, 2), [['trash_document', 'b.png'], ['show', 'c.png']],
+    'The next figure follows a deleted one.');
+  assert.deepEqual((await run({ path: 'c.png' })).calls[1], ['show', 'b.png'],
+    'The last figure is followed by the one before it.');
+  assert.deepEqual((await run({ path: 'paper.pdf', siblings: [] })).calls[1], ['close', 0],
+    'A file with no neighbours closes its tab.');
+  const failed = await run({ fails: true });
+  assert.equal(failed.calls.length, 2, 'A failed move shows an error and stays on the file.');
+  assert.match(failed.calls[1][1], /^Could not move b\.png to the Recycle Bin: /);
+  assert.equal((await run({ platform: 'macos' })).question, 'Move b.png to the Trash?');
+  assert.equal((await run({ platform: 'linux' })).question, 'Move b.png to the trash?');
+}
+
+{
   const layout = (natural, scale) => {
     const image = { naturalWidth: natural[0], naturalHeight: natural[1], style: {} };
     appFunction('layoutImage', 'function setImageRotation(', {

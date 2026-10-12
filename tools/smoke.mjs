@@ -216,10 +216,10 @@ function awaitFinalRender(
   });
 }
 
-function open(binary, file, seconds) {
+function open(binary, file, seconds, { sourceChecks = true } = {}) {
   return new Promise((resolvePromise) => {
-    const checkPdf = /\.pdf$/i.test(file);
-    const checkFile = checkPdf || /\.png$/i.test(file);
+    const checkPdf = sourceChecks && /\.pdf$/i.test(file);
+    const checkFile = checkPdf || (sourceChecks && /\.png$/i.test(file));
     const child = spawn(binary, [file, '--no-focus'], {
       env: {
         ...process.env,
@@ -430,9 +430,29 @@ try {
       );
     }
   }
+  // Delete in the viewer: the shown figure goes to the trash, the next one in
+  // its folder opens and fills the window. The viewer reports what it shows;
+  // the disk says whether the file really left the folder.
+  const trashFolder = join(copies, 'trash');
+  mkdirSync(trashFolder);
+  const trashMe = join(trashFolder, 'trash-me.png');
+  const trashNext = join(trashFolder, 'trash-next.png');
+  copyFileSync(join(fixtures, 'swatch.png'), trashMe);
+  copyFileSync(join(fixtures, 'swatch.png'), trashNext);
+  const { code, output } = await open(binary, trashMe, seconds, { sourceChecks: false });
+  const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';
+  const onDisk = `on disk: trash-me.png ${existsSync(trashMe) ? 'still there' : 'gone'}, trash-next.png ${
+    existsSync(trashNext) ? 'kept' : 'gone'}`;
+  if (code === 0 && verdict.startsWith('smoke: ok') && !existsSync(trashMe) && existsSync(trashNext)) {
+    console.log(`  PASS  delete key\n        ${verdict}; ${onDisk}`);
+  } else {
+    failed += 1;
+    console.log(`  FAIL  delete key  (exit ${code}); ${onDisk}`);
+    console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
+  }
 } finally {
   rmSync(copies, { recursive: true, force: true });
 }
 
-console.log(`\n${files.length - failed}/${files.length} rendered`);
+console.log(`\n${files.length + 1 - failed}/${files.length + 1} passed`);
 process.exit(failed === 0 ? 0 : 1);
