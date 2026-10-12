@@ -374,8 +374,10 @@ async function fitWindow(width, height, recenter, exact = false) {
 // ── Image zoom ────────────────────────────────────────────────────────────
 
 /// An image has no viewer of its own. 'fit' is the CSS default — max-width:100%,
-/// height follows — and a number is an explicit width in CSS pixels. Either way
-/// the browser scales the bitmap it already decoded, so zoom costs no memory.
+/// height follows — and a number is an explicit width in CSS pixels.
+/// 'page-fit' fills the window with the whole picture, larger or smaller than
+/// 100%, and follows the window when it changes size. Either way the browser
+/// scales the bitmap it already decoded, so zoom costs no memory.
 function setImageScale(value, { refit = true } = {}) {
   state.imageScale = value;
   document.body.classList.toggle('image-zoomed', value !== 'fit');
@@ -415,14 +417,15 @@ function layoutImage() {
   ui.imageBox.style.setProperty('--image-turn', `${rotation}deg`);
   document.body.classList.toggle('image-turned', rotation !== 0);
 
+  const scale = state.imageScale === 'page-fit' ? pageFitScale() : state.imageScale;
   if (rotation === 0 || !width) {
     ui.imageBox.style.width = '';
     ui.imageBox.style.height = '';
-    if (state.imageScale === 'fit' || !width) {
+    if (scale === 'fit' || !width) {
       ui.image.style.width = '';
       ui.image.style.height = '';
     } else {
-      ui.image.style.width = `${Math.round(width * state.imageScale)}px`;
+      ui.image.style.width = `${Math.round(width * scale)}px`;
       ui.image.style.height = 'auto';
     }
     return;
@@ -430,8 +433,8 @@ function layoutImage() {
 
   const [turnedWidth, turnedHeight] = turnedNatural();
   let shownWidth;
-  if (typeof state.imageScale === 'number') {
-    shownWidth = turnedWidth * state.imageScale;
+  if (typeof scale === 'number') {
+    shownWidth = turnedWidth * scale;
   } else {
     const [padX] = stagePadding();
     shownWidth = Math.min(turnedWidth, ui.imageStage.clientWidth - padX);
@@ -467,34 +470,37 @@ function imageScale() {
   if (typeof state.imageScale === 'number') {
     return state.imageScale;
   }
+  if (state.imageScale === 'page-fit') {
+    return pageFitScale();
+  }
   const natural = ui.image.naturalWidth || 0;
   return natural ? ui.image.offsetWidth / natural : 1;
 }
 
-/// The scale a picture opens at: 100%, or less when 100% would not fit. A new
-/// window is then sized to the picture, so the screen is the limit. A kept or
-/// docked window does not change size, so its stage is the limit.
-function openingImageScale(fit) {
+/// The scale a picture opens at in a new window: 100%, or less when 100%
+/// would not fit on the screen. The window is then sized to the picture.
+function openingImageScale() {
   const [width, height] = turnedNatural();
   if (!width || !height) {
     return 1;
   }
-  let scale;
-  if (!fit || state.docked) {
-    scale = imageContainScale();
-  } else {
-    // The title bar and borders come off the work area too. WebKitGTK reports
-    // no frame, so assume at least a usual one rather than overshoot.
-    const frameX = Math.max(16, window.outerWidth - window.innerWidth);
-    const frameY = Math.max(40, window.outerHeight - window.innerHeight);
-    const pane = state.reviewOpen ? REVIEW_PANE_WIDTH : 0;
-    scale = Math.min(
-      (window.screen.availWidth - frameX - pane) / width,
-      (window.screen.availHeight - frameY - chromeHeight()) / height,
-    );
-  }
+  // The title bar and borders come off the work area too. WebKitGTK reports
+  // no frame, so assume at least a usual one rather than overshoot.
+  const frameX = Math.max(16, window.outerWidth - window.innerWidth);
+  const frameY = Math.max(40, window.outerHeight - window.innerHeight);
+  const pane = state.reviewOpen ? REVIEW_PANE_WIDTH : 0;
+  const scale = Math.min(
+    (window.screen.availWidth - frameX - pane) / width,
+    (window.screen.availHeight - frameY - chromeHeight()) / height,
+  );
   // Round down, so a rounded-up box never raises a scrollbar.
   return Math.max(0.01, Math.min(1, Math.floor(scale * 1000) / 1000));
+}
+
+/// The 'page-fit' scale: the whole picture in the stage, rounded down so the
+/// rounded-up box never raises a scrollbar that would shrink the stage again.
+function pageFitScale() {
+  return Math.max(0.01, Math.floor(imageContainScale() * 1000) / 1000);
 }
 
 /// The scale at which the whole image fits inside the stage, both axes.
@@ -930,7 +936,7 @@ async function toggleWrap() {
 /// Freeze whatever scale is showing, so a window resize cannot change it.
 function pinScale() {
   if (state.file?.kind === 'image') {
-    if (state.imageScale === 'fit') {
+    if (typeof state.imageScale !== 'number') {
       setImageScale(imageScale(), { refit: false });
     }
     return;
@@ -1123,7 +1129,10 @@ async function showImage(file, fit, view, generation) {
   if (view) {
     restoreImageView(view);
   } else {
-    setImageScale(openingImageScale(fit), { refit: false });
+    // A window that wraps the picture opens it at up to 100%. A kept or docked
+    // window keeps its size, so the picture fills it: stepping through a
+    // folder of figures shows each one whole.
+    setImageScale(fit && !state.docked ? openingImageScale() : 'page-fit', { refit: false });
   }
   if (fit) {
     await trimWindowToContent({ recenter: true });
@@ -1701,7 +1710,7 @@ function applyZoomChoice(value) {
     return;
   }
   if (value === 'page-fit') {
-    setImageScale(imageContainScale());
+    setImageScale('page-fit');
   } else if (value === 'auto' || value === 'page-width') {
     setImageScale('fit');
   } else {
@@ -3853,10 +3862,12 @@ ui.imagePrev.addEventListener('click', () => stepSibling(-1));
 ui.imageNext.addEventListener('click', () => stepSibling(1));
 ui.rotate.addEventListener('click', () => setImageRotation(state.imageRotation + 90));
 
-// A turned picture at 'fit' is sized by script, not by max-width, so it has to
-// be laid out again when the stage changes shape. Upright it costs nothing.
+// A turned picture at 'fit', and any picture at 'page-fit', is sized by script,
+// not by max-width, so it has to be laid out again when the stage changes
+// shape. An upright picture at 'fit' costs nothing.
 new ResizeObserver(() => {
-  if (state.file?.kind === 'image' && state.imageRotation !== 0 && state.imageScale === 'fit') {
+  if (state.file?.kind === 'image' && (state.imageScale === 'page-fit' ||
+      (state.imageRotation !== 0 && state.imageScale === 'fit'))) {
     layoutImage();
   }
 }).observe(ui.imageStage);

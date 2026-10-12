@@ -255,7 +255,7 @@ function appFunction(name, next, context, source = app) {
     sourceUrl: () => 'doc://figure',
     setImageRotation() {},
     setImageScale(value) { scaled = value; },
-    openingImageScale: (fit) => (fit ? 0.25 : 0.5),
+    openingImageScale: () => 0.25,
     shrinkImageToWindow: async () => {},
     restoreImageView() {},
     trimWindowToContent() {},
@@ -264,27 +264,69 @@ function appFunction(name, next, context, source = app) {
   await show({ name: 'figure.png' }, true, null, 1);
   assert.equal(scaled, 0.25, 'A new figure opens at the scale that fits the screen.');
   await show({ name: 'figure.png' }, false, null, 1);
-  assert.equal(scaled, 0.5, 'A figure opened into a kept window fits that window.');
+  assert.equal(scaled, 'page-fit', 'A figure stepped to in a kept window fills that window.');
 }
 
 {
-  const context = (natural, docked = false) => ({
-    state: { docked, reviewOpen: false },
+  let scaled = null;
+  const show = appFunction('showImage', 'async function openFile(', {
+    state: { generation: 1, docked: 'left' },
+    ui: { image: { set src(value) {}, set alt(value) {}, decode: async () => {} } },
+    releaseDocument: async () => {},
+    sourceUrl: () => 'doc://figure',
+    setImageRotation() {},
+    setImageScale(value) { scaled = value; },
+    openingImageScale: () => 0.25,
+    shrinkImageToWindow: async () => {},
+    restoreImageView() {},
+    trimWindowToContent() {},
+    scheduleWrap() {},
+  });
+  await show({ name: 'figure.png' }, true, null, 1);
+  assert.equal(scaled, 'page-fit', 'A figure opened in a docked window fills the dock.');
+}
+
+{
+  const layout = (natural, scale) => {
+    const image = { naturalWidth: natural[0], naturalHeight: natural[1], style: {} };
+    appFunction('layoutImage', 'function setImageRotation(', {
+      state: { imageRotation: 0, imageScale: 'page-fit' },
+      ui: { image, imageBox: { style: { setProperty() {} } } },
+      document: { body: { classList: { toggle() {} } } },
+      pageFitScale: () => scale,
+    })();
+    return image.style.width;
+  };
+  assert.equal(layout([640, 480], 2.5), '1600px', 'Page fit enlarges a small figure to fill the window.');
+  assert.equal(layout([3200, 2400], 0.3), '960px', 'Page fit shrinks a large figure into the window.');
+  const fitScale = (contain) => appFunction('pageFitScale', '/// The scale at which the whole image fits', {
+    imageContainScale: () => contain,
+  })();
+  assert.equal(fitScale(1.23456), 1.234, 'Page fit rounds down, so no scrollbar appears.');
+  assert.equal(fitScale(0), 0.01, 'Page fit never reaches zero.');
+  let chosen = null;
+  appFunction('applyZoomChoice', 'function ', {
+    state: { file: { kind: 'image' } },
+    setImageScale(value) { chosen = value; },
+  })('page-fit');
+  assert.equal(chosen, 'page-fit', 'Fit page in the zoom box keeps fitting when the window changes.');
+}
+
+{
+  const context = (natural) => ({
+    state: { reviewOpen: false },
     window: { outerWidth: 1000, innerWidth: 1000, outerHeight: 800, innerHeight: 800,
       screen: { availWidth: 1920, availHeight: 1040 } },
     REVIEW_PANE_WIDTH: 280,
     turnedNatural: () => natural,
     chromeHeight: () => 36,
-    imageContainScale: () => 0.4,
   });
-  const scale = (natural, fit, docked) =>
-    appFunction('openingImageScale', 'function imageContainScale(', context(natural, docked))(fit);
-  assert.equal(scale([3200, 2400], true), 0.401,
+  const scale = (natural) =>
+    appFunction('openingImageScale', '/// The \'page-fit\' scale', context(natural))();
+  assert.equal(scale([3200, 2400]), 0.401,
     'A screen-sized limit leaves room for the frame and the toolbar.');
-  assert.equal(scale([640, 480], true), 1, 'A small picture still opens at 100%.');
-  assert.equal(scale([3200, 2400], false), 0.4, 'A kept window limits the picture to its stage.');
-  assert.equal(scale([3200, 2400], true, true), 0.4, 'A docked window limits the picture to its stage.');
-  assert.equal(scale([0, 0], true), 1, 'An undecoded picture keeps 100%.');
+  assert.equal(scale([640, 480]), 1, 'A small picture still opens at 100%.');
+  assert.equal(scale([0, 0]), 1, 'An undecoded picture keeps 100%.');
 }
 
 {
