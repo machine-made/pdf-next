@@ -289,7 +289,7 @@ function appFunction(name, next, context, source = app) {
 {
   // Delete moves the file on screen to the trash, then shows its neighbour.
   const run = async ({ path = 'b.png', siblings = ['a.png', 'b.png', 'c.png'], platform = 'windows',
-    confirm = true, fails = false } = {}) => {
+    confirm = true, fails = false, plan = 'trash' } = {}) => {
     const calls = [];
     let question = '';
     await appFunction('trashShownFile', 'function ', {
@@ -298,7 +298,8 @@ function appFunction(name, next, context, source = app) {
       window: { confirm: (text) => { question = text; return confirm; } },
       invoke: async (command, args) => {
         if (command === 'siblings') return siblings;
-        calls.push([command, args.path]);
+        if (command === 'trash_plan') return plan;
+        calls.push([command, args.path, args.permanent]);
         if (fails) throw new Error('access denied');
       },
       showInActiveTab: async (next) => { calls.push(['show', next]); },
@@ -310,15 +311,23 @@ function appFunction(name, next, context, source = app) {
   assert.deepEqual((await run({ confirm: false })).calls, [], 'Nothing is deleted without confirmation.');
   const middle = await run();
   assert.equal(middle.question, 'Move b.png to the Recycle Bin?');
-  assert.deepEqual(middle.calls.slice(0, 2), [['trash_document', 'b.png'], ['show', 'c.png']],
+  assert.deepEqual(middle.calls.slice(0, 2), [['trash_document', 'b.png', false], ['show', 'c.png']],
     'The next figure follows a deleted one.');
+  assert.deepEqual(middle.calls[2], ['status', 'Moved b.png to the Recycle Bin']);
+  const wsl = await run({ plan: 'permanent' });
+  assert.equal(wsl.question, 'b.png is in a folder without a Recycle Bin. Delete it permanently?',
+    'A folder with no Recycle Bin says the file will be deleted for good.');
+  assert.deepEqual(wsl.calls[0], ['trash_document', 'b.png', true]);
+  assert.deepEqual(wsl.calls[2], ['status', 'Deleted b.png']);
+  assert.deepEqual((await run({ plan: 'permanent', confirm: false })).calls, [],
+    'A refused permanent delete leaves the file alone.');
   assert.deepEqual((await run({ path: 'c.png' })).calls[1], ['show', 'b.png'],
     'The last figure is followed by the one before it.');
   assert.deepEqual((await run({ path: 'paper.pdf', siblings: [] })).calls[1], ['close', 0],
     'A file with no neighbours closes its tab.');
   const failed = await run({ fails: true });
   assert.equal(failed.calls.length, 2, 'A failed move shows an error and stays on the file.');
-  assert.match(failed.calls[1][1], /^Could not move b\.png to the Recycle Bin: /);
+  assert.match(failed.calls[1][1], /^Could not delete b\.png: /);
   assert.equal((await run({ platform: 'macos' })).question, 'Move b.png to the Trash?');
   assert.equal((await run({ platform: 'linux' })).question, 'Move b.png to the trash?');
 }

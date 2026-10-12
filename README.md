@@ -63,8 +63,10 @@ that survives a build deleting and recreating the file mid-compile.
   next to the arrows turns the picture a quarter turn clockwise per press; the next file comes
   up upright again.
 - **Delete the file you are looking at.** `Delete` (`⌘⌫` on macOS) asks first, then moves the
-  file to the Recycle Bin, the Trash, or your desktop's trash, where it can be restored. In a
-  folder of figures the next one opens; any other file closes its tab.
+  file to the Recycle Bin, the Trash, or your desktop's trash, where it can be restored. A
+  folder with no Recycle Bin — a network share, or WSL's `\\wsl.localhost` — asks whether to
+  delete the file permanently instead. In a folder of figures the next one opens; any other
+  file closes its tab.
 - **PDF, images and markdown.** `.pdf`, plus `.png`, `.jpg`, `.webp` and `.avif`, plus `.md`.
   Images zoom too, with the same control and keys as a PDF.
 - **Markdown, rendered or raw.** A `.md` opens as a typeset reading column — GitHub-style

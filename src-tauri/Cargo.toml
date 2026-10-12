@@ -61,8 +61,11 @@ gio = "0.18"
 windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_Graphics_Printing",
-    # SHFileOperationW, which sends a file to the Recycle Bin.
+    # SHFileOperationW, which sends a file to the Recycle Bin, and
+    # GetDriveTypeW, which tells a network drive that has none.
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
     "Win32_UI_Shell",
 ] }
 # Printing goes to the system print window, not WebView2's in-page preview:
