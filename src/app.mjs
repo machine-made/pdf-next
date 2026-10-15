@@ -31,11 +31,15 @@ function vendorUrl(folder) {
   return new URL(`./vendor/pdfjs/${folder}`, document.baseURI).href;
 }
 
-// A rendered page canvas is the dominant per-document cost: one A4 page at 200%
-// on a 2x display is ~30 MB of RGBA. Raising this to 2^23 (which would keep a
-// docked fit-width page on PDF.js's single-canvas path) measured worse here, so
-// it stays where it is until someone measures the docked case properly.
-const MAX_CANVAS_PIXELS = 4_194_304;
+// A rendered page canvas is the dominant per-document cost. The cap must hold a
+// whole page at fit-width on a 4K screen: an A4 page 3840 px wide is 21 MP. At
+// the old 4 MP even a 1080p fit-width page (5.2 MP) took PDF.js's crop path,
+// which redraws the visible strip on every short scroll and shows a blurred
+// page meanwhile. Measured in Chromium on a 40-page paper at fit-width, 2x
+// density, 4.5 pages at 1500 px/s: 4 MP gave 70 redraws and 71 of 72 frames
+// blurred; 32 MP gave 4 redraws and none blurred. The cost: page canvases held
+// after a 22-page scroll went from 8.6 MP to 60 MP (about 240 MB).
+const MAX_CANVAS_PIXELS = 33_554_432;
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6];
 const PAGE_MODES = ['night', 'sepia', 'invert'];
 // null is plain pages: a real stop, so white is always one press away rather
