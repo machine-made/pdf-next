@@ -177,9 +177,10 @@ const pdfWorker = new PDFWorker();
 
 const eventBus = new EventBus();
 const linkService = new PDFLinkService({ eventBus });
-// A link annotation in an untrusted PDF must not be able to navigate anywhere.
-// Internal destinations (contents, cross-references) still work.
-linkService.externalLinkEnabled = false;
+// A web link in a PDF opens in the system browser, as in a markdown file. The
+// click handler on the stage sends it there; the window itself never leaves
+// the app, and the navigation guard in Rust blocks it if anything slips past.
+linkService.externalLinkEnabled = true;
 const findController = new PDFFindController({ eventBus, linkService });
 
 // PDFViewer._resetView drops its page views without freeing their canvases, so
@@ -3847,6 +3848,16 @@ document.addEventListener('pointerdown', (event) => {
 // Only same-page anchors — footnotes, and headings that carry an id — do
 // anything, and they scroll rather than navigate.
 ui.container.addEventListener('click', (event) => {
+  const link =
+    event.target instanceof Element ? event.target.closest('.annotationLayer a[href]') : null;
+  const href = link?.getAttribute('href') || '';
+  if (/^(https?:|mailto:)/i.test(href)) {
+    event.preventDefault();
+    void invoke('open_link', { url: href }).catch((error) => {
+      setStatus(String(error), { error: true });
+    });
+    return;
+  }
   const reviewId = reviewFromEvent(event);
   if (reviewId) {
     selectReview(reviewId);

@@ -81,12 +81,12 @@ that survives a build deleting and recreating the file mid-compile.
   in Latin Modern — no JavaScript math engine, nothing fetched, and the MathML meets the same
   sanitizer as the prose.
 - **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Zoom reflows the text rather than scaling it.
-- **Ask and the Review panel.** Select rendered text and create a Delete or Improve request. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Not available for images.
+- **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a Delete or Improve request. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Not available for images.
 - **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
 - **Reduce a PDF** with the toolbar button next to Print. A pure-Rust pass (no Ghostscript) writes `{stem}_reduced.pdf` beside the original when it can shrink the file; the original stays untouched and the smaller copy opens as a tab.
 - **Changed blocks light up on reload:** When a Markdown file rewrites, changed and new paragraphs, headings, list items, tables and equations fade from a highlight over a few seconds. The comparison is by content: adding a paragraph marks only that one. Scroll position is kept.
-- **Links go where you would expect.** A `#heading` or footnote scrolls; a web link opens in
-  your browser; a relative link — `[notes](other.md)`, `[fig](fig1.png)`, the paper it
+- **Links go where you would expect.** A `#heading` or footnote scrolls; a web link, in a
+  markdown file or a PDF, opens in your browser; a relative link — `[notes](other.md)`, `[fig](fig1.png)`, the paper it
   cites — opens as a new tab, if it is a kind pdf-next shows. Nothing ever navigates the
   viewer itself.
   Local images referenced by the file are deliberately not loaded: the viewer reads exactly
@@ -375,8 +375,8 @@ every byte of it.
   be able to replace the entire viewer with an attacker-controlled page — in a window with no
   address bar — and a link pointing back at the asset protocol would be served as HTML at a
   *local* origin, which Tauri trusts with IPC. A navigation guard now rejects anything that is
-  not the app's own origin, and external links in documents are inert (internal ones, like a
-  table of contents, still work).
+  not the app's own origin. A web link in a PDF (`http`, `https`, `mailto`) opens in your
+  system browser, never in the window; internal ones, like a table of contents, scroll.
 - **The webview can read exactly the files you opened.** Document bytes are served by a
   purpose-built `doc://` protocol whose handler checks every request against the set of files
   you opened this session — an allowlist in our own Rust code, populated only by the open
