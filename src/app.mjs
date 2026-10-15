@@ -3571,7 +3571,8 @@ function scheduleReviewChip() {
     hideReviewMenu();
     return;
   }
-  if (!reviewFromSelection()) {
+  // Outside review mode a selection is for copying: no chip.
+  if (!state.reviewOpen || !reviewFromSelection()) {
     hideReviewMenu();
     return;
   }
@@ -3583,6 +3584,10 @@ function scheduleReviewChip() {
 
 function onDocumentContextMenu(event) {
   if (state.file?.kind !== 'markdown' && state.file?.kind !== 'pdf') {
+    return;
+  }
+  // Outside review mode the system menu stays, with its Copy.
+  if (!state.reviewOpen) {
     return;
   }
   if (!reviewFromSelection()) {
@@ -4091,6 +4096,7 @@ window.addEventListener('keydown', (event) => {
     !event.altKey &&
     !event.shiftKey &&
     ui.noteBox.hidden &&
+    state.reviewOpen &&
     reviewFromSelection()
   ) {
     event.preventDefault();

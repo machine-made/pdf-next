@@ -1007,6 +1007,16 @@ assert.match(
 );
 assert.match(
   app,
+  /function scheduleReviewChip\(\)[\s\S]*?if \(!state\.reviewOpen \|\| !reviewFromSelection\(\)\)/,
+  'Outside review mode a selection must not raise the review chip.',
+);
+assert.match(
+  app,
+  /function onDocumentContextMenu\(event\)[\s\S]*?if \(!state\.reviewOpen\) \{\s*return;\s*\}[\s\S]*?event\.preventDefault\(\)/,
+  'Outside review mode the system context menu, with Copy, must stay.',
+);
+assert.match(
+  app,
   /if \(launch\?\.mode\)[\s\S]*?setMode\(requested, false\)/,
   'A command-line appearance flag must not overwrite the saved preference.',
 );
