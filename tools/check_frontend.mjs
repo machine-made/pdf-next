@@ -1002,7 +1002,7 @@ assert.match(
 );
 assert.match(
   app,
-  /closest\('\.annotationLayer a\[href\]'\)[\s\S]*?\^\(https\?:\|mailto:\)[\s\S]*?event\.preventDefault\(\);\s*void invoke\('open_link'/,
+  /closest\('\.annotationLayer a\[href\]'\)[\s\S]*?event\.preventDefault\(\);\s*if \(\/\^https\?:\/i\.test\(href\)\) \{\s*void invoke\('open_link'/,
   'A web link in a PDF must open in the system browser, never in the window.',
 );
 assert.match(
@@ -1368,17 +1368,17 @@ for (const file of ['styles.css', 'font/latinmodern-math.woff2', 'font/lmroman12
 }
 
 // Markdown links: nothing navigates the webview. Same-page links scroll, web
-// links go to the system browser through a command that takes http(s) and
-// mailto only, and relative links open as tabs.
+// links go to the system browser through a command that takes http(s) only,
+// and relative links open as tabs.
 assert.match(
   app,
-  /if \(\/\^\(https\?:\|mailto:\)\/i\.test\(href\)\) \{[\s\S]*?invoke\('open_link', \{ url: href \}\)/,
+  /if \(\/\^https\?:\/i\.test\(href\)\) \{\s*\/\/ The web[\s\S]*?invoke\('open_link', \{ url: href \}\)/,
   'Web links in markdown must go through open_link.',
 );
 assert.match(
   main,
-  /fn open_link\(url: String\)[\s\S]*?starts_with\("http:\/\/"\)[\s\S]*?starts_with\("https:\/\/"\)[\s\S]*?starts_with\("mailto:"\)[\s\S]*?return Err/,
-  'open_link must refuse every scheme but http, https and mailto.',
+  /fn open_link\(url: String\)[\s\S]*?starts_with\("http:\/\/"\)[\s\S]*?starts_with\("https:\/\/"\);[\s\S]*?return Err/,
+  'open_link must refuse every scheme but http and https.',
 );
 assert.match(app, /const target = siblingPath\(href\);\s*if \(target\) \{\s*void openPath\(target\);/, 'Relative markdown links open as tabs.');
 
