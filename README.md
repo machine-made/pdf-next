@@ -120,7 +120,7 @@ that survives a build deleting and recreating the file mid-compile.
   own, downloads only ever happen on a press, and GitHub is the only host it can reach.
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
-  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection) add a review, `Ctrl+Shift+N` add a review, `Ctrl+Shift+R` Review panel,
+  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+F` fit window to content,
   `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
 ## Install
