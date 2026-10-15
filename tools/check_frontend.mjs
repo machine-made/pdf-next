@@ -1002,8 +1002,8 @@ assert.match(
 );
 assert.match(
   app,
-  /linkService\.externalLinkEnabled = false/,
-  'External links in an untrusted PDF must be inert.',
+  /closest\('\.annotationLayer a\[href\]'\)[\s\S]*?\^\(https\?:\|mailto:\)[\s\S]*?event\.preventDefault\(\);\s*void invoke\('open_link'/,
+  'A web link in a PDF must open in the system browser, never in the window.',
 );
 assert.match(
   app,
