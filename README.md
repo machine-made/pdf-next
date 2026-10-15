@@ -375,8 +375,8 @@ every byte of it.
   be able to replace the entire viewer with an attacker-controlled page — in a window with no
   address bar — and a link pointing back at the asset protocol would be served as HTML at a
   *local* origin, which Tauri trusts with IPC. A navigation guard now rejects anything that is
-  not the app's own origin. A web link in a PDF (`http`, `https`, `mailto`) opens in your
-  system browser, never in the window; internal ones, like a table of contents, scroll.
+  not the app's own origin. A web link in a PDF (`http`, `https`) opens in your system
+  browser, never in the window; `mailto` and other schemes do nothing; internal ones, like a table of contents, scroll.
 - **The webview can read exactly the files you opened.** Document bytes are served by a
   purpose-built `doc://` protocol whose handler checks every request against the set of files
   you opened this session — an allowlist in our own Rust code, populated only by the open

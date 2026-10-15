@@ -2858,14 +2858,13 @@ fn delete_review(
 
 /// Open a link from a markdown file in the default browser.
 ///
-/// Web and mail only. A `file:` or an application's own scheme handed to the
-/// shell is a way to run things, and a document must not have that.
+/// Web only. A `file:` or an application's own scheme handed to the shell is a
+/// way to run things, and a document must not have that. `mailto:` is refused
+/// too: a click in a document must not start a mail program.
 #[tauri::command]
 fn open_link(url: String) -> Result<(), String> {
     let lower = url.to_ascii_lowercase();
-    let web = lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("mailto:");
+    let web = lower.starts_with("http://") || lower.starts_with("https://");
     if !web || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err("not a web link".into());
     }
@@ -3909,6 +3908,7 @@ mod tests {
             "https://example.com/a b",
             "http://example.com/\u{7}",
             "other.md",
+            "mailto:someone@example.com",
         ] {
             assert!(open_link(url.into()).is_err(), "{url} must be refused");
         }

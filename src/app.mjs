@@ -3856,11 +3856,14 @@ ui.container.addEventListener('click', (event) => {
   const link =
     event.target instanceof Element ? event.target.closest('.annotationLayer a[href]') : null;
   const href = link?.getAttribute('href') || '';
-  if (/^(https?:|mailto:)/i.test(href)) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    // Only the web leaves; mailto and every other scheme do nothing.
     event.preventDefault();
-    void invoke('open_link', { url: href }).catch((error) => {
-      setStatus(String(error), { error: true });
-    });
+    if (/^https?:/i.test(href)) {
+      void invoke('open_link', { url: href }).catch((error) => {
+        setStatus(String(error), { error: true });
+      });
+    }
     return;
   }
   const reviewId = reviewFromEvent(event);
@@ -3895,7 +3898,7 @@ ui.markdown.addEventListener('click', (event) => {
     target?.scrollIntoView({ block: 'start' });
     return;
   }
-  if (/^(https?:|mailto:)/i.test(href)) {
+  if (/^https?:/i.test(href)) {
     // The web: the system browser's, never this window's.
     void invoke('open_link', { url: href }).catch((error) => {
       setStatus(String(error), { error: true });
