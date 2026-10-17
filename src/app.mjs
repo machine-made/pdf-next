@@ -38,7 +38,8 @@ function vendorUrl(folder) {
 // page meanwhile. Measured in Chromium on a 40-page paper at fit-width, 2x
 // density, 4.5 pages at 1500 px/s: 4 MP gave 70 redraws and 71 of 72 frames
 // blurred; 32 MP gave 4 redraws and none blurred. The cost: page canvases held
-// after a 22-page scroll went from 8.6 MP to 60 MP (about 240 MB).
+// after a 22-page scroll went from 8.6 MP to 60 MP (about 240 MB). 2^25 is
+// also PDF.js's own desktop default.
 const MAX_CANVAS_PIXELS = 33_554_432;
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6];
 const PAGE_MODES = ['night', 'sepia', 'invert'];
@@ -2840,6 +2841,8 @@ async function setReviewOpen(on) {
   ui.reviewPane.hidden = !state.reviewOpen;
   ui.notes.classList.toggle('on', state.reviewOpen);
   ui.notes.setAttribute('aria-pressed', String(state.reviewOpen));
+  // A selection already made gains or loses the review chip with the mode.
+  scheduleReviewChip();
   if (state.reviewOpen && !was && !state.reviewGrown) {
     try {
       const [width, height] = await invoke('window_size');
