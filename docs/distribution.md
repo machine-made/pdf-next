@@ -89,8 +89,8 @@ certificates per signature.
 Check one locally before submitting:
 
 ```
-winget validate --manifest winget/RicardoFrantz.pdf-next/0.14.4
-winget install --manifest winget/RicardoFrantz.pdf-next/0.14.4
+winget validate --manifest winget/RicardoFrantz.pdf-next/0.14.5
+winget install --manifest winget/RicardoFrantz.pdf-next/0.14.5
 ```
 
 To publish a version, copy its folder into a fork of winget-pkgs at
@@ -101,7 +101,8 @@ unsigned-installer policy check. Merging needs every review comment on the PR
 resolved, including automated ones. The
 [0.14.3 update](https://github.com/microsoft/winget-pkgs/pull/450346) merged
 on 2026-10-11; the
-[0.14.4 update](https://github.com/microsoft/winget-pkgs/pull/451301) is open.
+[0.14.4 update](https://github.com/microsoft/winget-pkgs/pull/451301) merged
+on 2026-10-12; the 0.14.5 manifests are in `winget/`, not yet submitted.
 The manifests use schema 1.12.0 and omit `DisplayVersion` when it equals
 `PackageVersion`. Keep the publisher and product code entries: they describe
 the installer registry values. The 0.14.0 installer registers publisher
@@ -128,8 +129,8 @@ the same as `PackageVersion`. Or let
 [`wingetcreate update`](https://github.com/microsoft/winget-create) do it:
 
 ```
-wingetcreate update RicardoFrantz.pdf-next --version 0.14.4 \
-  --urls https://github.com/ricardofrantz/pdf-next/releases/download/v0.14.4/pdf-next_0.14.4_x64-setup.exe \
+wingetcreate update RicardoFrantz.pdf-next --version 0.14.5 \
+  --urls https://github.com/ricardofrantz/pdf-next/releases/download/v0.14.5/pdf-next_0.14.5_x64-setup.exe \
   --submit
 ```
 
