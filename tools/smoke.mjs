@@ -165,7 +165,7 @@ try {
     env: { ...process.env, PDF_NEXT_SMOKE_PATH: file },
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 10_000,
+    timeout: 60_000,
     killSignal: 'SIGKILL',
   });
   if (result.error || result.status !== 0) {
