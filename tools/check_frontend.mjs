@@ -437,10 +437,104 @@ function appFunction(name, next, context, source = app) {
   assert.deepEqual(moved.original, { anchor: { prefix: 'old', suffix: 'old' }, at: { line: 3 }, quote: 'quote' });
 }
 
-assert.match(app, /const kind = state\.file\?\.kind;\n  if \(!path \|\| \(kind !== 'pdf' && kind !== 'markdown'\)\) return;/,
-  'Reattach works for Markdown as well as PDF.');
-assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
-  'The Reattach button is not limited to PDF.');
+// Reattach moves the context, and for Markdown the lines as well; PDF keeps its page.
+for (const kind of ['markdown', 'pdf']) {
+  const patches = [];
+  const state = { file: { path: 'a', kind }, generation: 1, markdownDigest: 'sha256:now' };
+  const picked = kind === 'pdf'
+    ? { kind, quote: 'the quote', at: { page: 4 }, anchor: { position: { page: 4, x: 1, y: 2 } } }
+    : { kind, quote: 'The Quote', at: { line: 9, end: 11 }, anchor: { prefix: 'p', suffix: 's', documentRevision: 'sha256:then' } };
+  const reattach = appFunction('reattachReview', 'async function jumpToReview', {
+    state, describeSelection: () => picked, sameReviewQuote, reattachedReviewAnchor,
+    pdfDocumentDigest: async () => 'sha256:pdf',
+    patchReview: async (review, patch) => patches.push(patch),
+    setStatus() {},
+  });
+  await reattach({ id: 'r1', quote: 'the quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
+  assert.equal(patches.length, 1, `${kind} reattach patches the review.`);
+  const [patch] = patches;
+  assert.equal(patch.anchor.documentRevision, kind === 'pdf' ? 'sha256:pdf' : 'sha256:now',
+    `${kind} reattach stamps the digest of the file shown.`);
+  if (kind === 'markdown') {
+    assert.deepEqual(patch.at, { line: 9, end: 11 }, 'Markdown reattach moves the lines with the context.');
+    assert.deepEqual(patch.anchor.original.at, { line: 2 }, 'The first place is kept.');
+  } else {
+    assert.equal('at' in patch, false, 'PDF reattach leaves its page alone.');
+  }
+}
+
+// What the Markdown selection sends along when the article has no context to give.
+{
+  const selected = { isCollapsed: false, toString: () => ' quote ', anchorNode: {}, focusNode: {}, getRangeAt: () => ({}) };
+  const context = (anchor, digest) => ({
+    state: { file: { kind: 'markdown', path: 'a.md' }, markdownDigest: digest },
+    window: { getSelection: () => selected },
+    ui: { markdown: {} },
+    basenameFromPath: (path) => path,
+    lineNear: () => 3, atRange: (start) => ({ line: start }),
+    markdownAnchorForSelection: () => anchor,
+  });
+  const describe = (anchor, digest) => appFunction('describeSelection', '/// Human form of a record', context(anchor, digest));
+  assert.deepEqual({ ...describe(null, 'sha256:seen')({ context: true }).anchor }, { documentRevision: 'sha256:seen' },
+    'Raw mode still sends the digest the viewer saw.');
+  assert.equal(describe(null, null)({ context: true }).anchor, undefined);
+  assert.deepEqual({ ...describe({ prefix: 'p', documentRevision: 'sha256:x' }, 'sha256:seen')({ context: true }).anchor },
+    { prefix: 'p', documentRevision: 'sha256:x' }, 'Context taken at selection time keeps its own digest.');
+  assert.equal(describe(null, 'sha256:seen')().anchor, undefined, 'No context is read unless it will be saved.');
+}
+
+// The review panel: where a review is, and whether it is made on another version.
+{
+  const element = () => {
+    const node = {
+      children: [], dataset: {}, style: {}, textContent: '', className: '',
+      classList: { added: [], add(name) { this.added.push(name); }, toggle() {}, contains: () => false },
+      append(...items) { node.children.push(...items); },
+      addEventListener() {}, setAttribute() {},
+    };
+    return node;
+  };
+  const texts = (node) => [node.textContent, ...node.children.flatMap((child) => (typeof child === 'string' ? [child] : texts(child)))];
+  const render = (review, locationStatus) => {
+    const list = element();
+    const state = {
+      file: { path: 'a.md', kind: 'markdown' }, markdownDigest: 'sha256:new', reviews: [review],
+      reviewLocations: new Map([['a.md\u0000r1', locationStatus]]), reviewConflicts: new Map(),
+      reviewActionFilter: 'all', reviewStatusFilter: 'all',
+    };
+    appFunction('renderReviewList', 'function selectReview', {
+      state, ui: { reviewList: list, reviewCount: element() },
+      document: { activeElement: null, createElement: element, createTextNode: (text) => text },
+      draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
+      reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion,
+      scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
+      patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
+      reviewRowById: () => null, HTMLTextAreaElement: class {},
+    })();
+    const row = list.children[0];
+    const found = texts(row);
+    return {
+      older: found.includes('Made on an earlier version of this file'),
+      lines: found.some((text) => text.startsWith('Placed by its line range')),
+      unlocated: found.includes('Unlocated · not highlighted'),
+      reattach: found.includes('Reattach selection'),
+      dimmed: row.classList.added.includes('unlocated'),
+    };
+  };
+  const old = { id: 'r1', status: 'open', quote: 'q', anchor: { documentRevision: 'sha256:old' } };
+  assert.deepEqual(render(old, 'located'),
+    { older: false, lines: false, unlocated: false, reattach: false, dimmed: false },
+    'A review located on the text shown needs no flag, whichever version it was made on.');
+  assert.deepEqual(render(old, 'unlocated'),
+    { older: true, lines: false, unlocated: true, reattach: true, dimmed: true },
+    'A review that is lost and was made on another version says so and offers Reattach.');
+  assert.deepEqual(render({ id: 'r1', status: 'open', quote: 'q' }, 'lines'),
+    { older: false, lines: true, unlocated: false, reattach: true, dimmed: false },
+    'A review placed by its lines offers Reattach, so an old sidecar can be upgraded.');
+  assert.equal(render({ id: 'r1', status: 'applied', quote: 'q' }, 'lines').reattach, false,
+    'Only an open review is reattached.');
+}
 
 // What the Markdown paint does with each kind of review.
 {
@@ -476,7 +570,8 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
   assert.equal(reads, 1, 'The article text is read once for all reviews that do not overlap.');
   const status = (id) => state.reviewLocations.get(`a.md\u0000${id}`);
   assert.deepEqual([status('r1'), status('r2'), status('r3'), status('r4'), status('r5'), status('r6'), status('r7')],
-    ['located', undefined, 'ambiguous', 'preserved', undefined, 'located', undefined]);
+    ['located', 'lines', 'ambiguous', 'preserved', undefined, 'located', 'lines'],
+    'A context-free repeat or miss is placed by its lines, which the panel offers to Reattach.');
   calls.length = 0;
   reads = 0;
   state.reviews = [
@@ -528,8 +623,9 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
   assert.equal(madeOnOlderVersion(review('applied', 'sha256:old'), 'sha256:new'), false, 'Only open reviews need a second look.');
   assert.equal(madeOnOlderVersion({ status: 'open' }, 'sha256:new'), false);
   assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), null), false, 'No digest for the shown file, no flag.');
-  assert.match(app, /state\.file\?\.kind === 'markdown' && madeOnOlderVersion\(review, state\.markdownDigest\)/,
-    'The review panel shows the flag for Markdown.');
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new', 'located'), false,
+    'A review located on the shown text is not flagged.');
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new', 'ambiguous'), true);
 }
 
 {

@@ -165,8 +165,11 @@ export function resolveMarkdownReview(text, review, { normalized = false } = {})
   return { status: 'located', start: found.start + lead, end: found.end + lead };
 }
 
-/// An open review whose recorded document digest differs from the file now shown.
-export function madeOnOlderVersion(review, digest) {
+/// An open review whose recorded document digest differs from the file now
+/// shown, and that the shown text does not locate: a located review is right
+/// for this text whichever version it was made on.
+export function madeOnOlderVersion(review, digest, locationStatus) {
   const made = review?.anchor?.documentRevision;
-  return Boolean(digest && made && made !== digest && reviewStatus(review) === 'open');
+  return Boolean(digest && made && made !== digest && reviewStatus(review) === 'open' &&
+    locationStatus !== 'located');
 }
