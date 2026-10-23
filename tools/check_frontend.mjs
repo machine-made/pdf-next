@@ -642,7 +642,7 @@ for (const kind of ['markdown', 'pdf']) {
     return true;
   };
   const open = appFunction('open', 'const binary = findBinary();', {
-    spawn: () => child, process: { env: {} },
+    spawn: () => child, process: { env: {} }, basename: (name) => name.split('/').pop(),
     readFileSync: () => Uint8Array.of(37), openSync: () => 1,
     closeSync() {}, writeSync() {}, writeFileSync() {}, renameSync() {}, unlinkSync() {},
     setTimeout: () => 1, clearTimeout() {},
@@ -2624,6 +2624,7 @@ for (const fixture of [
   'tests/fixtures/swatch.png',
   'tests/fixtures/large-figure.png',
   'tests/fixtures/notes.md',
+  'tests/fixtures/review-parity.md',
 ]) {
   await access(fixture);
 }
