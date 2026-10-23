@@ -4674,7 +4674,7 @@ listen('file-changed', async (event) => {
   await openFile({ ...state.file, revision }, { preserveView: true });
   if (state.file?.path !== path || state.file?.revision !== revision) return;
   setStatus('Reloaded');
-  if (launch?.smoke && state.file?.kind === 'pdf') void reportSmoke();
+  if (launch?.smoke && (state.file?.kind === 'pdf' || state.file?.name === 'review-parity.md')) void reportSmoke();
 });
 
 document.addEventListener('visibilitychange', async () => {
@@ -4950,6 +4950,69 @@ async function smokePdfScroll() {
   }
 }
 
+/// Smoke only, on review-parity.md. Stage 1 drives find and review creation in
+/// the real page; the build server then edits the file, and stage 2 checks that
+/// the review is still painted on the right occurrence after the reload.
+/// Returns what to report.
+async function smokeMarkdownReview() {
+  const second = () => {
+    const mark = ui.markdown.querySelector('mark.review');
+    const marks = ui.markdown.querySelectorAll('mark.review').length;
+    return marks === 1 && mark.textContent === 'Repeat this phrase' &&
+      mark.closest('p')?.textContent.includes('there');
+  };
+  const counted = (text) => settles(() => ui.findCount.textContent === text, 5_000);
+  if (!await settles(() => ui.markdown.textContent.includes('Review parity'))) throw new Error('fixture not shown');
+  const staged = state.reviews.length ? 2 : 1;
+  if (staged === 1) {
+    openFind();
+    const type = (text) => {
+      ui.findInput.value = text;
+      ui.findInput.dispatchEvent(new Event('input'));
+    };
+    const current = () => ui.markdown.querySelectorAll('mark.find.current').length;
+    // `wake` is `wa**ke**` in the first paragraph: one hit across two marks.
+    type('wake');
+    if (!await counted('1 of 2') || current() !== 2) throw new Error(`find across markup: ${ui.findCount.textContent}, ${current()} current marks`);
+    ui.findNext.click();
+    if (ui.findCount.textContent !== '2 of 2' || current() !== 1) throw new Error(`find next: ${ui.findCount.textContent}`);
+    ui.findPrev.click();
+    if (ui.findCount.textContent !== '1 of 2' || current() !== 2) throw new Error(`find previous: ${ui.findCount.textContent}`);
+    type('wake is long');
+    if (!await counted('1 of 1')) throw new Error(`find across two marks and a space: ${ui.findCount.textContent}`);
+    type('w');
+    if (!await counted('') || ui.markdown.querySelector('mark.find')) throw new Error('one character must not search');
+    closeFind();
+    if (ui.markdown.querySelector('mark.find')) throw new Error('closing find left marks');
+    // A review on the second of two identical phrases, made as a reader makes it.
+    const node = document.createTreeWalker([...ui.markdown.querySelectorAll('p')].at(-1), NodeFilter.SHOW_TEXT).nextNode();
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, 'Repeat this phrase'.length);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    openNoteBox('delete');
+    await saveNote();
+    if (!await settles(second, 5_000)) throw new Error(`review on the second occurrence: ${ui.markdown.querySelectorAll('mark.review').length} marks`);
+    const review = state.reviews[0];
+    if (!review?.anchor?.prefix || review.anchor.documentRevision !== state.markdownDigest) throw new Error('review saved without context or digest');
+    return `find and review checked, stage=1; digest=${state.markdownDigest}`;
+  }
+  const digest = state.reviews[0].anchor.documentRevision;
+  if (!await settles(() => ui.markdown.textContent.includes('Appended after') && second(), 10_000)) {
+    throw new Error(`review not painted on the second occurrence after reload: ${ui.markdown.querySelectorAll('mark.review').length} marks`);
+  }
+  if (digest === state.markdownDigest) throw new Error('the file changed but its digest did not');
+  if (ui.reviewList.textContent.includes('earlier version')) throw new Error('a located review was flagged as made on an earlier version');
+  openFind();
+  ui.findInput.value = 'phrase';
+  ui.findInput.dispatchEvent(new Event('input'));
+  if (!await counted('1 of 2')) throw new Error(`find after reload: ${ui.findCount.textContent}`);
+  if (ui.markdown.querySelectorAll('mark.review').length !== 1) throw new Error('find split the review mark');
+  closeFind();
+  return 'review still on the second occurrence after reload, stage=2';
+}
+
 /// Report to the build server whether this launch works, then let it end the
 /// process. Only ever runs under PDF_NEXT_SMOKE; a reader never gets here.
 async function reportSmoke() {
@@ -5056,6 +5119,11 @@ async function reportSmoke() {
           ? `${file.name} rendered sharply at 600%, ${pages} page${pages === 1 ? '' : 's'}; scroll=${JSON.stringify(scroll)}${revisionDetail}`
           : `${file.name} did not render sharply: ${pages} pages, painted=${painted}, sharp=${sharp}${note()}`,
       });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'review-parity.md' && failures.length === 0) {
+      const detail = await smokeMarkdownReview();
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${detail}; sourceRevision=${file.revision}` });
       return;
     }
     // Images and markdown have their own containers; a non-empty one is the
