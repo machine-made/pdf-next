@@ -407,9 +407,12 @@ let failed = 0;
 mkdirSync(join(root, 'scratch'), { recursive: true });
 const copies = mkdtempSync(join(root, 'scratch', 'smoke-fixtures-'));
 try {
+  // A Markdown fixture refers to its neighbours, so all of them are in place first.
+  for (const file of files) {
+    copyFileSync(file, join(copies, basename(file)));
+  }
   for (const file of files) {
     const opened = join(copies, basename(file));
-    copyFileSync(file, opened);
     if (basename(opened).toLowerCase() === 'dense-page.pdf') {
       const reviews = denseReviews(opened);
       writeFileSync(join(copies, 'dense-page_review.json'), reviewStore(opened, 1, reviews));

@@ -31,6 +31,10 @@ choice, not the content), and the user's `PATH`.
   `update_review`, `patch_review`, `delete_review`, `review_source_hint`), and
   `reduce_pdf`. The "allowed" set in `Watched` (only files the user opened may be read)
   and `serve_document` for the `doc:` protocol. Markdown sanitizing with ammonia.
+  The local images a Markdown file refers to: each path is checked (regular file,
+  known image type, at most 64 MiB, no URL scheme) and joins the separate
+  `embedded` set, which only `serve_document` reads. Remote and `data:` images
+  are never loaded.
   `navigation_guard`, which keeps a link in a PDF from replacing the viewer page.
   `find_synctex`, which must never run a program from the document's own folder.
   The CSP in `src-tauri/tauri.conf.json` and the capability file

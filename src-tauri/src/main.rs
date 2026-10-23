@@ -29,6 +29,9 @@ use tauri_plugin_dialog::DialogExt;
 static POLL_SECONDS: AtomicU64 = AtomicU64::new(1);
 const IDLE_TICK: Duration = Duration::from_millis(500);
 
+/// Modification time and length: what the watcher compares.
+type Stamp = (Option<SystemTime>, u64);
+
 /// Snapshot of the watched file. `missing` is a state, not an error: TeX-style
 /// builds delete and recreate the PDF, and the viewer must hold the last good
 /// render across that gap instead of clearing.
@@ -50,6 +53,14 @@ struct WatchState {
     /// nothing else; `adopt` is the only way in, and it takes supported kinds
     /// only.
     allowed: AllowedDocuments,
+    /// Canonical images that an opened Markdown file referenced and that
+    /// passed `judge_image`. Only the doc protocol reads this set; no command
+    /// accepts a path because it is in here.
+    embedded: HashSet<PathBuf>,
+    /// The images of the watched Markdown file, with their last `stat`. A
+    /// change to one counts as a change to the document. An image that was
+    /// missing at render time is listed too, so its arrival is seen.
+    images: Vec<(PathBuf, Option<Stamp>)>,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -240,7 +251,7 @@ fn describe(path: &Path) -> FileInfo {
     }
 }
 
-fn stat(path: &Path) -> Option<(Option<SystemTime>, u64)> {
+fn stat(path: &Path) -> Option<Stamp> {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.modified().ok(), metadata.len()))
 }
@@ -313,6 +324,7 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
         state.sidecar_modified = sidecar_modified;
         state.sidecar_len = sidecar_len;
         state.sidecar_missing = !sidecar.exists();
+        state.images.clear();
     }
     drop(state);
 
@@ -332,6 +344,7 @@ fn open_path(
 fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.path = None;
+    state.images.clear();
     Ok(())
 }
 
@@ -861,8 +874,15 @@ struct MarkdownDoc {
 /// attacker controls every byte of the file, and the rendered HTML lands in
 /// the app origin — so scripts, event handlers and javascript: URLs must not
 /// survive, and they don't: ammonia strips everything outside its allowlist.
-/// Images are dropped too, deliberately: loading them would widen file access
-/// beyond the one file the reader opened. Relative links go the same way: a
+/// Images are shown only when they are local files: a relative or absolute
+/// path that resolves to a regular file of a known image type, at most 64 MiB.
+/// Remote, `data:` and `file:` sources are refused, because a remote image
+/// tells a server when the file is read, and the reader opened one file, not
+/// the network. A refused image becomes its alt text in a marked placeholder.
+/// Accepted paths go into the `embedded` set, which only the doc protocol
+/// reads.
+///
+/// A relative link must not navigate the webview: a
 /// click on `[notes](other.md)` would be a top-level navigation inside the
 /// app origin, which the navigation guard allows, and the viewer would be
 /// replaced by a blank page with no way back. Absolute links stay, and are
@@ -1163,7 +1183,7 @@ fn hides_anchor(html: &str) -> bool {
     html.to_ascii_lowercase().contains("data-line")
 }
 
-fn render_markdown(source: &str) -> String {
+fn render_markdown(source: &str, base: &Path) -> Rendered {
     use pulldown_cmark::{html, Event, Options, Parser, Tag};
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -1238,7 +1258,6 @@ fn render_markdown(source: &str) -> String {
     html::push_html(&mut rendered, events);
 
     let mut builder = ammonia::Builder::default();
-    builder.rm_tags(["img"]);
     builder.add_generic_attributes(["id"]);
     builder.id_prefix(Some(MARKDOWN_ID_PREFIX));
     builder.url_relative(ammonia::UrlRelative::Custom(Box::new(keep_local_links)));
@@ -1259,8 +1278,225 @@ fn render_markdown(source: &str) -> String {
     for tag in MATHML_TAGS {
         builder.add_tag_attributes(tag, MATHML_ATTRIBUTES);
     }
-    builder.attribute_filter(keep_known_styles);
-    builder.clean(&rendered).to_string()
+    // Every `img src` is judged here and replaced by `img:<n>`, an index into
+    // `verdicts`. `replace_images` turns the index into the final markup, so
+    // nothing the file wrote reaches the output as an image source.
+    let verdicts = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let judged = std::sync::Arc::clone(&verdicts);
+    let base = base.to_path_buf();
+    builder.attribute_filter(move |element, attribute, value| {
+        if (element, attribute) != ("img", "src") {
+            return keep_known_styles(element, attribute, value);
+        }
+        let mut judged = judged.lock().ok()?;
+        let verdict = if judged.len() < MARKDOWN_IMAGE_COUNT {
+            judge_image(value, &base)
+        } else {
+            ImageVerdict::refused("too many images in this document")
+        };
+        judged.push(verdict);
+        Some(std::borrow::Cow::Owned(format!("img:{}", judged.len() - 1)))
+    });
+    let cleaned = builder.clean(&rendered).to_string();
+    drop(builder);
+    let verdicts = verdicts.lock().map(|v| v.clone()).unwrap_or_default();
+    let mut shown = Vec::new();
+    let mut absent = Vec::new();
+    for verdict in &verdicts {
+        match verdict {
+            ImageVerdict::Shown(path) if !shown.contains(path) => shown.push(path.clone()),
+            ImageVerdict::Refused {
+                watch: Some(path), ..
+            } if !absent.contains(path) => {
+                absent.push(path.clone());
+            }
+            _ => {}
+        }
+    }
+    Rendered {
+        html: replace_images(&cleaned, &verdicts),
+        shown,
+        absent,
+    }
+}
+
+/// What `render_markdown` hands back: the sanitized page, the canonical paths
+/// of the images it shows, and the paths of local images that were not there.
+struct Rendered {
+    html: String,
+    shown: Vec<PathBuf>,
+    absent: Vec<PathBuf>,
+}
+
+const IMAGE_LIMIT: u64 = 64 * 1024 * 1024;
+/// A document is read on every reload, and each image costs a few disk calls.
+const MARKDOWN_IMAGE_COUNT: usize = 1024;
+const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "avif", "gif", "bmp", "svg"];
+
+#[derive(Clone, Debug)]
+enum ImageVerdict {
+    Shown(PathBuf),
+    /// `watch` is where a missing file was looked for, so the watcher can see
+    /// it arrive.
+    Refused {
+        reason: &'static str,
+        watch: Option<PathBuf>,
+    },
+}
+
+impl ImageVerdict {
+    fn refused(reason: &'static str) -> Self {
+        Self::Refused {
+            reason,
+            watch: None,
+        }
+    }
+}
+
+/// Why a canonical path may not be shown as an image, if it may not.
+fn image_problem(canonical: &Path) -> Option<&'static str> {
+    let Ok(metadata) = std::fs::metadata(canonical) else {
+        return Some("not found");
+    };
+    if !metadata.is_file() {
+        return Some("not a regular file");
+    }
+    let known = canonical
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+    if !known {
+        return Some("not an image type");
+    }
+    (metadata.len() > IMAGE_LIMIT).then_some("larger than 64 MB")
+}
+
+/// Decide whether an `img src` written in a Markdown file may be shown. The
+/// source is a path, never a URL: anything with a scheme, and anything that
+/// starts like a network share, is refused before the disk is touched.
+fn judge_image(src: &str, base: &Path) -> ImageVerdict {
+    let decoded = percent_encoding::percent_decode_str(src).decode_utf8_lossy();
+    if decoded.starts_with("//")
+        || decoded.starts_with(r"\\")
+        || ammonia::Url::parse(&decoded).is_ok()
+    {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
+    let joined = base.join(decoded.as_ref());
+    let Ok(canonical) = std::fs::canonicalize(&joined) else {
+        return ImageVerdict::Refused {
+            reason: "not found",
+            watch: Some(joined),
+        };
+    };
+    match image_problem(&canonical) {
+        Some(reason) => ImageVerdict::refused(reason),
+        None => ImageVerdict::Shown(canonical),
+    }
+}
+
+/// Escaped text from the serializer is safe in an attribute and in text once
+/// the angle brackets, which it leaves alone inside attribute values, are
+/// escaped too.
+fn angle_free(value: &str) -> String {
+    value.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn escape_attribute(value: &str) -> String {
+    angle_free(&value.replace('&', "&amp;").replace('"', "&quot;"))
+}
+
+/// The index of the closing `>` of the tag at the start of `html`, quoted
+/// values skipped. ammonia writes every attribute value in double quotes.
+fn tag_len(html: &str) -> usize {
+    let mut quoted = false;
+    for (at, c) in html.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '>' if !quoted => return at + 1,
+            _ => {}
+        }
+    }
+    html.len()
+}
+
+/// Rewrite each `<img>` in sanitized HTML. A shown image keeps `alt`, `title`
+/// and a plain `width` and `height`, and carries its canonical path in
+/// `data-doc` for the frontend to turn into a doc URL. A refused one becomes
+/// its alt text in a placeholder. Text in sanitized HTML never holds a raw
+/// `<`, so each `<` starts a tag.
+fn replace_images(html: &str, verdicts: &[ImageVerdict]) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let end = tag_len(rest);
+        let tag = &rest[..end];
+        let is_img = tag
+            .strip_prefix("<img")
+            .is_some_and(|after| after.starts_with(|c: char| c.is_ascii_whitespace() || c == '>'));
+        if is_img {
+            out.push_str(&image_markup(tag, verdicts));
+        } else {
+            out.push_str(tag);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn image_markup(tag: &str, verdicts: &[ImageVerdict]) -> String {
+    let mut attributes: Vec<(&str, &str)> = Vec::new();
+    let mut rest = tag.strip_prefix("<img").unwrap_or_default();
+    while let Some((name, after)) = rest.trim_start().split_once("=\"") {
+        let Some((value, tail)) = after.split_once('"') else {
+            break;
+        };
+        attributes.push((name.trim(), value));
+        rest = tail;
+    }
+    let get = |name: &str| {
+        attributes
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| angle_free(value))
+    };
+    let alt = get("alt").unwrap_or_default();
+    let verdict = get("src")
+        .and_then(|src| {
+            src.strip_prefix("img:")
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .and_then(|n| verdicts.get(n));
+    let Some(ImageVerdict::Shown(path)) = verdict else {
+        let reason = match verdict {
+            Some(ImageVerdict::Refused { reason, .. }) => reason,
+            _ => "only local image files are shown",
+        };
+        return format!(
+            r#"<span class="md-image-refused" title="image not shown: {reason}">{alt}</span>"#
+        );
+    };
+    let mut markup = format!(
+        r#"<img data-doc="{}" alt="{alt}""#,
+        escape_attribute(&display_path(path))
+    );
+    if let Some(title) = get("title") {
+        markup.push_str(&format!(r#" title="{title}""#));
+    }
+    for name in ["width", "height"] {
+        let plain = get(name).filter(|value| {
+            let digits = value.strip_suffix('%').unwrap_or(value);
+            (1..=5).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit())
+        });
+        if let Some(value) = plain {
+            markup.push_str(&format!(r#" {name}="{value}""#));
+        }
+    }
+    markup.push('>');
+    markup
 }
 
 /// Rendered and raw in one call, so the raw/rendered toggle costs nothing.
@@ -1283,8 +1519,24 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
         return Err("markdown file is larger than 10 MB".into());
     }
     let raw = std::fs::read_to_string(&canonical).map_err(|error| error.to_string())?;
-    let html = render_markdown(&raw);
-    Ok(MarkdownDoc { html, raw })
+    let rendered = render_markdown(&raw, canonical.parent().unwrap_or(Path::new("")));
+    let stamps: Vec<_> = rendered
+        .shown
+        .iter()
+        .chain(&rendered.absent)
+        .map(|image| (image.clone(), stat(image)))
+        .collect();
+    {
+        let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+        state.embedded.extend(rendered.shown);
+        if state.path.as_deref() == Some(canonical.as_path()) {
+            state.images = stamps;
+        }
+    }
+    Ok(MarkdownDoc {
+        html: rendered.html,
+        raw,
+    })
 }
 
 /// Raw text of an allowed `_review.json`. The sidecar is not Markdown, so it
@@ -1325,10 +1577,46 @@ fn mime_for(path: &Path) -> &'static str {
         Some("avif") => "image/avif",
         Some("gif") => "image/gif",
         Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
         Some("md" | "markdown") => "text/markdown",
         Some("json") => "application/json",
         _ => "application/octet-stream",
     }
+}
+
+/// Which set a path to serve belongs to. Opened files are read whole; an
+/// embedded image is checked and capped again at read time.
+#[derive(Debug, PartialEq)]
+enum Served {
+    Opened,
+    Embedded,
+}
+
+fn serving(state: &WatchState, canonical: &Path) -> Option<Served> {
+    if state.allowed.contains(canonical) {
+        Some(Served::Opened)
+    } else if state.embedded.contains(canonical) {
+        Some(Served::Embedded)
+    } else {
+        None
+    }
+}
+
+/// The bytes of an embedded image, if it is still a regular image file within
+/// the size cap. The read is capped as well, in case the file grows after the
+/// check.
+fn read_image(canonical: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    if image_problem(canonical).is_some() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(canonical)
+        .ok()?
+        .take(IMAGE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= IMAGE_LIMIT).then_some(bytes)
 }
 
 /// The `doc://` protocol carries document bytes into the webview, replacing
@@ -1339,7 +1627,8 @@ fn mime_for(path: &Path) -> &'static str {
 /// `Cache-Control: no-store` keeps revisions out of the cache entirely.
 ///
 /// Security: the allowlist check lives in this handler, in our own code, and
-/// the served set is exactly the files the reader has opened this session.
+/// the served set is the files the reader has opened this session, plus the
+/// local images those Markdown files showed.
 fn serve_document(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let deny = |status: u16| {
         http::Response::builder()
@@ -1361,20 +1650,16 @@ fn serve_document(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Re
     let Ok(canonical) = std::fs::canonicalize(PathBuf::from(requested.as_ref())) else {
         return deny(404);
     };
-    let allowed = app
-        .try_state::<Watched>()
-        .and_then(|watched| {
-            watched
-                .0
-                .lock()
-                .ok()
-                .map(|state| state.allowed.contains(&canonical))
-        })
-        .unwrap_or(false);
-    if !allowed {
-        return deny(404);
-    }
-    let Ok(bytes) = std::fs::read(&canonical) else {
+    let served = app.try_state::<Watched>().and_then(|watched| {
+        let state = watched.0.lock().ok()?;
+        serving(&state, &canonical)
+    });
+    let bytes = match served {
+        Some(Served::Opened) => std::fs::read(&canonical).ok(),
+        Some(Served::Embedded) => read_image(&canonical),
+        None => None,
+    };
+    let Some(bytes) = bytes else {
         return deny(404);
     };
     http::Response::builder()
@@ -1694,6 +1979,34 @@ fn watch_review_sidecar(
     }
 }
 
+/// Did an image of the watched Markdown file change, appear or disappear since
+/// the last look? The new `stat`s are recorded, so one change is reported once.
+fn embedded_images_changed(watched: &Watched, path: &Path) -> bool {
+    let Ok(state) = watched.0.lock() else {
+        return false;
+    };
+    if state.path.as_deref() != Some(path) || state.images.is_empty() {
+        return false;
+    }
+    let recorded = state.images.clone();
+    drop(state);
+    let now: Vec<_> = recorded
+        .iter()
+        .map(|(image, _)| (image.clone(), stat(image)))
+        .collect();
+    if now == recorded {
+        return false;
+    }
+    let Ok(mut state) = watched.0.lock() else {
+        return false;
+    };
+    if state.path.as_deref() != Some(path) {
+        return false;
+    }
+    state.images = now;
+    true
+}
+
 /// Sidecar `stat` every IDLE_TICK. Document `stat` follows POLL_SECONDS, and
 /// not at all when that is 0.
 ///
@@ -1773,7 +2086,9 @@ fn spawn_watcher(app: AppHandle) {
                         state.len = len;
                         state.missing = false;
                     }
-                    if changed || reappeared {
+                    let images =
+                        !changed && !reappeared && embedded_images_changed(&watched, &path);
+                    if changed || reappeared || images {
                         let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                         let _ = app.emit(
                             "file-changed",
@@ -3692,6 +4007,225 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
+    fn render_html(source: &str) -> String {
+        render_markdown(source, std::path::Path::new("/nonexistent")).html
+    }
+
+    /// A folder with `pics/ok.png`, and a Markdown file `doc/notes.md` beside
+    /// a `doc/figs/` folder.
+    fn image_tree() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("doc");
+        std::fs::create_dir_all(doc.join("figs")).unwrap();
+        std::fs::create_dir_all(dir.path().join("pics")).unwrap();
+        std::fs::write(doc.join("figs").join("a.png"), b"png").unwrap();
+        std::fs::write(doc.join("figs").join("my pic.PNG"), b"png").unwrap();
+        std::fs::write(dir.path().join("pics").join("ok.png"), b"png").unwrap();
+        (dir, doc)
+    }
+
+    fn shown_in(source: &str, base: &std::path::Path) -> (String, Vec<PathBuf>) {
+        let rendered = render_markdown(source, base);
+        (rendered.html, rendered.shown)
+    }
+
+    #[test]
+    fn local_images_are_shown_by_path() {
+        let (dir, doc) = image_tree();
+        let absolute = dir.path().join("pics").join("ok.png");
+        let source = format!(
+            "![one](figs/a.png \"t\")\n\n![two](../pics/ok.png)\n\n![three]({})\n\n\
+             ![four](figs/my%20pic.PNG)\n\n<img src=figs/a.png alt=raw width=40 height=10%>",
+            absolute.display()
+        );
+        let (html, shown) = shown_in(&source, &doc);
+        assert_eq!(html.matches("<img data-doc=").count(), 5, "{html}");
+        assert!(!html.contains("src="), "{html}");
+        assert!(html.contains(r#"title="t""#), "{html}");
+        assert!(
+            html.contains(r#"alt="raw" width="40" height="10%""#),
+            "{html}"
+        );
+        let canonical = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+        assert!(shown.contains(&canonical(doc.join("figs/a.png"))));
+        assert!(shown.contains(&canonical(absolute)));
+        assert!(shown.contains(&canonical(doc.join("figs/my pic.PNG"))));
+        assert_eq!(shown.len(), 3, "{shown:?}");
+    }
+
+    fn refused(source: &str, base: &std::path::Path) -> String {
+        let (html, shown) = shown_in(source, base);
+        assert!(shown.is_empty(), "{html}");
+        assert!(!html.contains("<img"), "{html}");
+        assert!(html.contains("md-image-refused"), "{html}");
+        html
+    }
+
+    #[test]
+    fn images_that_are_not_local_files_are_refused() {
+        let (_dir, doc) = image_tree();
+        for (source, reason) in [
+            (
+                "![x](http://example.com/a.png)",
+                "remote images are not loaded",
+            ),
+            (
+                "![x](https://example.com/a.png)",
+                "remote images are not loaded",
+            ),
+            ("![x](//example.com/a.png)", "remote images are not loaded"),
+            ("![x](figs/nope.png)", "not found"),
+            ("![x](figs)", "not a regular file"),
+            ("![x](../pics)", "not a regular file"),
+            (
+                "![x](data:image/png;base64,AAAA)",
+                "only local image files are shown",
+            ),
+            (
+                "![x](javascript:alert(1))",
+                "only local image files are shown",
+            ),
+            (
+                "![x](file:///etc/passwd)",
+                "only local image files are shown",
+            ),
+            ("![x](C:/figs/a.png)", "only local image files are shown"),
+            ("<img alt=x>", "only local image files are shown"),
+        ] {
+            let html = refused(source, &doc);
+            assert!(
+                html.contains(&format!("image not shown: {reason}")),
+                "{source}: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_with_wrong_extension_is_refused() {
+        let (_dir, doc) = image_tree();
+        std::fs::write(doc.join("figs/data.txt"), b"x").unwrap();
+        let html = refused("![x](figs/data.txt)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+    }
+
+    #[test]
+    fn oversize_image_is_refused() {
+        let (_dir, doc) = image_tree();
+        let big = std::fs::File::create(doc.join("figs/big.png")).unwrap();
+        big.set_len(super::IMAGE_LIMIT + 1).unwrap();
+        let html = refused("![x](figs/big.png)", &doc);
+        assert!(html.contains("larger than 64 MB"), "{html}");
+        big.set_len(super::IMAGE_LIMIT).unwrap();
+        let (_, shown) = shown_in("![x](figs/big.png)", &doc);
+        assert_eq!(shown.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_symlink_is_followed_and_its_target_checked() {
+        let (_dir, doc) = image_tree();
+        std::os::unix::fs::symlink(doc.join("figs/a.png"), doc.join("link.png")).unwrap();
+        let (_, shown) = shown_in("![x](link.png)", &doc);
+        assert_eq!(
+            shown,
+            vec![std::fs::canonicalize(doc.join("figs/a.png")).unwrap()]
+        );
+        std::fs::write(doc.join("secret.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(doc.join("secret.txt"), doc.join("sneaky.png")).unwrap();
+        let html = refused("![x](sneaky.png)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_named_like_an_image_is_refused() {
+        let (_dir, doc) = image_tree();
+        let fifo = doc.join("x.png");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let html = refused("![x](x.png)", &doc);
+        assert!(html.contains("not a regular file"), "{html}");
+        assert!(super::read_image(&fifo).is_none());
+    }
+
+    #[test]
+    fn raw_image_keeps_no_event_handler() {
+        let (_dir, doc) = image_tree();
+        let (html, shown) = shown_in(
+            "<img src=figs/a.png onerror=x style=\"x:y\" class=c alt=a>",
+            &doc,
+        );
+        assert_eq!(shown.len(), 1);
+        assert!(html.contains("<img data-doc="), "{html}");
+        for banned in ["onerror", "style", "class", "src="] {
+            assert!(!html.contains(banned), "{banned}: {html}");
+        }
+    }
+
+    #[test]
+    fn hostile_alt_text_stays_text() {
+        let (_dir, doc) = image_tree();
+        let html = refused("<img src=nope.png alt='<b onclick=x>\"&'>", &doc);
+        assert!(!html.contains("<b"), "{html}");
+        let html = render_markdown("<a title='<img src=x>'>t</a>", &doc).html;
+        assert!(html.contains(">t</a>"), "{html}");
+        assert!(!html.contains("md-image-refused"), "{html}");
+    }
+
+    #[test]
+    fn images_beyond_the_count_cap_are_refused() {
+        let (_dir, doc) = image_tree();
+        let source = "![x](figs/a.png)\n\n".repeat(super::MARKDOWN_IMAGE_COUNT + 1);
+        let html = render_markdown(&source, &doc).html;
+        assert_eq!(html.matches("<img").count(), super::MARKDOWN_IMAGE_COUNT);
+        assert!(html.contains("too many images"), "{html}");
+    }
+
+    #[test]
+    fn missing_images_are_reported_for_the_watcher() {
+        let (_dir, doc) = image_tree();
+        let rendered = render_markdown("![x](figs/later.png)", &doc);
+        assert_eq!(rendered.absent, vec![doc.join("figs/later.png")]);
+    }
+
+    #[test]
+    fn embedded_images_are_served_but_never_acted_on() {
+        let (dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        std::fs::write(&notes, "![x](figs/a.png)").unwrap();
+        let notes = std::fs::canonicalize(notes).unwrap();
+        let shown = std::fs::canonicalize(doc.join("figs/a.png")).unwrap();
+        let beside = std::fs::canonicalize(dir.path().join("pics/ok.png")).unwrap();
+
+        let mut state = super::WatchState::default();
+        state.allowed.insert(notes.clone()).unwrap();
+        state.embedded.insert(shown.clone());
+        assert_eq!(super::serving(&state, &notes), Some(super::Served::Opened));
+        assert_eq!(
+            super::serving(&state, &shown),
+            Some(super::Served::Embedded)
+        );
+        assert_eq!(super::serving(&state, &beside), None);
+
+        let path = shown.to_str().unwrap();
+        assert!(trash_target(path, Some(&notes)).is_err());
+        let allowed = admitted([notes]);
+        assert!(list_reviews(path, &allowed).is_err());
+        assert!(write_review(path, markdown_review(), &allowed).is_err());
+        assert_eq!(super::read_image(&shown).unwrap(), b"png");
+    }
+
+    #[test]
+    fn svg_is_served_as_an_image() {
+        assert_eq!(
+            super::mime_for(std::path::Path::new("a.SVG")),
+            "image/svg+xml"
+        );
+    }
+
     fn admitted<const N: usize>(paths: [PathBuf; N]) -> super::AllowedDocuments {
         let mut allowed = super::AllowedDocuments::default();
         for path in paths {
@@ -4003,7 +4537,7 @@ mod tests {
 
     #[test]
     fn hostile_markdown_is_inert() {
-        let html = render_markdown(
+        let html = render_html(
             "# Hi\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n\
              [link](javascript:alert(1))\n\n<p onclick=\"alert(1)\">text</p>",
         );
@@ -4017,7 +4551,7 @@ mod tests {
 
     #[test]
     fn links_are_kept_for_the_frontend_to_route() {
-        let html = render_markdown(
+        let html = render_html(
             "[here](other.md) [site](https://example.com/x) [run](javascript:alert(1)) note[^1]\n\n[^1]: the note",
         );
         // Relative and web links survive as written; the click handler decides.
@@ -4033,13 +4567,13 @@ mod tests {
 
     #[test]
     fn equations_become_mathml() {
-        let html = render_markdown("mass $E = mc^2$ and\n\n$$\\int_0^1 x\\,dx$$\n");
+        let html = render_html("mass $E = mc^2$ and\n\n$$\\int_0^1 x\\,dx$$\n");
         assert!(html.contains("<math"), "{html}");
         assert!(html.contains("display=\"block\""), "{html}");
         assert!(html.contains("<msup>"), "{html}");
         assert!(!html.contains("<annotation"), "{html}");
         // A colour the renderer wrote survives the style filter.
-        let colour = render_markdown("$\\color{red}{x}$");
+        let colour = render_html("$\\color{red}{x}$");
         assert!(colour.contains("style=\"color: rgb("), "{colour}");
     }
 
@@ -4059,7 +4593,7 @@ mod tests {
             "% comment\n\\def\\dup#1{#1#1}\\dup{x}",
         ] {
             for delimiter in ["$", "$$"] {
-                let html = render_markdown(&format!("{delimiter}{tex}{delimiter}"));
+                let html = render_html(&format!("{delimiter}{tex}{delimiter}"));
                 assert!(html.contains(&super::math_source(tex)), "{html}");
                 assert!(!html.contains("<math"), "{html}");
                 assert!(!html.contains("<img"), "{html}");
@@ -4105,13 +4639,13 @@ mod tests {
             .map(|i| if i % 2 == 0 { "$x$\n\n" } else { "$$x$$\n\n" })
             .collect::<String>()
             + "$y$\n\n$$z$$\n\nend";
-        let html = render_markdown(&source);
+        let html = render_html(&source);
         assert_eq!(html.matches("<math").count(), allowed);
         assert!(html.contains("<code>y</code>"), "{html}");
         assert!(html.contains("<code>z</code>"), "{html}");
         assert!(html.contains("end"));
         // A new document gets its own budget.
-        assert!(render_markdown("$y$").contains("<math"));
+        assert!(render_html("$y$").contains("<math"));
     }
 
     #[test]
@@ -4157,7 +4691,7 @@ mod tests {
 
     #[test]
     fn equations_cannot_smuggle_markup() {
-        let html = render_markdown("$\\text{<b onclick=x>hi</b>}$ and $x < 1$");
+        let html = render_html("$\\text{<b onclick=x>hi</b>}$ and $x < 1$");
         // The tag is text, not an element.
         assert!(!html.contains("<b"), "{html}");
         assert!(
@@ -4168,13 +4702,13 @@ mod tests {
         assert!(html.contains("<mo>&lt;</mo>"), "{html}");
         // MathML written straight into the document meets the same allowlist:
         // the elements stay, a style the renderer would never write does not.
-        let raw = render_markdown("<math><mi style=\"background: url(x)\">x</mi></math>");
+        let raw = render_html("<math><mi style=\"background: url(x)\">x</mi></math>");
         assert!(raw.contains("<math><mi>x</mi></math>"), "{raw}");
     }
 
     #[test]
     fn matrices_and_spaces_survive_the_sanitizer() {
-        let html = render_markdown(
+        let html = render_html(
             "$$\\begin{pmatrix} A & B \\\\ C & D \\end{pmatrix}$$\n\nand $\\text{a b } x$\n",
         );
         assert!(html.contains("<mtable"), "{html}");
@@ -4190,9 +4724,9 @@ mod tests {
 
     #[test]
     fn table_columns_keep_their_alignment() {
-        let html = render_markdown("| a | b |\n|:--|--:|\n| 1 | 2 |\n");
+        let html = render_html("| a | b |\n|:--|--:|\n| 1 | 2 |\n");
         assert!(html.contains("style=\"text-align: right\""), "{html}");
-        let html = render_markdown("<p style=\"color: red\">x</p>");
+        let html = render_html("<p style=\"color: red\">x</p>");
         assert!(!html.contains("style="), "{html}");
     }
 
@@ -4220,9 +4754,8 @@ mod tests {
 
     #[test]
     fn github_extras_render() {
-        let html = render_markdown(
-            "| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n- [ ] not yet\n\n~~gone~~",
-        );
+        let html =
+            render_html("| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n- [ ] not yet\n\n~~gone~~");
         assert!(html.contains("<table>"));
         assert!(html.contains("checkbox"));
         assert!(html.contains("<del>"));
@@ -4307,7 +4840,7 @@ mod tests {
 
     #[test]
     fn three_paragraphs_carry_line_numbers() {
-        let html = render_markdown("para1\n\npara2\n\npara3");
+        let html = render_html("para1\n\npara2\n\npara3");
         assert!(html.contains(r#"data-line="1""#), "{html}");
         assert!(html.contains(r#"data-line="3""#), "{html}");
         assert!(html.contains(r#"data-line="5""#), "{html}");
@@ -4318,7 +4851,7 @@ mod tests {
 
     #[test]
     fn display_math_and_list_get_line_anchors() {
-        let html = render_markdown("text\n\n$$E = mc^2$$\n\n- item");
+        let html = render_html("text\n\n$$E = mc^2$$\n\n- item");
         assert!(
             html.contains(r#"data-line="3""#),
             "DisplayMath on line 3: {html}"
@@ -4331,8 +4864,8 @@ mod tests {
 
     #[test]
     fn crlf_line_endings_yield_same_line_numbers() {
-        let html_lf = render_markdown("para1\n\npara2\n\npara3");
-        let html_crlf = render_markdown("para1\r\n\r\npara2\r\n\r\npara3");
+        let html_lf = render_html("para1\n\npara2\n\npara3");
+        let html_crlf = render_html("para1\r\n\r\npara2\r\n\r\npara3");
         assert!(html_lf.contains(r#"data-line="1""#));
         assert!(html_lf.contains(r#"data-line="3""#));
         assert!(html_lf.contains(r#"data-line="5""#));
@@ -4343,7 +4876,7 @@ mod tests {
 
     #[test]
     fn literal_data_line_in_source_is_escaped() {
-        let html = render_markdown(r#"para with <span class="src" data-line="99"></span> literal"#);
+        let html = render_html(r#"para with <span class="src" data-line="99"></span> literal"#);
         // The literal span should be escaped to text, so it won't contain a real data-line="99".
         // The paragraph itself should have exactly one data-line="1".
         let count = html.matches(r#"data-line="1""#).count();

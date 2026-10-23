@@ -700,6 +700,15 @@ function setMarkdownScale(scale) {
   scheduleWrap();
 }
 
+/// An image arrives as `data-doc`, the canonical path Rust checked, and gets
+/// its `src` here, because only the frontend knows the platform's doc URL. The
+/// revision in the URL makes a regenerated figure load again.
+function embedMarkdownImages(root, revision) {
+  for (const image of root.querySelectorAll('img[data-doc]')) {
+    image.src = sourceUrl({ path: image.dataset.doc, revision });
+  }
+}
+
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
 /// assigning innerHTML here does not hand the document a script surface, and
 /// the CSP forbids inline script besides.
@@ -711,6 +720,7 @@ async function showMarkdown(file, view, generation, fit) {
   }
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
   ui.markdown.innerHTML = doc.html;
+  embedMarkdownImages(ui.markdown, file.revision);
   ui.markdownRaw.textContent = doc.raw;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
@@ -4762,7 +4772,10 @@ async function reportSmoke() {
         : file.kind === 'json'
           ? (ui.markdownRaw?.textContent || '').trim().length > 0
           : (ui.markdown?.textContent || '').trim().length > 0,
-    );
+    ) && (file.name !== 'images.md' || await settles(() => {
+      const images = [...ui.markdown.querySelectorAll('img')];
+      return images.length > 0 && images.every((image) => image.naturalWidth > 0);
+    }));
     // A new picture opens whole: the window wraps it, and no part of it
     // needs a scroll. The resize lands after the open, so wait for it.
     const whole = file.kind !== 'image' || await settles(() =>
