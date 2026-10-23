@@ -217,6 +217,11 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+eventBus.on('pagerendered', ({ error }) => {
+  if (error) {
+    setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
+  }
+});
 
 // ── Title ─────────────────────────────────────────────────────────────────
 
