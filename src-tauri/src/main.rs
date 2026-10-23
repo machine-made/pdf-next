@@ -515,8 +515,54 @@ fn reduced_pdf_path(path: &Path) -> Result<PathBuf, String> {
 /// `bin/reduce_pdf`'s Ghostscript `/ebook` path. Fail-safe: never larger than
 /// the input; malformed PDFs come back unchanged.
 fn shrink_pdf_bytes(input: &[u8]) -> Vec<u8> {
-    let opts = picamatl::OptimizeOptions::default().with_target_dpi(200.0);
-    picamatl::optimize_with_options(input, opts)
+    shrink_pdf_bytes_with_limit::<{ 64 * 1024 * 1024 }>(input)
+}
+
+fn shrink_pdf_bytes_with_limit<const MAX_STREAM_BYTES: usize>(input: &[u8]) -> Vec<u8> {
+    std::panic::catch_unwind(|| {
+        // picamatl's initial load is unbounded. Preflight the exact same bytes
+        // with its lopdf version before allowing that load. Xref streams are
+        // bounded by LoadOptions; the filter also checks raw streams before
+        // lopdf can silently skip an oversized object stream.
+        let options = lopdf::LoadOptions {
+            max_decompressed_size: Some(MAX_STREAM_BYTES),
+            filter: Some(oversized_pdf_stream::<MAX_STREAM_BYTES>),
+            ..Default::default()
+        };
+        match lopdf::Document::load_mem_with_options(input, options) {
+            Ok(doc) if doc.objects.is_empty() && !doc.is_encrypted() && !doc.was_encrypted() => {}
+            _ => return input.to_vec(),
+        }
+        let opts = picamatl::OptimizeOptions::default().with_target_dpi(200.0);
+        picamatl::optimize_with_options(input, opts)
+    })
+    .unwrap_or_else(|_| input.to_vec())
+}
+
+fn oversized_pdf_stream<const MAX_STREAM_BYTES: usize>(
+    id: lopdf::ObjectId,
+    object: &mut lopdf::Object,
+) -> Option<(lopdf::ObjectId, lopdf::Object)> {
+    // Discard safe objects: this is only a preflight, not the optimizer's
+    // document. Keep a null marker for any oversized stream, since lopdf
+    // otherwise silently drops streams that fail its load-time size limit.
+    // Safe objects cannot overwrite a failure marker, even with duplicate IDs.
+    if let lopdf::Object::Stream(stream) = object {
+        // Check all streams: an indirect /Length can make lopdf decode a
+        // compressed-object container even when it has no /Type /ObjStm.
+        if matches!(
+            stream.decompressed_content_with_limit(MAX_STREAM_BYTES),
+            Err(lopdf::Error::Decompress(
+                lopdf::DecompressError::MemoryLimitExceeded { .. }
+            ))
+        ) {
+            *object = lopdf::Object::Null;
+            return Some((id, lopdf::Object::Null));
+        }
+    }
+    // Encrypted documents bypass lopdf's filter and retain objects, so the
+    // preflight declines them rather than invoking the unbounded optimizer.
+    None
 }
 
 /// Write a smaller copy beside the open PDF as `{stem}_reduced.pdf`.
@@ -3767,7 +3813,126 @@ mod tests {
     fn shrink_pdf_bytes_never_grows_a_minimal_pdf() {
         let input = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n";
         let out = shrink_pdf_bytes(input);
-        assert!(out.len() <= input.len());
+        assert_eq!(out, input);
+    }
+
+    fn pdf_with_object_stream(padding: usize) -> Vec<u8> {
+        let mut doc =
+            lopdf::Document::load_mem(include_bytes!("../../tests/fixtures/hello.pdf")).unwrap();
+        doc.add_object(lopdf::Object::string_literal("x".repeat(padding)));
+        let mut pdf = Vec::new();
+        doc.save_modern(&mut pdf).unwrap();
+        pdf
+    }
+
+    #[test]
+    fn shrink_pdf_bytes_declines_oversized_object_streams() {
+        let input = pdf_with_object_stream(16 * 1024);
+        let loaded = lopdf::Document::load_mem(&input).unwrap();
+        assert!(loaded.objects.values().any(|object| {
+            object
+                .as_stream()
+                .is_ok_and(|stream| stream.dict.has_type(b"ObjStm") && stream.content.len() > 4096)
+        }));
+        // A successful bounded load does not prove that no stream exceeded
+        // the limit: lopdf silently skips the oversized object stream.
+        assert!(lopdf::Document::load_mem_with_options(
+            &input,
+            lopdf::LoadOptions::with_max_decompressed_size(4096),
+        )
+        .is_ok());
+        // This input can shrink without the preflight, making passthrough a
+        // meaningful regression check rather than the optimizer's fallback.
+        assert!(shrink_pdf_bytes(&input).len() < input.len());
+        assert_eq!(super::shrink_pdf_bytes_with_limit::<4096>(&input), input);
+    }
+
+    #[test]
+    fn shrink_pdf_bytes_preserves_optimization_under_the_limit() {
+        let input = pdf_with_object_stream(1024);
+        let expected = picamatl::optimize_with_options(
+            &input,
+            picamatl::OptimizeOptions::default().with_target_dpi(200.0),
+        );
+        let output = super::shrink_pdf_bytes_with_limit::<4096>(&input);
+        assert_eq!(output, expected);
+        let before = lopdf::Document::load_mem(&input).unwrap();
+        let after = lopdf::Document::load_mem(&output).unwrap();
+        assert_eq!(before.get_pages().len(), after.get_pages().len());
+        assert_eq!(
+            before.extract_text(&[1]).unwrap(),
+            after.extract_text(&[1]).unwrap()
+        );
+    }
+
+    #[test]
+    fn shrink_pdf_bytes_declines_oversized_xref_streams() {
+        // save_modern emits an uncompressed xref, so construct a compressed
+        // one explicitly. Only the first entry is used, but the loader must
+        // inflate the entire payload before it can read that entry.
+        let mut stream = lopdf::Stream::new(lopdf::Dictionary::new(), vec![0; 16 * 1024]);
+        stream.compress().unwrap();
+        let mut input = b"%PDF-1.5\n".to_vec();
+        let xref_start = input.len();
+        input.extend_from_slice(
+            format!(
+                "1 0 obj\n<< /Type /XRef /Size 1 /W [1 1 1] /Filter /FlateDecode /Length {} >>\nstream\n",
+                stream.content.len()
+            )
+            .as_bytes(),
+        );
+        input.extend_from_slice(&stream.content);
+        input.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{xref_start}\n%%EOF\n").as_bytes(),
+        );
+        assert!(lopdf::Document::load_mem(&input).is_ok());
+        assert!(lopdf::Document::load_mem_with_options(
+            &input,
+            lopdf::LoadOptions::with_max_decompressed_size(4096),
+        )
+        .is_err());
+        assert_eq!(super::shrink_pdf_bytes_with_limit::<4096>(&input), input);
+    }
+
+    #[test]
+    fn shrink_pdf_bytes_checks_streams_without_an_object_stream_type() {
+        let mut doc =
+            lopdf::Document::load_mem(include_bytes!("../../tests/fixtures/hello.pdf")).unwrap();
+        let mut stream = lopdf::Stream::new(lopdf::Dictionary::new(), vec![b'x'; 16 * 1024]);
+        stream.compress().unwrap();
+        doc.add_object(stream);
+        let mut input = Vec::new();
+        doc.save_to(&mut input).unwrap();
+        assert!(shrink_pdf_bytes(&input).len() < input.len());
+        assert_eq!(super::shrink_pdf_bytes_with_limit::<4096>(&input), input);
+    }
+
+    #[test]
+    fn shrink_pdf_bytes_declines_encrypted_documents_that_bypass_the_filter() {
+        let mut doc =
+            lopdf::Document::load_mem(include_bytes!("../../tests/fixtures/hello.pdf")).unwrap();
+        doc.trailer.set(
+            "ID",
+            vec![
+                lopdf::Object::string_literal("synthetic-file-id"),
+                lopdf::Object::string_literal("synthetic-file-id"),
+            ],
+        );
+        let encryption = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V2 {
+            document: &doc,
+            owner_password: "owner",
+            user_password: "",
+            key_length: 128,
+            permissions: lopdf::Permissions::all(),
+        })
+        .unwrap();
+        doc.encrypt(&encryption).unwrap();
+        let mut input = Vec::new();
+        doc.save_to(&mut input).unwrap();
+        // Empty-password encryption is automatically decrypted during load;
+        // checking only is_encrypted() after loading would miss this path.
+        assert!(!lopdf::Document::load_mem(&input).unwrap().is_encrypted());
+        assert_eq!(shrink_pdf_bytes(&input), input);
     }
 
     #[test]
