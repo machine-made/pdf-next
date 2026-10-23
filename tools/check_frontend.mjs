@@ -535,6 +535,22 @@ for (const kind of ['markdown', 'pdf']) {
   }
 }
 
+// A Markdown selection without a source line reattaches the context only: the
+// backend refuses an `at` without a line.
+{
+  const patches = [];
+  const reattach = appFunction('reattachReview', 'async function jumpToReview', {
+    state: { file: { path: 'a', kind: 'markdown' }, generation: 1, markdownDigest: 'sha256:now' },
+    describeSelection: () => ({ kind: 'markdown', quote: 'the quote', at: {}, anchor: { prefix: 'p', suffix: 's' } }),
+    sameReviewQuote, reattachedReviewAnchor,
+    patchReview: async (review, patch) => patches.push(patch),
+    setStatus() {},
+  });
+  await reattach({ id: 'r1', quote: 'the quote', at: { line: 2 }, anchor: { prefix: 'old' } });
+  assert.equal(patches.length, 1, 'The context is still reattached.');
+  assert.equal('at' in patches[0], false, 'No line, no at.');
+}
+
 // What the Markdown selection sends along when the article has no context to give.
 {
   const selected = { isCollapsed: false, toString: () => ' quote ', anchorNode: {}, focusNode: {}, getRangeAt: () => ({}) };
