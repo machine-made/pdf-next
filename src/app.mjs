@@ -751,6 +751,10 @@ async function showMarkdown(file, view, generation, fit) {
     path: file.path,
     texts: newBlocks.map((b) => b.text),
   };
+  // The new DOM has no marks, and the reviews that follow may be unchanged.
+  if (state.reviewDocumentPath === file.path) {
+    paintMarkdownMarks();
+  }
   // Measured with the content laid out; used by undock as well as the fit.
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -2589,7 +2593,8 @@ function applyReviewStore(store, { authoritative = false } = {}) {
     void loadReviews({ fromDisk: true });
     return false;
   }
-  const samePaint = reviewPaintSignature(reviews) === reviewPaintSignature(state.reviews);
+  const samePaint = state.reviewDocumentPath === state.file?.path &&
+    reviewPaintSignature(reviews) === reviewPaintSignature(state.reviews);
   state.reviews = reviews;
   state.nextId = Number.isSafeInteger(Number(store?.nextId)) && Number(store.nextId) > 0
     ? Number(store.nextId)
