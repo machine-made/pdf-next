@@ -843,13 +843,87 @@ fn keep_local_links(url: &str) -> Option<std::borrow::Cow<'_, str>> {
     )))
 }
 
+// Bounds apply before parsing and while writing, independently of the source-file
+// limit. A minimum charge also caps the number of tiny equations per document.
+const MATH_EXPRESSION_LIMIT: usize = 16 * 1024;
+const MATH_SOURCE_BUDGET: usize = 256 * 1024;
+const MATH_OUTPUT_BUDGET: usize = 4 * 1024 * 1024;
+const MATH_MIN_CHARGE: usize = 256;
+
+struct MathBudget {
+    source: usize,
+    output: usize,
+}
+
+impl Default for MathBudget {
+    fn default() -> Self {
+        Self {
+            source: MATH_SOURCE_BUDGET,
+            output: MATH_OUTPUT_BUDGET,
+        }
+    }
+}
+
+struct MathWriter<'a> {
+    bytes: Vec<u8>,
+    remaining: &'a mut usize,
+}
+
+impl std::io::Write for MathWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > *self.remaining {
+            return Err(std::io::Error::other("math output limit exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        *self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn math_source(tex: &str) -> String {
+    let mut fallback = String::from("<code>");
+    html_escape_into(&mut fallback, tex);
+    fallback.push_str("</code>");
+    fallback
+}
+
 /// One TeX equation as MathML, for the sanitizer to read like any other
 /// markup. The writer does not escape everything it emits (an operator `<`
 /// goes out bare), so nothing here is trusted on its own: it is cleaned with
 /// the rest of the document against the MathML allowlist below. No annotation,
 /// which would carry the TeX source through unescaped.
-fn render_math(tex: &str, display: bool) -> String {
-    use pulldown_latex::{config::DisplayMode, push_mathml, Parser, RenderConfig, Storage};
+fn render_math(tex: &str, display: bool, budget: &mut MathBudget) -> String {
+    use pulldown_latex::{config::DisplayMode, write_mathml, Parser, RenderConfig, Storage};
+    let charge = tex.len().max(MATH_MIN_CHARGE);
+    if tex.len() > MATH_EXPRESSION_LIMIT || charge > budget.source || budget.output == 0 {
+        return math_source(tex);
+    }
+    budget.source -= charge;
+
+    // pulldown-latex 0.8.0 expands macros before checking its allocation limit.
+    // These are all primitives that populate its initially empty MacroContext
+    // (parser/primitives.rs). Its lexer reads literal ASCII command names; it
+    // has no csname/catcode processing. Scan every backslash, even in comments
+    // or escaped text, so reparsing a group cannot hide a definition or alias.
+    // Keep the dependency pinned until this guard is rechecked or fixed upstream.
+    if tex.split('\\').skip(1).any(|tail| {
+        [
+            "def",
+            "let",
+            "futurelet",
+            "newcommand",
+            "renewcommand",
+            "providecommand",
+        ]
+        .iter()
+        .any(|command| tail.starts_with(command))
+    }) {
+        return math_source(tex);
+    }
     let storage = Storage::new();
     let parser = Parser::new(tex, &storage);
     let config = RenderConfig {
@@ -860,16 +934,16 @@ fn render_math(tex: &str, display: bool) -> String {
         },
         ..RenderConfig::default()
     };
-    let mut mathml = String::new();
-    if push_mathml(&mut mathml, parser, config).is_err() {
-        // The writer only fails on an unrecoverable parse; show the source so
-        // the reader can see what did not typeset.
-        let mut fallback = String::from("<code>");
-        html_escape_into(&mut fallback, tex);
-        fallback.push_str("</code>");
-        return fallback;
+    let mut writer = MathWriter {
+        bytes: Vec::new(),
+        remaining: &mut budget.output,
+    };
+    if write_mathml(&mut writer, parser, config).is_err() {
+        // Discard partial markup on a parse or output-limit failure. Bytes
+        // already written still count against the document's shared budget.
+        return math_source(tex);
     }
-    mathml
+    String::from_utf8(writer.bytes).expect("MathML writer emits UTF-8")
 }
 
 fn html_escape_into(out: &mut String, text: &str) {
@@ -1057,6 +1131,7 @@ fn render_markdown(source: &str) -> String {
     // reads them along with everything else.
     let mut rendered = String::with_capacity(source.len() + source.len() / 2);
     let events_with_offset = Parser::new_ext(source, options).into_offset_iter();
+    let mut math_budget = MathBudget::default();
 
     let events = events_with_offset.flat_map(|(event, range)| {
         let mut result = vec![];
@@ -1096,14 +1171,14 @@ fn render_markdown(source: &str) -> String {
         let event_to_push = match &event {
             Event::Html(h) if hides_anchor(h) => Event::Text(h.clone()),
             Event::InlineHtml(h) if hides_anchor(h) => Event::Text(h.clone()),
-            Event::InlineMath(tex) => Event::Html(render_math(tex, false).into()),
+            Event::InlineMath(tex) => Event::Html(render_math(tex, false, &mut math_budget).into()),
             Event::DisplayMath(tex) => {
                 // Emit line anchor before the rendered math.
                 let line = line_at_offset(&line_offsets, range.start);
                 result.push(Event::Html(
                     format!(r#"<span class="src" data-line="{}"></span>"#, line).into(),
                 ));
-                Event::Html(render_math(tex, true).into())
+                Event::Html(render_math(tex, true, &mut math_budget).into())
             }
             other => other.clone(),
         };
@@ -3810,6 +3885,118 @@ mod tests {
         // A colour the renderer wrote survives the style filter.
         let colour = render_markdown("$\\color{red}{x}$");
         assert!(colour.contains("style=\"color: rgb("), "{colour}");
+    }
+
+    #[test]
+    fn equation_macros_are_shown_as_escaped_source() {
+        for tex in [
+            r"\def\dup#1{#1#1}\dup{x}",
+            r"\newcommand{\dup}[1]{#1#1}\dup{x}",
+            r"\renewcommand{\dup}[1]{#1#1}\dup{x}",
+            r"\providecommand{\dup}[1]{#1#1}\dup{x}",
+            r"\let\alias=x\alias",
+            r"\futurelet\alias xy\alias",
+            r"\let\alias=\def\alias\dup#1{#1#1}\dup{x}",
+            r"\futurelet\alias\def\dup#1{#1#1}\dup{x}",
+            r"\sqrt{\def\dup#1{#1#1}\dup{x}}",
+            r"\text{\\def\dup#1{<img src=x onerror=x>}}",
+            "% comment\n\\def\\dup#1{#1#1}\\dup{x}",
+        ] {
+            for delimiter in ["$", "$$"] {
+                let html = render_markdown(&format!("{delimiter}{tex}{delimiter}"));
+                assert!(html.contains(&super::math_source(tex)), "{html}");
+                assert!(!html.contains("<math"), "{html}");
+                assert!(!html.contains("<img"), "{html}");
+            }
+        }
+
+        // A small source can otherwise copy several MB before the parser's
+        // first expansion-budget check. It must never reach that allocation.
+        let tex = format!(
+            r"\def\dup#1{{{}}}\dup{{{}}}",
+            "#1".repeat(2000),
+            "x".repeat(2048)
+        );
+        assert!(tex.len() < super::MATH_EXPRESSION_LIMIT);
+        let mut budget = super::MathBudget::default();
+        assert_eq!(
+            super::render_math(&tex, false, &mut budget),
+            super::math_source(&tex)
+        );
+        assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+    }
+
+    #[test]
+    fn equation_source_size_is_bounded() {
+        let at_limit = format!(r"\text{{{}}}", "x".repeat(super::MATH_EXPRESSION_LIMIT - 7));
+        assert_eq!(at_limit.len(), super::MATH_EXPRESSION_LIMIT);
+        let mut budget = super::MathBudget::default();
+        assert!(super::render_math(&at_limit, false, &mut budget).contains("<math"));
+        let over_limit = format!("{at_limit}é");
+        assert_eq!(
+            super::render_math(&over_limit, true, &mut budget),
+            super::math_source(&over_limit)
+        );
+        // Prose resembling a command name is ordinary math without a backslash.
+        assert!(super::render_math("default", false, &mut budget).contains("<math"));
+    }
+
+    #[test]
+    fn equations_share_a_document_work_budget() {
+        let allowed = super::MATH_SOURCE_BUDGET / super::MATH_MIN_CHARGE;
+        // Alternate inline and display math to check that both share a budget.
+        let source = (0..allowed)
+            .map(|i| if i % 2 == 0 { "$x$\n\n" } else { "$$x$$\n\n" })
+            .collect::<String>()
+            + "$y$\n\n$$z$$\n\nend";
+        let html = render_markdown(&source);
+        assert_eq!(html.matches("<math").count(), allowed);
+        assert!(html.contains("<code>y</code>"), "{html}");
+        assert!(html.contains("<code>z</code>"), "{html}");
+        assert!(html.contains("end"));
+        // A new document gets its own budget.
+        assert!(render_markdown("$y$").contains("<math"));
+    }
+
+    #[test]
+    fn equation_output_is_bounded_before_writing() {
+        use std::io::Write;
+        let mut remaining = 3;
+        let mut writer = super::MathWriter {
+            bytes: Vec::new(),
+            remaining: &mut remaining,
+        };
+        assert!(writer.write_all(b"abcd").is_err());
+        assert!(writer.bytes.is_empty());
+        writer.write_all(b"abc").unwrap();
+        assert!(writer.write_all(b"d").is_err());
+        assert_eq!(writer.bytes, b"abc");
+        assert_eq!(remaining, 0);
+
+        let expected = super::render_math("x", false, &mut super::MathBudget::default());
+        let mut shared = super::MathBudget {
+            source: super::MATH_SOURCE_BUDGET,
+            output: expected.len(),
+        };
+        assert_eq!(super::render_math("x", false, &mut shared), expected);
+        assert_eq!(shared.output, 0);
+        assert_eq!(super::render_math("y", true, &mut shared), "<code>y</code>");
+
+        let mut budget = super::MathBudget {
+            source: super::MATH_SOURCE_BUDGET,
+            output: 100,
+        };
+        let tex = "x".repeat(100);
+        assert_eq!(
+            super::render_math(&tex, false, &mut budget),
+            super::math_source(&tex)
+        );
+        assert!(budget.output < 100);
+        // Failed partial markup is discarded, without refunding consumed work.
+        assert_eq!(
+            super::render_math(&tex, true, &mut budget),
+            super::math_source(&tex)
+        );
     }
 
     #[test]
