@@ -4104,6 +4104,20 @@ ui.container.addEventListener('click', (event) => {
   }
 });
 
+// An equation label keeps its percent-encoding in the id as well as in the
+// link, while a hand-written link to a heading may be encoded where the id is
+// not. The fragment is tried as written, then decoded.
+function markdownFragmentTarget(fragment) {
+  const find = (id) => id && ui.markdown.querySelector(`[id="${CSS.escape(id)}"]`);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch {
+    decoded = '';
+  }
+  return find(fragment) || find(decoded) || null;
+}
+
 ui.markdown.addEventListener('click', (event) => {
   const reviewId = reviewFromEvent(event);
   if (reviewId) {
@@ -4119,14 +4133,7 @@ ui.markdown.addEventListener('click', (event) => {
   const href = anchor.getAttribute('href') || '';
   if (href.startsWith('#')) {
     // Same page: footnotes, and links to headings.
-    let id;
-    try {
-      id = decodeURIComponent(href.slice(1));
-    } catch {
-      return;
-    }
-    const target = id && ui.markdown.querySelector(`[id="${CSS.escape(id)}"]`);
-    target?.scrollIntoView({ block: 'start' });
+    markdownFragmentTarget(href.slice(1))?.scrollIntoView({ block: 'start' });
     return;
   }
   if (/^https?:/i.test(href)) {

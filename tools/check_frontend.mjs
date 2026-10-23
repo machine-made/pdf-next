@@ -1676,6 +1676,22 @@ assert.match(
   /fn open_link\(url: String\)[\s\S]*?starts_with\("http:\/\/"\)[\s\S]*?starts_with\("https:\/\/"\);[\s\S]*?return Err/,
   'open_link must refuse every scheme but http and https.',
 );
+// A same-page link finds an equation whose id keeps the label's
+// percent-encoding, and a heading whose id does not.
+{
+  const ids = ['md-math:eq%20a', 'md-math:a%3Cb', 'md-results 2'];
+  const ui = { markdown: { querySelector: (selector) => {
+    const id = /^\[id="(.*)"\]$/.exec(selector)?.[1].replace(/\\(.)/g, '$1');
+    return ids.includes(id) ? { id } : null;
+  } } };
+  const CSS = { escape: (text) => text.replace(/["\\%<: ]/g, '\\$&') };
+  const target = appFunction('markdownFragmentTarget', "ui.markdown.addEventListener('click'", { ui, CSS });
+  assert.equal(target('md-math:eq%20a')?.id, 'md-math:eq%20a', 'An encoded equation label is found as written.');
+  assert.equal(target('md-math:a%3Cb')?.id, 'md-math:a%3Cb', 'An encoded equation label is found as written.');
+  assert.equal(target('md-results%202')?.id, 'md-results 2', 'An encoded link finds a plain id.');
+  assert.equal(target('md-math:%E0%A4%A'), null, 'A malformed fragment finds nothing and does not throw.');
+  assert.equal(target(''), null);
+}
 assert.match(app, /const target = siblingPath\(href\);\s*if \(target\) \{\s*void openPath\(target\);/, 'Relative markdown links open as tabs.');
 
 // Smoke mode. Nothing here runs for a reader; it exists so a build server can

@@ -930,12 +930,16 @@ const MATH_MIN_CHARGE: usize = 256;
 // again, so a few KiB of source can expand to hundreds of MB before the output
 // budget is checked. The converter's own limit is 1000 expansions, which still
 // allows about 1.6 GB and two seconds from 12 KiB of source (measured on
-// math-core 0.9.0). These two limits keep the work near the output budget.
+// math-core 0.9.0). These two limits and the definition rules in
+// `math_definitions_are_bounded` keep the work near the output budget.
 const MATH_MAX_EXPANSIONS: u32 = 100;
 const MATH_PARAMETER_LIMIT: usize = 32;
 // Address space reserved for one conversion's recursion; pages are used only
-// as deep as an equation nests.
-const MATH_STACK_BYTES: usize = 512 * 1024 * 1024;
+// as deep as an equation nests. The deepest equation the limits allow (16 KiB
+// of nested braces plus 100 expansions of a 512-byte body of braces) needed
+// 51 MiB in a release build; this is five times that. A debug build needs
+// about 18 times as much, so there the deepest of these overflow.
+const MATH_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 struct MathBudget {
     source: usize,
@@ -976,6 +980,174 @@ fn math_source(tex: &str) -> String {
     fallback
 }
 
+// The commands that define a macro which the definition rules below can read.
+const MATH_DEFINERS: [&str; 4] = ["newcommand", "renewcommand", "providecommand", "def"];
+// Other ways to define or alias a command. An equation with one of these is
+// shown as source: their expansion is not bounded by the rules below.
+const MATH_REFUSED_DEFINERS: [&str; 9] = [
+    "edef",
+    "gdef",
+    "xdef",
+    "let",
+    "futurelet",
+    "global",
+    "newenvironment",
+    "renewenvironment",
+    "DeclareMathOperator",
+];
+const MATH_BODY_LIMIT: usize = 512;
+
+/// TeX source split into commands and single characters the way the
+/// converter's lexer splits it: a command is a run of ASCII letters with an
+/// optional `*`, or one other character, and a `%` hides the rest of its line.
+#[derive(Clone)]
+struct TexTokens<'a> {
+    rest: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum TexToken<'a> {
+    Command(&'a str),
+    Char(char),
+}
+
+impl<'a> Iterator for TexTokens<'a> {
+    type Item = TexToken<'a>;
+
+    fn next(&mut self) -> Option<TexToken<'a>> {
+        loop {
+            let mut chars = self.rest.chars();
+            let first = chars.next()?;
+            if first == '%' {
+                let line_end = self.rest.find('\n').map_or(self.rest.len(), |at| at + 1);
+                self.rest =
+                    self.rest[line_end..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+                continue;
+            }
+            if first != '\\' {
+                self.rest = chars.as_str();
+                return Some(TexToken::Char(first));
+            }
+            let after = &self.rest[1..];
+            let mut end = after
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(after.len());
+            if after[end..].starts_with('*') {
+                end += 1;
+            }
+            if end == 0 {
+                end = after.chars().next().map_or(0, char::len_utf8);
+            }
+            let (name, rest) = after.split_at(end);
+            self.rest = rest;
+            return Some(TexToken::Command(name));
+        }
+    }
+}
+
+impl<'a> TexTokens<'a> {
+    /// The next token that is not white space.
+    fn next_solid(&mut self) -> Option<TexToken<'a>> {
+        self.find(|token| !matches!(token, TexToken::Char(c) if c.is_ascii_whitespace()))
+    }
+
+    fn peek_solid(&self) -> Option<TexToken<'a>> {
+        self.clone().next_solid()
+    }
+}
+
+fn is_math_definer(name: &str) -> bool {
+    let base = name.trim_end_matches('*');
+    MATH_DEFINERS.contains(&base) || MATH_REFUSED_DEFINERS.contains(&base)
+}
+
+/// Whether every macro definition in an equation keeps its expansion small.
+/// The converter copies a macro argument as often as the body names it and
+/// counts only expansions, so one `\newcommand{\a}[1]{\a{#1#1}}` doubles its
+/// argument each time. Here a body may name each parameter once and hold at
+/// most `MATH_BODY_LIMIT` bytes, so each expansion adds at most that much.
+fn math_definitions_are_bounded(tex: &str) -> bool {
+    let mut tokens = TexTokens { rest: tex };
+    while let Some(token) = tokens.next() {
+        let TexToken::Command(name) = token else {
+            continue;
+        };
+        if !is_math_definer(name) {
+            continue;
+        }
+        if !MATH_DEFINERS.contains(&name) || !math_definition_is_bounded(&mut tokens, name == "def")
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reads one definition after its command: `{\name}` or `\name`, then `[n]`
+/// for the LaTeX forms or `#1#2…` for `\def`, then a braced body. The
+/// converter has no default argument, so `[default]` is refused here.
+fn math_definition_is_bounded(tokens: &mut TexTokens, plain_def: bool) -> bool {
+    let braced = !plain_def && tokens.peek_solid() == Some(TexToken::Char('{'));
+    if braced {
+        tokens.next_solid();
+    }
+    if !matches!(tokens.next_solid(), Some(TexToken::Command(_))) {
+        return false;
+    }
+    if braced && tokens.next_solid() != Some(TexToken::Char('}')) {
+        return false;
+    }
+    let mut parameters = 0;
+    if plain_def {
+        while tokens.peek_solid() == Some(TexToken::Char('#')) {
+            tokens.next_solid();
+            parameters += 1;
+            if tokens.next() != char::from_digit(parameters, 10).map(TexToken::Char) {
+                return false;
+            }
+        }
+    } else if tokens.peek_solid() == Some(TexToken::Char('[')) {
+        tokens.next_solid();
+        let Some(TexToken::Char(digit @ '1'..='9')) = tokens.next_solid() else {
+            return false;
+        };
+        parameters = digit.to_digit(10).unwrap_or(0);
+        if tokens.next_solid() != Some(TexToken::Char(']')) {
+            return false;
+        }
+    }
+    if tokens.next_solid() != Some(TexToken::Char('{')) {
+        return false;
+    }
+    let start = tokens.rest.len();
+    let mut depth = 0usize;
+    let mut used = 0u16;
+    loop {
+        let before = tokens.rest.len();
+        match tokens.next() {
+            None => return false,
+            Some(TexToken::Char('{')) => depth += 1,
+            Some(TexToken::Char('}')) if depth == 0 => return start - before <= MATH_BODY_LIMIT,
+            Some(TexToken::Char('}')) => depth -= 1,
+            Some(TexToken::Char('#')) => {
+                let Some(TexToken::Char(digit)) = tokens.next() else {
+                    return false;
+                };
+                let bit = match digit.to_digit(10) {
+                    Some(n @ 1..) if n <= parameters => 1u16 << n,
+                    _ => return false,
+                };
+                if used & bit != 0 {
+                    return false;
+                }
+                used |= bit;
+            }
+            Some(TexToken::Command(name)) if is_math_definer(name) => return false,
+            Some(_) => {}
+        }
+    }
+}
+
 /// One TeX equation as MathML, for the sanitizer to read like any other
 /// markup. Nothing here is trusted on its own: the result is cleaned with the
 /// rest of the document against the MathML allowlist below. A macro that
@@ -994,7 +1166,9 @@ fn render_math(
         return math_source(tex);
     }
     budget.source -= charge;
-    if tex.bytes().filter(|&byte| byte == b'#').count() > MATH_PARAMETER_LIMIT {
+    if tex.bytes().filter(|&byte| byte == b'#').count() > MATH_PARAMETER_LIMIT
+        || !math_definitions_are_bounded(tex)
+    {
         return math_source(tex);
     }
 
@@ -1009,7 +1183,8 @@ fn render_math(
     };
     // The converter recurses once per nesting level, and a 16 KiB equation can
     // nest thousands deep: more than a worker thread's stack. It converts on a
-    // thread of its own with room for that. A panic there also ends as source.
+    // thread of its own with room for that. A thread that cannot start, or (in
+    // a build that unwinds) a panic there, ends as source for this equation only.
     let converted = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(MATH_STACK_BYTES)
@@ -5327,8 +5502,7 @@ mod tests {
             assert!(html.contains(&super::math_source(&tex)), "{html}");
             assert!(!html.contains("<math"), "{html}");
         }
-        // One long definition used again and again writes more markup than the
-        // document may hold.
+        // A definition longer than a body may be is refused before any work.
         let tex = format!(
             r"\newcommand{{\blob}}{{{}}}{}",
             "x".repeat(12000),
@@ -5344,7 +5518,27 @@ mod tests {
             start.elapsed()
         );
         assert_eq!(shown, super::math_source(&tex));
-        assert_eq!(budget.output, 0);
+        assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+        // The longest allowed body, used again and again in equation after
+        // equation, writes more markup than the document may hold.
+        let mut converter = super::math_converter();
+        let mut budget = super::MathBudget::default();
+        let define = format!(
+            r"\newcommand{{\blob}}{{{}}}",
+            "x".repeat(super::MATH_BODY_LIMIT)
+        );
+        assert!(super::render_math(&mut converter, &define, true, &mut budget).contains("<math"));
+        let uses = r"\blob".repeat(100);
+        assert!(super::render_math(&mut converter, &uses, true, &mut budget).contains("<math"));
+        let mut equations = 1;
+        while budget.output > 0 {
+            let shown = super::render_math(&mut converter, &uses, true, &mut budget);
+            equations += 1;
+            assert!(equations < 100, "the output budget never ran out");
+            if budget.output == 0 {
+                assert_eq!(shown, super::math_source(&uses));
+            }
+        }
 
         // Copying an argument thousands of times is refused before conversion;
         // a macro with a parameter or two is ordinary.
@@ -5458,8 +5652,142 @@ mod tests {
                 let html = render_html(&format!("{delimiter}{tex}{delimiter}"));
                 assert!(!html.contains("<img"), "{tex}: {html}");
                 assert!(!html.contains("onerror=x>"), "{tex}: {html}");
+                assert!(!html.contains("<script"), "{tex}: {html}");
+                assert!(!html.contains("javascript:"), "{tex}: {html}");
+                assert!(
+                    html_names(&html).iter().all(|(_, name, _)| {
+                        let event = name.strip_prefix("on").unwrap_or("");
+                        event.is_empty() || !event.bytes().all(|b| b.is_ascii_lowercase())
+                    }),
+                    "{tex}: {html}"
+                );
+                assert!(
+                    html.match_indices("href=")
+                        .all(|(at, _)| html[at..].starts_with("href=\"#md-math:")),
+                    "{tex}: {html}"
+                );
             }
         }
+    }
+
+    #[test]
+    fn definitions_are_read_before_conversion() {
+        let body = |len: usize| format!(r"\newcommand{{\a}}{{{}}}", "x".repeat(len));
+        let allowed = [
+            r"\newcommand{\vect}[1]{\mathbf{#1}} \vect{u}".to_string(),
+            r"\renewcommand\frac[2]{#2/#1}".into(),
+            r"\providecommand{\x}{y}".into(),
+            r"\def\swap#1#2{#2#1}".into(),
+            r"\def\x {y}".into(),
+            r"\newcommand{\a}[2]{\frac{#1}{#2}} \newcommand{\b}{\a{1}{2}}".into(),
+            r"\\def \text{\%def} x".into(),
+            "% \\let\\a=b\nx".into(),
+            body(super::MATH_BODY_LIMIT),
+        ];
+        for tex in &allowed {
+            assert!(super::math_definitions_are_bounded(tex), "{tex}");
+        }
+        let refused = [
+            r"\newcommand{\a}[1]{\a{#1#1}}\a{x}".to_string(),
+            r"\def\dup#1{#1#1}".into(),
+            r"\def\a#1{##1}".into(),
+            r"\newcommand{\a}[1]{#2}".into(),
+            r"\newcommand{\a}[1]{#0}".into(),
+            r"\newcommand{\a}[0]{x}".into(),
+            r"\def\a#2{#2}".into(),
+            r"\def\a#1#1{#1}".into(),
+            r"\let\a=b".into(),
+            r"\gdef\a{b}".into(),
+            r"\edef\a{b}".into(),
+            r"\xdef\a{b}".into(),
+            r"\global\def\a{b}".into(),
+            r"\futurelet\a\b\c".into(),
+            r"\newenvironment{a}{b}{c}".into(),
+            r"\renewenvironment{a}{b}{c}".into(),
+            r"\DeclareMathOperator{\tr}{tr}".into(),
+            r"\newcommand*{\a}{b}".into(),
+            r"\newcommand\a b".into(),
+            r"\newcommand{\a}[1][x]{#1}".into(),
+            r"\newcommand{\a}{\def\b{c}}".into(),
+            r"\newcommand{\a}{x".into(),
+            r"\newcommand{a}{x}".into(),
+            r"\newcommand{\a}[1]{\}#1#1}".into(),
+            // A comment hides the `}` that seems to close the body.
+            "\\newcommand{\\a}[1]{%}\n#1#1}".into(),
+            body(super::MATH_BODY_LIMIT + 1),
+        ];
+        for tex in &refused {
+            assert!(!super::math_definitions_are_bounded(tex), "{tex}");
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(!html.contains("<math"), "{html}");
+        }
+    }
+
+    #[test]
+    fn hostile_definitions_end_quickly() {
+        let letter = |i: u8| (b'a' + i) as char;
+        let chain = (0..20)
+            .map(|i| {
+                format!(
+                    r"\def\c{}{{\c{}\c{}}}",
+                    letter(i),
+                    letter(i + 1),
+                    letter(i + 1)
+                )
+            })
+            .collect::<String>()
+            + r"\ca";
+        // A body of 256 `{` around `#1`, then nested 100 deep in the next equation.
+        let nest = format!(
+            "$$\\newcommand{{\\nest}}[1]{{{}#1{}}}$$\n\n$${}x{}$$",
+            "{".repeat(256),
+            "}".repeat(256),
+            r"\nest{".repeat(100),
+            "}".repeat(100)
+        );
+        for markdown in [
+            r"$$\newcommand{\a}[1]{\a{#1#1}}\a{x}$$".to_string(),
+            format!("$${chain}$$"),
+            nest,
+        ] {
+            let start = std::time::Instant::now();
+            let html = render_html(&markdown);
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "{:?}",
+                start.elapsed()
+            );
+            // The equation with the definition is shown as its source.
+            let source = html.find("<code>").expect("source shown");
+            assert!(
+                html.find("<math").is_none_or(|math| math > source),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn equation_links_match_their_target_after_sanitizing() {
+        for label in ["eq a", "a<b", "a?b"] {
+            let html = render_html(&format!(
+                "$$\\begin{{equation}} x \\label{{{label}}} \\end{{equation}}$$\n\nsee $\\eqref{{{label}}}$\n"
+            ));
+            let names = html_names(&html);
+            let value = |attribute: &str, prefix: &str| {
+                names
+                    .iter()
+                    .find(|(_, name, value)| name == attribute && value.starts_with(prefix))
+                    .map(|(_, _, value)| value.clone())
+                    .unwrap_or_else(|| panic!("{label}: {html}"))
+            };
+            let id = value("id", "md-math:");
+            let href = value("href", "#md-math:");
+            assert_eq!(href[1..], id, "{label}: {html}");
+        }
+        // The converter takes only ASCII labels; another label leaves the
+        // equation as source rather than a link to nowhere.
+        let html = render_html("$$\\begin{equation} x \\label{é} \\end{equation}$$");
+        assert!(!html.contains("<math"), "{html}");
     }
 
     #[test]
