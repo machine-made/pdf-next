@@ -127,6 +127,12 @@ jobs:
         if: matrix.platform != 'ubuntu-latest'
         run: node tools/smoke.mjs
 
+      # Runs while the release is still a draft, so a flagged build is never shown.
+      - name: Scan the Windows bundles with Defender
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./tools/defender-scan.ps1
+
       - name: Open a document in the bundle that was just built
         if: matrix.platform == 'ubuntu-latest'
         run: xvfb-run -a node tools/smoke.mjs
