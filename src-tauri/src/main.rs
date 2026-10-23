@@ -902,6 +902,10 @@ struct MarkdownDoc {
 /// elements, and fragment links are rewritten to match; the frontend scrolls
 /// to them rather than letting them navigate.
 const MARKDOWN_ID_PREFIX: &str = "md-";
+const DRIVE_LETTERS: [&str; 26] = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z",
+];
 
 /// ammonia asks this about every relative URL. A fragment is pointed at the
 /// prefixed id it will find in the cleaned document; any other relative path
@@ -1664,19 +1668,6 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
         let event_to_push = match &event {
             Event::Html(h) if hides_anchor(h) => Event::Text(h.clone()),
             Event::InlineHtml(h) if hides_anchor(h) => Event::Text(h.clone()),
-            // ammonia drops a `c:` source as a URL scheme before `judge_image`
-            // sees it, so a Windows drive path travels with its colon encoded.
-            Event::Start(Tag::Image {
-                link_type,
-                dest_url,
-                title,
-                id,
-            }) if cfg!(windows) && drive_path(dest_url) => Event::Start(Tag::Image {
-                link_type: *link_type,
-                dest_url: dest_url.replacen(':', "%3A", 1).into(),
-                title: title.clone(),
-                id: id.clone(),
-            }),
             Event::InlineMath(tex) => {
                 Event::Html(render_math(&mut converter, tex, false, &mut math_budget).into())
             }
@@ -1701,6 +1692,12 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     builder.add_generic_attributes(["id"]);
     builder.id_prefix(Some(MARKDOWN_ID_PREFIX));
     builder.url_relative(ammonia::UrlRelative::Custom(Box::new(keep_local_links)));
+    // A Windows drive path (`C:/figs/a.png`) parses as a URL with scheme `c`,
+    // which ammonia drops before `judge_image` sees it, in Markdown images and
+    // raw `<img>` alike. A link to such a scheme is not followed on click.
+    if cfg!(windows) {
+        builder.add_url_schemes(DRIVE_LETTERS);
+    }
     // Task-list checkboxes; forms are inert anyway (form-action 'none').
     builder.add_tags(["input"]);
     builder.add_tag_attributes("input", ["type", "checked", "disabled"]);
@@ -4645,7 +4642,9 @@ mod tests {
         let source = format!(
             "![one](figs/a.png \"t\")\n\n![two](../pics/ok.png)\n\n![three]({})\n\n\
              ![four](figs/my%20pic.PNG)\n\n<img src=figs/a.png alt=raw width=40 height=10%>",
-            absolute.display()
+            // Markdown reads `\.` in a Windows path such as `Temp\.tmpX` as
+            // an escaped dot, so the path is written with forward slashes.
+            absolute.display().to_string().replace('\\', "/")
         );
         let (html, shown) = shown_in(&source, &doc);
         assert_eq!(html.matches("<img data-doc=").count(), 5, "{html}");
