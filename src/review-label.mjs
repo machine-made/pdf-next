@@ -23,6 +23,17 @@ export function findNormalizedSpan(joined, needle) {
   return { start, end: start + want.length };
 }
 
+/// Every non-overlapping occurrence of `want` in `hay`, which the caller has
+/// already normalized, so that offsets index the caller's own text.
+export function findAllSpans(hay, want) {
+  const spans = [];
+  const needle = normalizeReviewText(want);
+  for (let at = needle ? hay.indexOf(needle) : -1; at >= 0; at = hay.indexOf(needle, at + needle.length)) {
+    spans.push({ start: at, end: at + needle.length });
+  }
+  return spans;
+}
+
 export function reviewLabel(review, reviews) {
   return String(review?.id || 'review');
 }

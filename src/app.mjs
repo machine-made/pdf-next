@@ -1,7 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findNormalizedSpan, normalizeReviewText, resolveReviewAnchor, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, resolveReviewAnchor, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import {
@@ -161,6 +161,8 @@ const state = {
   views: new Map(),
   // Blocks extracted from rendered markdown, per path: { path, texts: string[] }
   markdownBlocks: null,
+  // Find hits in the rendered article: { hits: Element[][], index }, or null.
+  mdFind: null,
   pendingNote: null,
   pendingNotePdf: null,
   reviews: [],
@@ -752,8 +754,12 @@ async function showMarkdown(file, view, generation, fit) {
     texts: newBlocks.map((b) => b.text),
   };
   // The new DOM has no marks, and the reviews that follow may be unchanged.
-  if (state.reviewDocumentPath === file.path) {
+  const reviewed = state.reviewDocumentPath === file.path;
+  if (reviewed) {
     paintMarkdownMarks();
+  }
+  if (state.mdFind && !reviewed) {
+    buildMarkdownFind(true);
   }
   // Measured with the content laid out; used by undock as well as the fit.
   state.natural = {
@@ -1404,17 +1410,7 @@ async function applyTarget(target) {
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
     setRaw(false, { persist: false });
-    for (const mark of ui.markdown.querySelectorAll('mark.aim')) {
-      const parent = mark.parentNode;
-      if (!parent) {
-        continue;
-      }
-      while (mark.firstChild) {
-        parent.insertBefore(mark.firstChild, mark);
-      }
-      mark.remove();
-      parent.normalize();
-    }
+    unwrapMarks(ui.markdown, 'mark.aim');
     let from = null;
     if (target.line) {
       const anchors = ui.markdown.querySelectorAll('[data-line]');
@@ -1495,6 +1491,21 @@ async function applyTarget(target) {
     runFind();
   }
   updatePageControls();
+}
+
+/// Replace each element matching `selector` under `root` by its children.
+function unwrapMarks(root, selector) {
+  for (const mark of root.querySelectorAll(selector)) {
+    const parent = mark.parentNode;
+    if (!parent) {
+      continue;
+    }
+    while (mark.firstChild) {
+      parent.insertBefore(mark.firstChild, mark);
+    }
+    mark.remove();
+    parent.normalize();
+  }
 }
 
 /// A target is an instruction, not a property of the tab: it fires once, and
@@ -1894,8 +1905,11 @@ function cycleMode(clear) {
 // ── Find ──────────────────────────────────────────────────────────────────
 
 function openFind() {
-  if (state.file?.kind !== 'pdf') {
+  if (state.file?.kind !== 'pdf' && state.file?.kind !== 'markdown') {
     return;
+  }
+  if (state.file.kind === 'markdown' && state.markdownRaw) {
+    setRaw(false, { persist: false });
   }
   ui.find.hidden = false;
   ui.findInput.focus();
@@ -1905,11 +1919,77 @@ function openFind() {
 function closeFind() {
   ui.find.hidden = true;
   ui.findCount.textContent = '';
+  clearMarkdownFind();
   eventBus.dispatch('findbarclose', { source: null });
   ui.container.focus();
 }
 
+/// Find in the rendered article. Each hit is one `mark.aim.find`, or several
+/// when it crosses inline markup. `state.mdFind` holds them in reading order.
+function buildMarkdownFind(keepIndex = false) {
+  const index = keepIndex ? (state.mdFind?.index ?? 0) : 0;
+  unwrapMarks(ui.markdown, 'mark.aim.find');
+  const want = normalizeReviewText(ui.findInput.value);
+  const hits = [];
+  if (want) {
+    const { joined, parts } = collectTextParts(ui.markdown);
+    for (const span of findAllSpans(joined, want).reverse()) {
+      const marks = [];
+      wrapSpanParts(ui.markdown, parts, span, () => {
+        const mark = document.createElement('mark');
+        mark.className = 'aim find';
+        marks.push(mark);
+        return mark;
+      });
+      hits.unshift(marks);
+    }
+  }
+  state.mdFind = { hits, index: Math.min(index, Math.max(0, hits.length - 1)) };
+  showMarkdownFind(false);
+}
+
+function showMarkdownFind(scroll) {
+  const { hits, index } = state.mdFind;
+  ui.findCount.textContent = hits.length
+    ? `${index + 1} of ${hits.length}`
+    : (ui.findInput.value.trim() ? 'No match' : '');
+  hits.forEach((marks, at) => marks.forEach((mark) => mark.classList.toggle('current', at === index)));
+  if (scroll) {
+    hits[index]?.[0].scrollIntoView({ block: 'center' });
+  }
+}
+
+/// Move to the next (+1) or previous (-1) hit, wrapping at the ends. A step
+/// of 0 shows the current one.
+function stepMarkdownFind(step) {
+  if (!state.mdFind?.hits[0]?.[0].isConnected) {
+    buildMarkdownFind();
+    step = 0;
+  }
+  const { hits } = state.mdFind;
+  if (hits.length) {
+    state.mdFind.index = (state.mdFind.index + step + hits.length) % hits.length;
+  }
+  showMarkdownFind(true);
+}
+
+function clearMarkdownFind() {
+  if (state.mdFind) {
+    unwrapMarks(ui.markdown, 'mark.aim.find');
+    state.mdFind = null;
+  }
+}
+
 function runFind(type = '', again = false, backwards = false) {
+  if (state.file?.kind === 'markdown') {
+    if (again) {
+      stepMarkdownFind(backwards ? -1 : 1);
+    } else {
+      buildMarkdownFind();
+      showMarkdownFind(true);
+    }
+    return;
+  }
   eventBus.dispatch('find', {
     source: null,
     type,
@@ -3313,6 +3393,20 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
   if (!found) {
     return null;
   }
+  return wrapSpanParts(root, parts, found, () => {
+    const wrap = document.createElement(asMark ? 'mark' : 'review-q');
+    if (asMark) {
+      wrap.className = 'review';
+    }
+    applyReviewTint(wrap, id);
+    return wrap;
+  });
+}
+
+/// Wrap the text nodes under `found` in elements from `makeWrap`, splitting
+/// the first and last node at the span's edges. Returns the first element.
+/// Wrapping later spans first keeps the offsets of earlier ones valid.
+function wrapSpanParts(root, parts, found, makeWrap) {
   let first = null;
   for (const part of parts) {
     if (part.end <= found.start || part.start >= found.end) {
@@ -3333,11 +3427,7 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
       node.splitText(endAt);
     }
     const mid = startAt > 0 ? node.splitText(startAt) : node;
-    const wrap = document.createElement(asMark ? 'mark' : 'review-q');
-    if (asMark) {
-      wrap.className = 'review';
-    }
-    applyReviewTint(wrap, id);
+    const wrap = makeWrap();
     mid.parentNode.insertBefore(wrap, mid);
     wrap.appendChild(mid);
     if (!first) {
@@ -3356,6 +3446,9 @@ function wrapQuoteIn(root, quote, id) {
 }
 
 function paintMarkdownMarks() {
+  // A find mark inside a word would split the text a review quote is matched in.
+  const finding = state.mdFind;
+  unwrapMarks(ui.markdown, 'mark.aim.find');
   unwrapReviewMarks(ui.markdown);
   for (const review of state.reviews) {
     const start = review.at?.line;
@@ -3396,6 +3489,9 @@ function paintMarkdownMarks() {
     if (badgeHost) {
       placeMarkdownBadge(badgeHost, review);
     }
+  }
+  if (finding) {
+    buildMarkdownFind(true);
   }
 }
 
