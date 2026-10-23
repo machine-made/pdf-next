@@ -270,6 +270,37 @@ function appFunction(name, next, context, source = app) {
   assert.equal(stage.scrollLeft, 5);
 }
 
+// A reload replaces the article's DOM. Identical reviews must not leave it unmarked.
+{
+  const reviews = [{ id: 'r1', kind: 'markdown', at: { line: 1 }, quote: 'new', action: 'improve', status: 'open', color: 1 }];
+  let painted = false;
+  const article = { set innerHTML(value) { painted = false; } };
+  const state = {
+    generation: 1, file: { path: 'notes.md', kind: 'markdown' }, reviews: [],
+    reviewDocumentPath: null, reviewRevision: 0, markdownBlocks: null,
+  };
+  const reviewPaintSignature = appFunction('reviewPaintSignature', 'function reviewRowById', {});
+  const context = {
+    state, ui: { markdown: article, markdownRaw: {}, markdownStage: { scrollHeight: 1000 } },
+    releaseDocument: async () => {},
+    invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
+    embedMarkdownImages() {}, setRaw() {}, setMarkdownScale() {},
+    markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
+    MARKDOWN_WINDOW_WIDTH: 780,
+    reviewPaintSignature, reviewIdNum: () => 1, renderReviewList() {},
+    paintMarkdownMarks() { painted = true; },
+    loadReviews() {},
+  };
+  context.paintReviewMarks = appFunction('paintReviewMarks', 'function reviewFromEvent', context);
+  const show = appFunction('showMarkdown', '/// `_review.json`', context);
+  const apply = appFunction('applyReviewStore', 'async function loadReviews(', context);
+  for (const round of ['first open', 'reload with identical reviews']) {
+    await show(state.file, { top: 0, left: 0, scale: 1 }, 1, false);
+    apply({ revision: 1, nextId: 2, reviews: structuredClone(reviews) });
+    assert.equal(painted, true, `Marks must be painted after ${round}.`);
+  }
+}
+
 {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
