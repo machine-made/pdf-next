@@ -5256,7 +5256,7 @@ async function smokeMarkdownPages() {
   const inRow = () => [...boxes()].filter((box) => box.offsetTop === boxes()[0].offsetTop).length;
   // A narrow window shows one per row; wrapping the window to the pages widens it.
   await trimWindowToContent({ recenter: true });
-  await settles(() => inRow() === 2, 3_000);
+  if (!await settles(() => inRow() === 2, 3_000)) throw new Error(`two page view: ${inRow()} per row`);
   const row = inRow();
   setPageView('continuous', { persist: false });
   if (!await settles(() => boxes().length === 0 && ui.markdown.textContent === whole)) throw new Error('continuous view did not restore the article');
