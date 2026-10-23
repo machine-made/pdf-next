@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fs, io};
 
+pub(crate) const REVIEW_LIMIT: usize = 4_000_000;
+
 #[derive(Clone, Default)]
 pub(crate) struct AllowedDocuments(HashMap<PathBuf, Option<ReviewPath>>);
 
@@ -119,8 +121,28 @@ impl ReviewPath {
         self.dir.is_file(self.name())
     }
 
-    pub(crate) fn read_to_string(&self) -> io::Result<String> {
-        self.dir.read_to_string(self.name())
+    pub(crate) fn read_review(&self) -> Result<String, String> {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_fs_ext::OpenOptionsSyncExt;
+            // A FIFO must not block even before we can inspect its handle.
+            options.nonblock(true);
+        }
+        let file = self
+            .open_with(&options)
+            .map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("review sidecar is not a regular file".into());
+        }
+        if metadata.len() > REVIEW_LIMIT as u64 {
+            return Err("review sidecar is too large (max 4 MB)".into());
+        }
+        read_review_text(file)
     }
 
     #[cfg(not(windows))]
@@ -173,6 +195,21 @@ impl ReviewPath {
         let temp = temp.into_temp_path();
         fs::rename(&temp, self.physical_parent.join(self.name()))
     }
+}
+
+fn read_review_text(reader: impl io::Read) -> Result<String, String> {
+    use std::io::Read;
+
+    // Bound the actual read too: a regular file can grow after metadata().
+    let mut bytes = Vec::new();
+    reader
+        .take(REVIEW_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > REVIEW_LIMIT {
+        return Err("review sidecar is too large (max 4 MB)".into());
+    }
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
 // The original pathname is used only for names, kinds, and display. Filesystem
@@ -231,5 +268,48 @@ impl RelativeTempFile<'_> {
 impl Drop for RelativeTempFile<'_> {
     fn drop(&mut self) {
         let _ = self.dir.remove_file(self.name());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_review_text, ReviewPath, REVIEW_LIMIT};
+
+    #[test]
+    fn sidecar_reader_enforces_the_byte_limit_and_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paper_review.json");
+        let bound = ReviewPath::new(path.clone()).unwrap();
+        let mut bytes = vec![b' '; REVIEW_LIMIT];
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(bound.read_review().unwrap().len(), REVIEW_LIMIT);
+        bytes.push(b' ');
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(bound.read_review().unwrap_err().contains("too large"));
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(bound.read_review().is_err());
+    }
+
+    #[test]
+    fn sidecar_reader_bounds_io_even_if_the_source_grows() {
+        let mut source = std::io::Cursor::new(vec![b' '; REVIEW_LIMIT + 2]);
+        assert!(read_review_text(&mut source)
+            .unwrap_err()
+            .contains("too large"));
+        assert_eq!(source.position(), REVIEW_LIMIT as u64 + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_reader_rejects_devices_and_device_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paper_review.json");
+        std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
+        assert!(ReviewPath::new(path).unwrap().read_review().is_err());
+        assert!(ReviewPath::new("/dev/zero".into())
+            .unwrap()
+            .read_review()
+            .unwrap_err()
+            .contains("not a regular file"));
     }
 }

@@ -18,7 +18,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime};
 
-use review_directory::{AllowedDocuments, ReviewPath};
+use review_directory::{AllowedDocuments, ReviewPath, REVIEW_LIMIT};
 use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, DragDropEvent, Emitter, Manager, State, Theme, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
@@ -1587,10 +1587,10 @@ fn document_watch_due(poll_seconds: u64, since_last: Duration) -> bool {
 }
 
 /// A sidecar the editor is still writing is left for the next tick, the same
-/// way a half-written PDF is. Empty text is a valid store; truncated JSON is
-/// not.
+/// way a half-written PDF is. Empty text and truncated JSON are not ready.
 fn sidecar_ready(path: &Path) -> bool {
-    std::fs::read_to_string(path)
+    ReviewPath::new(path.to_path_buf())
+        .and_then(|path| path.read_review())
         .ok()
         .is_some_and(|text| parse_store(&text).is_ok())
 }
@@ -2104,7 +2104,7 @@ fn drop_redundant_end(review: &mut Review) {
 }
 
 fn parse_store(text: &str) -> Result<ReviewFile, String> {
-    if text.len() > 4_000_000 {
+    if text.len() > REVIEW_LIMIT {
         return Err("review sidecar is too large (max 4 MB)".into());
     }
     let trimmed = text.trim_start_matches('\u{feff}').trim();
@@ -2418,9 +2418,7 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
         validate_review(review)?;
     }
     let prior_valid = if sidecar.exists() {
-        let previous = sidecar
-            .read_to_string()
-            .map_err(|error| error.to_string())?;
+        let previous = sidecar.read_review()?;
         parse_store(&previous)?;
         Some(previous.into_bytes())
     } else {
@@ -2484,11 +2482,7 @@ fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String>
     let sidecar = doc_path.sidecar();
     let migrated = sidecar.exists();
     let mut store = if migrated {
-        parse_store(
-            &sidecar
-                .read_to_string()
-                .map_err(|error| error.to_string())?,
-        )?
+        parse_store(&sidecar.read_review()?)?
     } else {
         empty_store()
     };
@@ -2508,7 +2502,7 @@ fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String>
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        let raw = legacy.read_to_string().map_err(|error| error.to_string())?;
+        let raw = legacy.read_review()?;
         let old = parse_store(&raw)?;
         let old_format =
             serde_json::from_str::<serde_json::Value>(raw.trim_start_matches('\u{feff}'))
@@ -4971,6 +4965,78 @@ mod tests {
         assert!(parse_store("{\"format\":2,\"reviews\":[").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sidecar_reads_reject_oversized_files_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("collab.md");
+        std::fs::write(&doc, "# hi\n").unwrap();
+        let sidecar = review_sidecar(&doc);
+        let oversized_len = super::REVIEW_LIMIT as u64 + 1;
+        std::fs::File::create(&sidecar)
+            .unwrap()
+            .set_len(oversized_len)
+            .unwrap();
+        let allowed = admitted([std::fs::canonicalize(&doc).unwrap()]);
+        assert!(list_reviews(doc.to_str().unwrap(), &allowed)
+            .unwrap_err()
+            .contains("too large"));
+        assert!(!sidecar_ready(&sidecar));
+        assert!(save_store(&sidecar, &mut empty_store())
+            .unwrap_err()
+            .contains("too large"));
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().len(), oversized_len);
+        assert!(!sidecar.with_extension("json.bak").exists());
+
+        let legacy = dir.path().join(LEGACY_REVIEW_FILE);
+        std::fs::rename(&sidecar, &legacy).unwrap();
+        assert!(read_snapshot(&doc).unwrap_err().contains("too large"));
+        assert!(write_review(doc.to_str().unwrap(), markdown_review(), &allowed).is_err());
+        assert!(!sidecar.exists());
+        assert_eq!(std::fs::metadata(&legacy).unwrap().len(), oversized_len);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_reads_reject_links_directories_and_fifos_without_blocking() {
+        for kind in ["link", "directory", "fifo"] {
+            let dir = tempfile::tempdir().unwrap();
+            let doc = dir.path().join("collab.md");
+            std::fs::write(&doc, "# hi\n").unwrap();
+            let sidecar = review_sidecar(&doc);
+            match kind {
+                "link" => {
+                    std::fs::write(dir.path().join("target.json"), r#"{"reviews":[]}"#).unwrap();
+                    std::os::unix::fs::symlink("target.json", &sidecar).unwrap();
+                }
+                "directory" => std::fs::create_dir(&sidecar).unwrap(),
+                "fifo" => assert!(std::process::Command::new("mkfifo")
+                    .arg(&sidecar)
+                    .status()
+                    .unwrap()
+                    .success()),
+                _ => unreachable!(),
+            }
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                // Retain fixtures until the worker exits, even on a timeout.
+                let _dir = dir;
+                let allowed = admitted([doc.clone()]);
+                assert!(list_reviews(doc.to_str().unwrap(), &allowed).is_err());
+                assert!(!sidecar_ready(&sidecar));
+                assert!(save_store(&sidecar, &mut empty_store()).is_err());
+                assert!(!sidecar.with_extension("json.bak").exists());
+                std::fs::rename(&sidecar, doc.parent().unwrap().join(LEGACY_REVIEW_FILE)).unwrap();
+                assert!(read_snapshot(&doc).is_err());
+                assert!(write_review(doc.to_str().unwrap(), markdown_review(), &allowed).is_err());
+                assert!(!sidecar.exists());
+                send.send(()).unwrap();
+            });
+            receive
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or_else(|error| panic!("{kind} sidecar failed or blocked: {error}"));
+        }
     }
 
     #[test]
