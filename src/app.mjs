@@ -67,6 +67,7 @@ const ui = {
   mode: el('mode'),
   wrap: el('wrap'),
   raw: el('raw'),
+  mdFont: el('mdFont'),
   ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
@@ -667,6 +668,23 @@ function setRaw(on, { persist = true } = {}) {
   }
   try {
     localStorage.setItem('pdf-next.md-raw', on ? '1' : '');
+  } catch {
+    // Preference only.
+  }
+}
+
+/// The typeface of rendered markdown, one of the menu's values. The faces
+/// themselves live in style.css; an unknown saved value falls back to the first.
+function setMarkdownFont(font, { persist = true } = {}) {
+  const fonts = Array.from(ui.mdFont.options, (option) => option.value);
+  const chosen = fonts.includes(font) ? font : fonts[0];
+  ui.mdFont.value = chosen;
+  ui.markdown.dataset.font = chosen;
+  if (!persist) {
+    return;
+  }
+  try {
+    localStorage.setItem('pdf-next.md-font', chosen);
   } catch {
     // Preference only.
   }
@@ -3820,6 +3838,7 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
+ui.mdFont.addEventListener('change', () => setMarkdownFont(ui.mdFont.value));
 ui.ask.addEventListener('click', () => void askSelection());
 ui.note.addEventListener('click', () => void openNoteBox());
 ui.notes.addEventListener('click', () => toggleReviewPanel());
@@ -4413,6 +4432,11 @@ try {
   setRaw(localStorage.getItem('pdf-next.md-raw') === '1', { persist: false });
 } catch {
   setRaw(false, { persist: false });
+}
+try {
+  setMarkdownFont(localStorage.getItem('pdf-next.md-font'), { persist: false });
+} catch {
+  setMarkdownFont(null, { persist: false });
 }
 
 // Watching is on by default at one second; the control only exists to slow it
