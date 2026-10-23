@@ -1238,7 +1238,8 @@ body.mode-sepia #markdownStage {
 }
 
 #markdown {
-  font-family: "Latin Modern Roman", Georgia, "Times New Roman", serif;
+  --article-font: "Latin Modern Roman", Georgia, "Times New Roman", serif;
+  font-family: var(--article-font);
   font-size: 17px;
   line-height: 1.5;
   max-width: 38em;
@@ -1250,15 +1251,15 @@ body.mode-sepia #markdownStage {
 }
 
 #markdown[data-font="serif"] {
-  font-family: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --article-font: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
 }
 
 #markdown[data-font="sans"] {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --article-font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
 }
 
 #markdown[data-font="mono"] {
-  font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  --article-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
 }
 
 #markdown[data-size="14"] { font-size: 14px; }
@@ -1644,7 +1645,7 @@ body.pages-on #mdWidth {
 /* ── Markdown: equations, footnotes, task lists ──────────────────────── */
 /* The math font is New Computer Modern Math, patched by math-core's authors
    so accents centre and primes sit right in browsers. A system math font
-   stands in until it loads. Text inside an equation uses the body's text face. */
+   stands in until it loads. Text inside an equation uses the article's text face. */
 @font-face {
   font-family: "New Computer Modern Math";
   src: url('./vendor/math-core/NewCMMath-Book.woff2');
@@ -1657,7 +1658,7 @@ body.pages-on #mdWidth {
 }
 
 #markdown math mtext {
-  font-family: "Latin Modern Roman", serif;
+  font-family: var(--article-font);
 }
 
 /* `display: block` alone would turn MathML layout off; `block math` keeps it.
