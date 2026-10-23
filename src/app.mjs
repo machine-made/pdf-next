@@ -3470,8 +3470,9 @@ async function reattachReview(review) {
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
     if (digest) nextAnchor.documentRevision = digest;
-    // A Markdown selection can sit on other lines than the review did.
-    const patch = kind === 'pdf' ? { anchor: nextAnchor } : { anchor: nextAnchor, at: picked.at };
+    // A Markdown selection can sit on other lines than the review did. A
+    // selection with no source line keeps the review's lines.
+    const patch = kind === 'markdown' && picked.at?.line ? { anchor: nextAnchor, at: picked.at } : { anchor: nextAnchor };
     await patchReview(review, patch, `Review reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
