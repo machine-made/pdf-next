@@ -1465,6 +1465,7 @@ fn math_fences(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
 fn name_headings(events: &mut [OffsetEvent<'_>]) {
     use pulldown_cmark::{Event, Tag, TagEnd};
     let mut seen = std::collections::HashMap::<String, usize>::new();
+    let mut used = HashSet::new();
     for start in 0..events.len() {
         if !matches!(
             &events[start].0,
@@ -1488,11 +1489,15 @@ fn name_headings(events: &mut [OffsetEvent<'_>]) {
                 _ => {}
             }
         }
+        // `Foo`, `Foo`, `Foo-1` must not share `foo-1`, so every id given
+        // out is kept and the suffix grows until the id is free.
         let count = seen.entry(slug.clone()).or_insert(0);
-        if *count > 0 {
-            slug = format!("{slug}-{count}");
+        let mut id = slug.clone();
+        while !used.insert(id.clone()) {
+            *count += 1;
+            id = format!("{slug}-{count}");
         }
-        *count += 1;
+        slug = id;
         if let Event::Start(Tag::Heading { id, .. }) = &mut events[start].0 {
             *id = Some(slug.into());
         }
@@ -4582,6 +4587,14 @@ mod tests {
         assert!(html.contains(r#"<h2 id="md-results-1">"#), "{html}");
         assert!(html.contains(r#"id="md-wake-re--100""#), "{html}");
         assert!(html.contains(r##"href="#md-results-1""##), "{html}");
+    }
+
+    #[test]
+    fn heading_ids_never_repeat() {
+        let html = render_html("# Foo\n\n# Foo\n\n# Foo-1\n\n# Foo\n");
+        for id in ["md-foo", "md-foo-1", "md-foo-1-1", "md-foo-2"] {
+            assert_eq!(html.matches(&format!(r#"id="{id}""#)).count(), 1, "{html}");
+        }
     }
 
     #[test]
