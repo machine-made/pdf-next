@@ -5256,8 +5256,13 @@ async function smokeMarkdownPages() {
   const inRow = () => [...boxes()].filter((box) => box.offsetTop === boxes()[0].offsetTop).length;
   // A narrow window shows one per row; wrapping the window to the pages widens it.
   await trimWindowToContent({ recenter: true });
+  // A screen narrower than two A4 pages (CI runners are) needs zooming out, as a reader would.
+  const scale = state.markdownScale;
+  const room = ui.markdown.parentElement.clientWidth / (2 * a4 + 24 + 32);
+  if (!await settles(() => inRow() === 2, 1_000) && room < scale) setMarkdownScale(room);
   if (!await settles(() => inRow() === 2, 3_000)) throw new Error(`two page view: ${inRow()} per row`);
   const row = inRow();
+  setMarkdownScale(scale);
   setPageView('continuous', { persist: false });
   if (!await settles(() => boxes().length === 0 && ui.markdown.textContent === whole)) throw new Error('continuous view did not restore the article');
   setPageView('two', { persist: false });
