@@ -3611,6 +3611,7 @@ fn patch_review_record(
         "build",
         "color",
         "anchor",
+        "at",
     ];
     let changes = patch
         .as_object()
@@ -3667,9 +3668,10 @@ fn patch_review_record(
         }
         current.insert(key.clone(), value.clone());
     }
-    let patched: Review = serde_json::from_value(serde_json::Value::Object(current))
+    let mut patched: Review = serde_json::from_value(serde_json::Value::Object(current))
         .map_err(|error| format!("invalid review patch: {error}"))?;
     validate_review(&patched)?;
+    drop_redundant_end(&mut patched);
     let index = store
         .reviews
         .iter()
@@ -7215,6 +7217,63 @@ mod tests {
         .unwrap();
         assert_eq!(applied.reviews[0].status, "applied");
         assert_eq!(applied.reviews[0].build.as_ref().unwrap()["success"], true);
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn patch_review_moves_at_and_validates_it_like_a_new_review() {
+        let dir = scratch("review_patch_at");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
+        let path = md.to_str().unwrap();
+        let initial = write_review(path, markdown_review(), &allowed).unwrap();
+        let old = serde_json::to_value(&initial.reviews[0]).unwrap()["at"].clone();
+        let patch = |at: serde_json::Value, expected: serde_json::Value| {
+            patch_review_record(
+                path,
+                "r1",
+                &serde_json::json!({ "at": at }),
+                &serde_json::json!({ "at": expected }),
+                &allowed,
+                false,
+            )
+        };
+        for (bad, why) in [
+            (
+                serde_json::json!({"line": 9, "end": 4}),
+                "at.end is before at.line",
+            ),
+            (
+                serde_json::json!({"page": 2}),
+                "markdown review needs at.line",
+            ),
+            (
+                serde_json::json!({"line": 0}),
+                "markdown review needs at.line",
+            ),
+            (
+                serde_json::json!({"line": 2, "page": 1}),
+                "must not have at.page",
+            ),
+        ] {
+            let error = patch(bad, old.clone()).unwrap_err();
+            assert!(error.contains(why), "{error}");
+        }
+        let stale = patch(
+            serde_json::json!({"line": 3}),
+            serde_json::json!({"line": 1}),
+        )
+        .unwrap_err();
+        assert!(stale.starts_with("review conflict:"), "{stale}");
+        let moved = patch(serde_json::json!({"line": 30, "end": 30}), old).unwrap();
+        let at = serde_json::to_value(&moved.reviews[0]).unwrap()["at"].clone();
+        assert_eq!(
+            at,
+            serde_json::json!({"line": 30}),
+            "a one-line range keeps no end"
+        );
         drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }

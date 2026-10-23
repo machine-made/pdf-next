@@ -2442,7 +2442,11 @@ function describeSelection({ context = false } = {}) {
   if (state.file?.kind === 'markdown') {
     const start = lineNear(selection.anchorNode, ui.markdown);
     const end = lineNear(selection.focusNode, ui.markdown);
-    const anchor = context ? markdownAnchorForSelection(selection.getRangeAt(0)) : null;
+    // Raw mode has no article to read context from, but the digest is still the one this view shows.
+    const anchor = context
+      ? (markdownAnchorForSelection(selection.getRangeAt(0)) ??
+        (state.markdownDigest ? { documentRevision: state.markdownDigest } : null))
+      : null;
     return { file, kind: 'markdown', at: atRange(start, end, 'line'), quote, ...(anchor ? { anchor } : {}) };
   }
   if (state.file?.kind === 'pdf') {
@@ -2844,7 +2848,7 @@ function renderReviewList() {
     if (conflict) row.classList.add('conflict');
     if (review._draftOnly) row.classList.add('draft-only');
     const locationStatus = state.reviewLocations.get(stateKey);
-    if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
+    if (locationStatus && !['located', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
       row.classList.add('unlocated');
     }
     if (review.id === state.selectedReviewId) {
@@ -2875,6 +2879,11 @@ function renderReviewList() {
       location.className = 'review-location';
       location.textContent = 'PDF position saved · text match unavailable';
       row.append(location);
+    } else if (locationStatus === 'lines') {
+      const location = document.createElement('div');
+      location.className = 'review-location';
+      location.textContent = 'Placed by its line range · select the text and Reattach to pin it';
+      row.append(location);
     } else if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -2883,7 +2892,7 @@ function renderReviewList() {
         : 'Unlocated · not highlighted';
       row.append(location);
     }
-    if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest)) {
+    if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest, locationStatus)) {
       const older = document.createElement('div');
       older.className = 'review-location';
       older.textContent = 'Made on an earlier version of this file';
@@ -2916,7 +2925,7 @@ function renderReviewList() {
     const actions = document.createElement('div');
     actions.className = 'review-actions';
     if (!review._draftOnly &&
-        ['ambiguous', 'unlocated'].includes(locationStatus) && reviewStatus(review) === 'open') {
+        ['ambiguous', 'unlocated', 'lines'].includes(locationStatus) && reviewStatus(review) === 'open') {
       const reattach = document.createElement('button');
       reattach.type = 'button';
       reattach.textContent = 'Reattach selection';
@@ -3268,11 +3277,13 @@ async function reattachReview(review) {
     return;
   }
   try {
-    const digest = kind === 'pdf' ? await pdfDocumentDigest() : null;
+    const digest = kind === 'pdf' ? await pdfDocumentDigest() : state.markdownDigest;
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
     if (digest) nextAnchor.documentRevision = digest;
-    await patchReview(review, { anchor: nextAnchor }, `Review reattached to the selected ${label} text`);
+    // A Markdown selection can sit on other lines than the review did.
+    const patch = kind === 'pdf' ? { anchor: nextAnchor } : { anchor: nextAnchor, at: picked.at };
+    await patchReview(review, patch, `Review reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(`Could not reattach review: ${String(error)}`, { error: true });
@@ -3606,13 +3617,12 @@ function paintMarkdownMarks() {
     } else if (found.legacy) {
       byLines.set(review, null);
     }
-    if (!found.legacy) {
-      const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
-      locations.set(
-        reviewStateKey(state.file.path, review.id),
-        found.status === 'located' ? 'located' : gone ? 'preserved' : found.status,
-      );
-    }
+    const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+    // `lines`: no context was saved, so the line range stands in for the text.
+    locations.set(
+      reviewStateKey(state.file.path, review.id),
+      found.status === 'located' ? 'located' : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
+    );
   }
   const hosts = new Map();
   let lowest = Infinity;
