@@ -2980,6 +2980,7 @@ version = "0.14.5"
 dependencies = [
  "ammonia",
  "gio",
+ "lopdf",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
