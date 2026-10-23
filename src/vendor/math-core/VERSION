@@ -1,0 +1,19 @@
+Equation styles and math font for the Markdown view. The converter is the math-core crate, version 0.9.0.
+
+mathmlfixes.css (MIT, LICENSE)
+  Source: https://raw.githubusercontent.com/tmke8/math-core/v0.9.0/css/mathmlfixes.css
+  SHA-256: 15128a36f105da7de7b382e5d7fd26dc1f9bc814a29d13f639d4681ff8eda679
+LICENSE
+  Source: https://raw.githubusercontent.com/tmke8/math-core/v0.9.0/LICENSE
+  SHA-256: 4522db391501c9fde3553b377a9cec8bdd05eb80dd0bb3df51d9e44c3e4c8f2f
+
+NewCMMath-Book.woff2 (New Computer Modern Math, patched for browsers by the math-core authors; GUST Font License)
+  Source: https://tmke8.github.io/math-core-fonts/fonts/NewCMMath-Book.woff2
+  Built by https://github.com/tmke8/math-core-fonts at 2af58a8fcfd00dd250bdf9b67caaa8bc4751ccb8
+  (the site's last-modified time, 2026-10-02T11:02:22Z, follows that commit's build)
+  SHA-256: 387acd23a3ed64a57d351850483ad0b6fbe800cd2269889a9007c64737f08d13
+GUST-FONT-LICENSE.txt
+  Source: https://raw.githubusercontent.com/tmke8/math-core-fonts/main/NewComputerModernMath/GUST-FONT-LICENSE.txt
+  SHA-256: 5eb61bb836bb1845ef668717cb15b382e997748ce2629e4388cc5e4c3fa4e433
+
+Downloaded: 2026-10-23

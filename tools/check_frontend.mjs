@@ -1466,22 +1466,27 @@ for (const option of ['cMapUrl', 'standardFontDataUrl', 'wasmUrl', 'iccUrl']) {
 assert.match(main, /options\.insert\(Options::ENABLE_MATH\);/, 'Math must be enabled in pulldown-cmark.');
 assert.match(
   main,
-  /builder\.add_tags\(MATHML_TAGS\);[\s\S]*?builder\.attribute_filter\([\s\S]*?keep_known_styles\([\s\S]*?builder\.clean\(&rendered\)/,
+  /for \(tag, attributes\) in MATHML \{[\s\S]*?builder\.attribute_filter\([\s\S]*?keep_known_styles\([\s\S]*?builder\.clean\(&rendered\)/,
   'MathML must be allowlisted in ammonia and cleaned with the document, not spliced in after.',
 );
 assert.match(
   main,
-  /annotation: None|\.\.RenderConfig::default\(\)/,
+  /annotation: false,/,
   'No TeX annotation: the renderer writes it unescaped.',
 );
 const indexHtml = await readFile('src/index.html', 'utf8');
 assert.match(
   indexHtml,
-  /<link rel="stylesheet" href="\.\/vendor\/pulldown-latex\/styles\.css" \/>/,
-  'The math stylesheet (font faces for Latin Modern) must be linked.',
+  /<link rel="stylesheet" href="\.\/vendor\/math-core\/mathmlfixes\.css" \/>/,
+  'The math stylesheet (equation fixes for MathML) must be linked.',
 );
-for (const file of ['styles.css', 'font/latinmodern-math.woff2', 'font/lmroman12-regular.woff2']) {
-  await assert.doesNotReject(access(`src/vendor/pulldown-latex/${file}`), `${file} must be vendored.`);
+for (const file of [
+  'math-core/mathmlfixes.css',
+  'math-core/NewCMMath-Book.woff2',
+  'math-core/GUST-FONT-LICENSE.txt',
+  'latin-modern/lmroman12-regular.woff2',
+]) {
+  await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
 
 // Markdown links: nothing navigates the webview. Same-page links scroll, web
