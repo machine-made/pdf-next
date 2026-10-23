@@ -5,6 +5,7 @@ import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewTe
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
+import { colourCode } from './code-colour.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -902,6 +903,7 @@ async function showMarkdown(file, view, generation, fit) {
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
+  colourCode(ui.markdown);
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
@@ -5278,6 +5280,36 @@ async function smokePdfSpread() {
   return `spreads ${pagesIn()}, spreadMode=EVEN`;
 }
 
+/// The coloured blocks in the real window: spans exist only where a tag asked
+/// for them, the text is untouched, and every mode's token colour reaches the
+/// screen with AA contrast against the block's own background.
+async function smokeMarkdownCode() {
+  if (!await settles(() => ui.markdown.querySelector('.hljs-keyword'))) throw new Error('python block not coloured');
+  const [tagged, untagged, unknown] = ui.markdown.querySelectorAll('pre > code');
+  if (untagged.querySelector('[class^="hljs"]') || unknown.querySelector('[class^="hljs"]')) throw new Error('untagged or unknown block coloured');
+  if (!tagged.querySelector(':scope > [data-line]')) throw new Error('coloured block lost its line anchor');
+  if (!tagged.textContent.startsWith('def wake(re, n=3):\n    """Strouhal number."""')) throw new Error('coloured text changed');
+  const light = (css) => {
+    const [r, g, b] = css.match(/\d+/g).slice(0, 3).map((v) => v / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const seen = [];
+  for (const mode of [null, 'night', 'sepia', 'invert']) {
+    setMode(mode, false);
+    const bg = getComputedStyle(tagged.parentElement).backgroundColor;
+    const colours = [...new Set([...tagged.querySelectorAll('[class^="hljs-"]')].map((el) => getComputedStyle(el).color))];
+    const low = Math.min(...colours.map((c) => {
+      const [hi, lo] = [light(c), light(bg)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    }));
+    if (colours.length < 4 || low < 4.5) throw new Error(`${mode || 'day'}: ${colours.length} colours, lowest contrast ${low.toFixed(2)}`);
+    seen.push(`${mode || 'day'} ${colours.length} colours >= ${low.toFixed(2)}:1`);
+  }
+  setMode(null, false);
+  return `code colour: ${seen.join(', ')}`;
+}
+
 /// Report to the build server whether this launch works, then let it end the
 /// process. Only ever runs under PDF_NEXT_SMOKE; a reader never gets here.
 async function reportSmoke() {
@@ -5394,6 +5426,10 @@ async function reportSmoke() {
     if (file.kind === 'markdown' && file.name === 'review-parity.md' && failures.length === 0) {
       const detail = await smokeMarkdownReview();
       await invoke('smoke_report', { ok: true, detail: `${file.name} ${detail}; sourceRevision=${file.revision}` });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'code.md' && failures.length === 0) {
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${await smokeMarkdownCode()}` });
       return;
     }
     if (file.kind === 'markdown' && file.name === 'pages.md' && failures.length === 0) {

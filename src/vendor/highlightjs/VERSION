@@ -1,0 +1,28 @@
+highlight.js 11.12.0, the browser build of the grammars used for the Markdown code colours.
+Source: npm package @highlightjs/cdn-assets@11.12.0, files es/core.min.js and es/languages/<name>.min.js
+Tarball integrity (registry dist.integrity, checked after npm pack):
+  sha512-KvOKXODaiFmId9xaq3xc5xCL66wVLUuOngDbO9B/kewbFTqdGbn2nJxNhN3H5R1cgDTVj6R8vH0zgiNDEGjpDw==
+11.12.0 is the newest 11.x release at least two weeks old (published 2026-08-12); 11.11.1 is older.
+License: BSD-3-Clause (LICENSE)
+Downloaded: 2026-10-23
+
+SHA-256 of each file here:
+  6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490  LICENSE
+  67a339aa68880a40c9803def9c8cebb2225dec76230382db86e349370dee70e9  core.min.js
+  7db1758fe6f04cd410760c29879812a3774edc54edcc91323511a24efc0b9e61  languages/bash.min.js
+  edada72825cceb7dec51cc785efcc3e6378970917e11e4c7dfab29d0079e08a5  languages/c.min.js
+  1abfb06ebd59f4d65c8e0cd70eb893dd139722e4933302ac683b526638154be6  languages/cmake.min.js
+  aa67eeacdbbda9f40ca34c59147581aef1601f19b71a55966de4ccf4246e8c31  languages/cpp.min.js
+  cbd7cf3b49bee36d6a0cf97789a7c5e68fbfd4231e86a81966f9b78c7bc127d0  languages/diff.min.js
+  8cf5636bcb2de30e2955e5205f6e38370ed62acd93e46f38581745f53d2fe650  languages/fortran.min.js
+  b2330623daa8da0c4ef98891b97f393daa2e809721842c312f217e0339e255db  languages/ini.min.js
+  c3dbd515a79e2c00ff4535aa5ad2fe539fb2587d047f9ab826107d0784da7bb6  languages/javascript.min.js
+  8f2343ffbcc4fdea4b336a4241d54d223d52f99b67729d2d6d3556bbf66908ae  languages/json.min.js
+  fefd458db7ebd8575d2a3d46f651f440c5d3efa82cee429572ec2f0d4cadd9fc  languages/julia.min.js
+  60b568accfc5f910e2342a4b1865d469272223272954860dc05d347b4f97b5f4  languages/latex.min.js
+  746bebeac4ef23f15a3ac4299feb2d9529cee76517cab33026d4532daaf77f70  languages/makefile.min.js
+  e575e6a93c9e1f922b3a85ac868c306c84a0c6a610e4ad9ba955a695aca43419  languages/matlab.min.js
+  fd5d479dcc9d07b957cf07b1df76d3d8fb6ee6f6d1437238d9530a9be724c046  languages/python.min.js
+  fde151d2b246bef44c98da80e7cac3cbb05de794911305fe9a3adf6beff87659  languages/rust.min.js
+  9176dabac68529c73ab23303cb2e73392603f85438f58368fe80ded798a526b7  languages/shell.min.js
+  7010955f1f87aef1de085483d79d42817544aaf03c4f57a6fd4eb838f2cdf609  languages/yaml.min.js

@@ -85,6 +85,7 @@ that survives a build deleting and recreating the file mid-compile.
   red and the rest of the equation still renders. A `\eqref` to an equation further down the file
   shows `(??)`.
 - **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Zoom reflows the text rather than scaling it.
+- **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four view modes. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a Delete or Improve request. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Not available for images.
 - **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
@@ -506,3 +507,5 @@ for following the laws and rules that apply to you. The full terms are in
 
 pdf-next is not affiliated with or endorsed by Mozilla. PDF.js is © Mozilla and
 contributors, under the Apache License 2.0.
+
+Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.

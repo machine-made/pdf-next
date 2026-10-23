@@ -1269,6 +1269,47 @@ const MATHML: [(&str, &[&str]); 25] = [
     ("munderover", &[]),
 ];
 
+/// The fence tags the frontend colours (src/code-colour.mjs TAGS). The class
+/// stays on `code` for these and nothing else, so a document cannot put its
+/// own class names on the page.
+const CODE_CLASSES: [&str; 35] = [
+    "language-python",
+    "language-py",
+    "language-c",
+    "language-h",
+    "language-cpp",
+    "language-hpp",
+    "language-cc",
+    "language-cxx",
+    "language-rust",
+    "language-rs",
+    "language-fortran",
+    "language-f90",
+    "language-f95",
+    "language-f",
+    "language-julia",
+    "language-jl",
+    "language-bash",
+    "language-sh",
+    "language-zsh",
+    "language-shell",
+    "language-console",
+    "language-toml",
+    "language-yaml",
+    "language-yml",
+    "language-json",
+    "language-latex",
+    "language-tex",
+    "language-matlab",
+    "language-makefile",
+    "language-mk",
+    "language-cmake",
+    "language-diff",
+    "language-patch",
+    "language-javascript",
+    "language-js",
+];
+
 /// The class names the converter writes, by element: red text for an unknown
 /// command, the strokes of a crossed-out term, and the two `\textsf` and
 /// `\textrm` spans inside text.
@@ -1665,6 +1706,7 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     builder.add_tag_attributes("input", ["type", "checked", "disabled"]);
     // Footnotes are styled by class, and table columns keep their alignment.
     builder.add_allowed_classes("div", ["footnote-definition"]);
+    builder.add_allowed_classes("code", CODE_CLASSES);
     builder.add_allowed_classes("sup", ["footnote-definition-label", "footnote-reference"]);
     builder.add_tag_attributes("th", ["style"]);
     builder.add_tag_attributes("td", ["style"]);
@@ -5454,6 +5496,25 @@ mod tests {
         // A colour the converter wrote survives the style filter.
         let colour = render_html("$\\color{red}{x}$");
         assert!(colour.contains("style=\"color:#FF0000;\""), "{colour}");
+    }
+
+    #[test]
+    fn fence_tag_class_survives_for_coloured_languages_only() {
+        for class in super::CODE_CLASSES {
+            let tag = class.strip_prefix("language-").expect("prefix");
+            let html = render_html(&format!("```{tag}\nx = 1\n```"));
+            assert!(
+                html.contains(&format!("<pre><code class=\"{class}\">")),
+                "{tag}: {html}"
+            );
+        }
+        for tag in ["ruby", "math2", "python-x", "Python"] {
+            let html = render_html(&format!("```{tag}\nx = 1\n```"));
+            assert!(!html.contains("language-"), "{tag}: {html}");
+        }
+        let html = render_html("<code class=\"language-python evil\">x</code>");
+        assert!(!html.contains("evil"), "{html}");
+        assert!(render_html("```python title=a\nx\n```").contains("language-python"));
     }
 
     #[test]
