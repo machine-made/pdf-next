@@ -7,6 +7,7 @@ import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
+import { validPageView } from '../src/md-pages.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -223,6 +224,37 @@ function appFunction(name, next, context, source = app) {
   const failing = { setItem() { throw new Error('storage off'); } };
   appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing })(font, 'mono');
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
+}
+
+// Page view for PDF: the menu validates, remembers, and asks PDF.js for spreads.
+{
+  assert.equal(validPageView('pdf', 'two'), 'two');
+  assert.equal(validPageView('pdf', null), 'single', 'A PDF opens as it always has.');
+  assert.equal(validPageView('pdf', 'continuous'), 'single', 'A PDF has no continuous view.');
+  assert.equal(validPageView('pdf', 'sideways'), 'single', 'An unknown value falls back.');
+
+  const stored = new Map();
+  const ui = { pageView: { value: '' } };
+  const state = { pageViews: { pdf: 'single' } };
+  let spreads = 0;
+  const setView = appFunction('setPageView', '/// Pages in pairs', {
+    state, ui, validPageView,
+    localStorage: { setItem: (key, value) => stored.set(key, value) },
+    applyPdfSpread: () => { spreads += 1; }, scheduleWrap() {},
+  });
+  setView('two');
+  assert.equal(state.pageViews.pdf, 'two');
+  assert.equal(ui.pageView.value, 'two', 'The menu shows the chosen view.');
+  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'The view is remembered.');
+  assert.equal(spreads, 1, 'Choosing a view asks PDF.js for it.');
+  setView('single', { persist: false, apply: false });
+  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'A restore does not overwrite the saved choice.');
+  assert.equal(spreads, 1, 'A restore without apply leaves the viewer alone.');
+  setView('continuous');
+  assert.equal(state.pageViews.pdf, 'single', 'A PDF rejects the continuous view.');
+  assert.match(page, /id="pageView"[^>]*class="page-view-only"/, 'The menu is in the toolbar.');
+  assert.match(styles, /body:not\(\.kind-pdf\) \.page-view-only/, 'The menu shows for PDF only.');
+  assert.match(app, /SpreadMode\.EVEN/, 'Two pages in a PDF is PDF.js even spreads, the cover alone.');
 }
 
 // Markdown highlighting must stay within a small synchronous work budget.
@@ -846,7 +878,7 @@ for (const kind of ['markdown', 'pdf']) {
     flushCommentSave: async () => {}, captureView: () => null,
     clearPrintPages() {}, setTitle() {}, setStatus() {},
     document: { body: { classList: { add() {}, toggle() {}, remove() {} } } },
-    showPdf: async () => {}, loadReviews: async () => {},
+    showPdf: async () => {}, loadReviews: async () => {}, syncPageViewMenu() {},
   });
   await open({ path: 'a.pdf', name: 'a.pdf', kind: 'pdf' }, { preserveView: true });
   assert.equal(state.pendingNote, note, 'Reloading the same document must preserve the selected quote.');

@@ -4,6 +4,7 @@ import { bootIsFine, failures, mark } from './smoke.mjs';
 import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
+import { validPageView } from './md-pages.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -17,7 +18,7 @@ import * as pdfjsLib from './vendor/pdfjs/build/pdf.min.mjs';
 globalThis.pdfjsLib = pdfjsLib;
 
 const { getDocument, GlobalWorkerOptions, PDFWorker } = pdfjsLib;
-const { EventBus, PDFFindController, PDFLinkService, PDFViewer } = await import(
+const { EventBus, PDFFindController, PDFLinkService, PDFViewer, SpreadMode } = await import(
   './vendor/pdfjs/web/pdf_viewer.mjs'
 );
 
@@ -70,6 +71,7 @@ const ui = {
   mdFont: el('mdFont'),
   mdSize: el('mdSize'),
   mdWidth: el('mdWidth'),
+  pageView: el('pageView'),
   ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
@@ -143,6 +145,8 @@ const state = {
   imageRotation: 0,
   markdownScale: 1,
   markdownRaw: false,
+  /// The page view chosen for PDF, remembered between launches.
+  pageViews: { pdf: 'single' },
   statusTimer: 0,
   /// This build and its platform, from Rust; and the newer release a check
   /// found, if any — { version, url } — which turns the button into a download.
@@ -710,6 +714,40 @@ function setMarkdownScale(scale) {
   scheduleWrap();
 }
 
+// ── Page views ────────────────────────────────────────────────────────────
+
+/// One menu for PDF, remembered. PDF.js lays out the spreads itself.
+function setPageView(value, { persist = true, apply = true } = {}) {
+  const chosen = validPageView('pdf', value);
+  state.pageViews.pdf = chosen;
+  ui.pageView.value = chosen;
+  if (persist) {
+    try {
+      localStorage.setItem('pdf-next.page-view.pdf', chosen);
+    } catch {
+      // Preference only.
+    }
+  }
+  if (apply) {
+    applyPdfSpread();
+    scheduleWrap();
+  }
+}
+
+/// Pages in pairs with the cover alone, as in a printed book: PDF.js calls that
+/// even spreads (1 | 2 3 | 4 5). PDF.js forgets the spread mode whenever a
+/// document is set, so this runs after every load.
+function applyPdfSpread() {
+  if (state.document) {
+    pdfViewer.spreadMode = state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE;
+  }
+}
+
+/// The menu keeps the choice for the open file's kind.
+function syncPageViewMenu() {
+  setPageView(state.pageViews.pdf, { persist: false, apply: false });
+}
+
 /// An image arrives as `data-doc`, the canonical path Rust checked, and gets
 /// its `src` here, because only the frontend knows the platform's doc URL. The
 /// revision in the URL makes a regenerated figure load again.
@@ -840,17 +878,18 @@ function contentSize() {
   }
   const index = Math.max(0, (pdfViewer.currentPageNumber || 1) - 1);
   const div = pdfViewer.getPageView?.(index)?.div;
+  // In two pages the window wraps a full pair, not the cover that stands
+  // alone, and each page carries 4px of margin on either side (style.css).
+  const pair = pdfViewer.spreadMode !== SpreadMode.NONE && pdfViewer.pagesCount > 1;
+  const across = (width) => Math.ceil(pair ? 2 * (width + 8) : width);
   if (div?.offsetWidth) {
-    return [Math.ceil(div.offsetWidth), Math.ceil(div.offsetHeight)];
+    return [across(div.offsetWidth), Math.ceil(div.offsetHeight)];
   }
   if (!state.natural) {
     return null;
   }
   const scale = pdfViewer.currentScale || 1;
-  return [
-    Math.ceil(state.natural.width * scale),
-    Math.ceil(state.natural.height * scale),
-  ];
+  return [across(state.natural.width * scale), Math.ceil(state.natural.height * scale)];
 }
 
 /// The window that wraps the content exactly. No scrollbar allowance — with an
@@ -1059,6 +1098,7 @@ async function showPdf(file, view, generation) {
   if (state.generation !== generation) {
     return;
   }
+  applyPdfSpread();
 
   if (view) {
     restoreView(view);
@@ -1315,6 +1355,7 @@ async function openFile(
   document.body.classList.toggle('kind-image', file.kind === 'image');
   document.body.classList.toggle('kind-markdown', file.kind === 'markdown');
   document.body.classList.toggle('kind-json', file.kind === 'json');
+  syncPageViewMenu();
   setTitle(file.name);
 
   // Free what the outgoing kind was holding: a decoded bitmap or a rendered
@@ -4111,6 +4152,7 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
+ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
 for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   select.addEventListener('change', () => {
     setMarkdownStyle(select, select.value);
@@ -4745,6 +4787,12 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   setMarkdownStyle(select, saved, { persist: false });
 }
 
+try {
+  state.pageViews.pdf = validPageView('pdf', localStorage.getItem('pdf-next.page-view.pdf'));
+} catch {
+  // Preference only.
+}
+
 // Watching is on by default at one second; the control only exists to slow it
 // down or stop it.
 try {
@@ -5013,6 +5061,22 @@ async function smokeMarkdownReview() {
   return 'review still on the second occurrence after reload, stage=2';
 }
 
+/// Smoke only. A PDF in two pages: PDF.js even spreads, the cover alone.
+async function smokePdfSpread() {
+  setPageView('two', { persist: false });
+  pdfViewer.currentScaleValue = 'page-fit';
+  const spreads = () => ui.viewer.querySelectorAll('.spread');
+  if (pdfViewer.spreadMode !== SpreadMode.EVEN) throw new Error(`spread mode ${pdfViewer.spreadMode}`);
+  const pagesIn = () => [...spreads()].map((spread) => spread.querySelectorAll('.page').length).join('+');
+  if (!await settles(() => pagesIn() === '1+2')) throw new Error(`spreads ${pagesIn()}`);
+  const [, pair] = spreads();
+  const [left, right] = pair.querySelectorAll('.page');
+  if (right.getBoundingClientRect().left < left.getBoundingClientRect().right - 1) throw new Error('pages 2 and 3 are not side by side');
+  if (!await settles(() => [...pair.querySelectorAll('canvas')].length === 2 &&
+    [...pair.querySelectorAll('canvas')].every((canvas) => canvas.width > 0))) throw new Error('the pair did not render');
+  return `spreads ${pagesIn()}, spreadMode=EVEN`;
+}
+
 /// Report to the build server whether this launch works, then let it end the
 /// process. Only ever runs under PDF_NEXT_SMOKE; a reader never gets here.
 async function reportSmoke() {
@@ -5084,6 +5148,11 @@ async function reportSmoke() {
       if (!currentReport()) return;
       const ok = pages > 0 && painted && sharp && failures.length === 0;
       let revisionDetail = '';
+      let spreadDetail = '';
+      if (ok && file.name === 'three-pages.pdf') {
+        spreadDetail = `; ${await smokePdfSpread()}`;
+        if (!currentReport()) return;
+      }
       if (ok) {
         const digest = await pdfDocumentDigest();
         if (!currentReport()) return;
@@ -5116,7 +5185,7 @@ async function reportSmoke() {
       await invoke('smoke_report', {
         ok,
         detail: ok
-          ? `${file.name} rendered sharply at 600%, ${pages} page${pages === 1 ? '' : 's'}; scroll=${JSON.stringify(scroll)}${revisionDetail}`
+          ? `${file.name} rendered sharply at 600%, ${pages} page${pages === 1 ? '' : 's'}; scroll=${JSON.stringify(scroll)}${revisionDetail}${spreadDetail}`
           : `${file.name} did not render sharply: ${pages} pages, painted=${painted}, sharp=${sharp}${note()}`,
       });
       return;

@@ -872,6 +872,21 @@ body.mode-invert #image {
   margin-bottom: 0;
 }
 
+/* Two pages: PDF.js pulls the pages of a spread together by 3.5px each to
+   cancel the border zeroed above, which would overlap them. Four pixels on
+   each side leaves the same 8px gap as between rows. */
+.pdfViewer .spread {
+  margin-inline: 0;
+}
+
+.pdfViewer .spread .page {
+  margin: 0 4px 8px;
+}
+
+.pdfViewer .spread:last-child .page {
+  margin-bottom: 0;
+}
+
 .pdfViewer .page {
   position: relative;
   box-shadow:
@@ -1069,6 +1084,7 @@ body:not(.has-file) .file-only {
   display: none;
 }
 
+body:not(.kind-pdf) .page-view-only,
 body:not(.kind-pdf):not(.kind-markdown) .find-only,
 body.kind-image .not-image,
 body:not(.kind-pdf):not(.kind-markdown) .review-only {
