@@ -19,7 +19,7 @@ import {
 } from '../src/review-size.mjs';
 
 const app = await readFile('src/app.mjs', 'utf8');
-const main = await readFile('src-tauri/src/main.rs', 'utf8');
+const main = (await readFile('src-tauri/src/main.rs', 'utf8')).replaceAll('\r\n', '\n');
 const config = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
 const styles = await readFile('src/style.css', 'utf8');
 const version = await readFile('src/vendor/PDFJS_VERSION', 'utf8');
