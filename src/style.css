@@ -1190,8 +1190,20 @@ body.mode-sepia #markdownStage {
 
 #markdown[data-font="mono"] {
   font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
-  font-size: 15px;
 }
+
+#markdown[data-size="14"] { font-size: 14px; }
+#markdown[data-size="15"] { font-size: 15px; }
+#markdown[data-size="16"] { font-size: 16px; }
+#markdown[data-size="18"] { font-size: 18px; }
+#markdown[data-size="20"] { font-size: 20px; }
+#markdown[data-size="22"] { font-size: 22px; }
+#markdown[data-size="24"] { font-size: 24px; }
+
+/* Width is in em of the text size, so a larger size keeps the words per line. */
+#markdown[data-width="narrow"] { max-width: 30em; }
+#markdown[data-width="wide"] { max-width: 50em; }
+#markdown[data-width="full"] { max-width: none; }
 
 #markdown ::selection,
 #markdown *::selection {
