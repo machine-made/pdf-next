@@ -288,7 +288,8 @@ E = mc^2
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
-        let allowed = std::collections::HashSet::from([pdf.clone()]);
+        let mut allowed = crate::review_directory::AllowedDocuments::default();
+        allowed.insert(pdf.clone()).unwrap();
         let review: crate::Review = serde_json::from_value(json!({
             "file":"paper.pdf", "kind":"pdf", "at":{"page":1},
             "quote":"Equation context for source mapping.", "action":"delete",

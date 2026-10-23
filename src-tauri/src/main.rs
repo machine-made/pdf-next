@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod review_command;
+mod review_directory;
 mod review_source;
 
 use std::collections::HashSet;
@@ -17,6 +18,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime};
 
+use review_directory::{AllowedDocuments, ReviewPath};
 use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, DragDropEvent, Emitter, Manager, State, Theme, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
@@ -47,7 +49,7 @@ struct WatchState {
     /// protocol and the markdown renderer serve members of this set and
     /// nothing else; `adopt` is the only way in, and it takes supported kinds
     /// only.
-    allowed: HashSet<PathBuf>,
+    allowed: AllowedDocuments,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -302,6 +304,7 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
     let (sidecar_modified, sidecar_len) = stat(&sidecar).unwrap_or((None, 0));
 
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+    state.allowed.insert(canonical.clone())?;
     if activate {
         state.path = Some(canonical.clone());
         state.modified = modified;
@@ -311,7 +314,6 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
         state.sidecar_len = sidecar_len;
         state.sidecar_missing = !sidecar.exists();
     }
-    state.allowed.insert(canonical.clone());
     drop(state);
 
     Ok(describe(&canonical))
@@ -540,7 +542,7 @@ async fn reduce_pdf(path: String, watched: State<'_, Watched>) -> Result<ReduceP
     if result.wrote {
         let served = std::fs::canonicalize(&result.path).map_err(|error| error.to_string())?;
         let mut state = watched.0.lock().map_err(|error| error.to_string())?;
-        state.allowed.insert(served);
+        state.allowed.insert(served)?;
     }
     Ok(result)
 }
@@ -2192,10 +2194,12 @@ fn choose_review_color(store: &ReviewFile, review: &Review) -> u8 {
 }
 
 fn document_sha256(path: &Path) -> Result<String, String> {
+    file_sha256(std::fs::File::open(path).map_err(|error| error.to_string())?)
+}
+
+fn file_sha256(mut file: std::fs::File) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
-
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut digest = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     loop {
@@ -2211,14 +2215,14 @@ fn document_sha256(path: &Path) -> Result<String, String> {
 struct ReviewLock(std::fs::File);
 
 impl ReviewLock {
-    fn acquire(sidecar: &Path) -> Result<Self, String> {
+    fn acquire(sidecar: &ReviewPath) -> Result<Self, String> {
         let file = Self::open(sidecar).map_err(|error| error.to_string())?;
         Self::wait(file)
     }
 
     /// Like `acquire`, but `None` when the folder does not let us create the
     /// lock file. Reads then go ahead without it.
-    fn acquire_for_read(sidecar: &Path) -> Result<Option<Self>, String> {
+    fn acquire_for_read(sidecar: &ReviewPath) -> Result<Option<Self>, String> {
         match Self::open(sidecar) {
             Ok(file) => Self::wait(file).map(Some),
             Err(error)
@@ -2233,7 +2237,7 @@ impl ReviewLock {
         }
     }
 
-    fn open(sidecar: &Path) -> std::io::Result<std::fs::File> {
+    fn open(sidecar: &ReviewPath) -> std::io::Result<std::fs::File> {
         let lock_path = sidecar.with_extension(format!(
             "{}.lock",
             sidecar
@@ -2241,12 +2245,13 @@ impl ReviewLock {
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("json")
         ));
-        std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)
+        lock_path.open_with(
+            cap_std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false),
+        )
     }
 
     fn wait(file: std::fs::File) -> Result<Self, String> {
@@ -2272,8 +2277,7 @@ impl Drop for ReviewLock {
     }
 }
 
-fn save_store(sidecar: &Path, store: &mut ReviewFile) -> Result<(), String> {
-    use std::io::Write;
+fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String> {
     store.format = 3;
     let minimum_next_id = store
         .reviews
@@ -2293,24 +2297,15 @@ fn save_store(sidecar: &Path, store: &mut ReviewFile) -> Result<(), String> {
         validate_review(review)?;
     }
     let prior_valid = if sidecar.exists() {
-        let previous = std::fs::read_to_string(sidecar).map_err(|error| error.to_string())?;
+        let previous = sidecar
+            .read_to_string()
+            .map_err(|error| error.to_string())?;
         parse_store(&previous)?;
         Some(previous.into_bytes())
     } else {
         None
     };
     let json = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
-    let mut temp = tempfile::NamedTempFile::new_in(sidecar.parent().unwrap_or(Path::new(".")))
-        .map_err(|error| error.to_string())?;
-    if let Ok(metadata) = std::fs::metadata(sidecar) {
-        temp.as_file()
-            .set_permissions(metadata.permissions())
-            .map_err(|error| error.to_string())?;
-    }
-    writeln!(temp, "{json}").map_err(|error| error.to_string())?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
     if let Some(previous) = prior_valid.as_deref() {
         write_atomic_bytes(&sidecar.with_extension("json.bak"), previous)?;
     }
@@ -2321,33 +2316,15 @@ fn save_store(sidecar: &Path, store: &mut ReviewFile) -> Result<(), String> {
         }
     }
     // Windows readers can briefly block an atomic replacement.
-    let temp = temp.into_temp_path();
-    atomic_replace(&temp, sidecar)?;
+    write_atomic_bytes(sidecar, format!("{json}\n").as_bytes())?;
     store.migration_backup = None;
     Ok(())
 }
 
-fn write_atomic_bytes(destination: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-
-    let parent = destination.parent().unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    if let Ok(metadata) = std::fs::metadata(destination) {
-        temp.as_file()
-            .set_permissions(metadata.permissions())
-            .map_err(|error| error.to_string())?;
-    }
-    temp.write_all(bytes).map_err(|error| error.to_string())?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    let temp = temp.into_temp_path();
-    atomic_replace(&temp, destination)
-}
-
-fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
+fn write_atomic_bytes(destination: &ReviewPath, bytes: &[u8]) -> Result<(), String> {
+    // Retry Windows sharing violations with a fresh temporary file.
     rename_with_retry(
-        || std::fs::rename(source, destination),
+        || destination.write_atomic(bytes),
         |error| cfg!(windows) && is_windows_replace_contention(error),
     )
     .map_err(|error| error.to_string())
@@ -2382,11 +2359,15 @@ fn review_fingerprint(review: &Review) -> String {
 
 /// Load `{stem}_review.json`, then fold in matching rows from a leftover
 /// folder `_review.json`. The merge stays in memory until the next write.
-fn load_store(doc_path: &Path) -> Result<(PathBuf, ReviewFile), String> {
-    let sidecar = review_sidecar(doc_path);
+fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String> {
+    let sidecar = doc_path.sidecar();
     let migrated = sidecar.exists();
     let mut store = if migrated {
-        parse_store(&std::fs::read_to_string(&sidecar).map_err(|error| error.to_string())?)?
+        parse_store(
+            &sidecar
+                .read_to_string()
+                .map_err(|error| error.to_string())?,
+        )?
     } else {
         empty_store()
     };
@@ -2400,16 +2381,13 @@ fn load_store(doc_path: &Path) -> Result<(PathBuf, ReviewFile), String> {
             validate_review(review).map_err(|error| format!("review {}: {error}", review.id))?;
         }
     }
-    let legacy = doc_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(LEGACY_REVIEW_FILE);
+    let legacy = doc_path.sibling(LEGACY_REVIEW_FILE);
     if !migrated && legacy.exists() {
         let basename = doc_path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        let raw = std::fs::read_to_string(&legacy).map_err(|error| error.to_string())?;
+        let raw = legacy.read_to_string().map_err(|error| error.to_string())?;
         let old = parse_store(&raw)?;
         let old_format =
             serde_json::from_str::<serde_json::Value>(raw.trim_start_matches('\u{feff}'))
@@ -2470,12 +2448,9 @@ fn reviews_for_file(store: ReviewFile, basename: &str) -> ReviewFile {
     }
 }
 
-fn read_snapshot(doc_path: &Path) -> Result<Option<ReviewFile>, String> {
-    let sidecar = review_sidecar(doc_path);
-    let legacy = doc_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(LEGACY_REVIEW_FILE);
+fn read_snapshot(doc_path: &ReviewPath) -> Result<Option<ReviewFile>, String> {
+    let sidecar = doc_path.sidecar();
+    let legacy = doc_path.sibling(LEGACY_REVIEW_FILE);
     if !sidecar.exists() && !legacy.exists() {
         return Ok(None);
     }
@@ -2487,13 +2462,9 @@ fn read_snapshot(doc_path: &Path) -> Result<Option<ReviewFile>, String> {
     Ok(Some(reviews_for_file(store, &basename)))
 }
 
-fn open_review_document(document: &str, allowed: &HashSet<PathBuf>) -> Result<PathBuf, String> {
+fn open_review_document(document: &str, allowed: &AllowedDocuments) -> Result<ReviewPath, String> {
     let doc_path =
         std::fs::canonicalize(PathBuf::from(document)).map_err(|error| error.to_string())?;
-    let metadata = std::fs::metadata(&doc_path).map_err(|error| error.to_string())?;
-    if !metadata.is_file() {
-        return Err("document is not a regular file".into());
-    }
     if is_review_file(&doc_path) {
         return Err("cannot review a review file".into());
     }
@@ -2501,10 +2472,12 @@ fn open_review_document(document: &str, allowed: &HashSet<PathBuf>) -> Result<Pa
     if kind != "markdown" && kind != "pdf" {
         return Err("reviews are for markdown and pdf".into());
     }
-    if !allowed.contains(&doc_path) {
-        return Err("file was never opened".into());
+    let admitted = allowed.get(&doc_path).ok_or("file was never opened")?;
+    let metadata = admitted.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("document is not a regular file".into());
     }
-    Ok(doc_path)
+    Ok(admitted.clone())
 }
 
 fn document_basename(doc_path: &Path) -> Result<String, String> {
@@ -2519,7 +2492,7 @@ fn document_basename(doc_path: &Path) -> Result<String, String> {
 fn write_review(
     document: &str,
     mut review: Review,
-    allowed: &HashSet<PathBuf>,
+    allowed: &AllowedDocuments,
 ) -> Result<ReviewFile, String> {
     validate_review(&review)?;
     let doc_path = open_review_document(document, allowed)?;
@@ -2532,7 +2505,7 @@ fn write_review(
         return Err("review file does not match the document".into());
     }
 
-    let sidecar_path = review_sidecar(&doc_path);
+    let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
     if review.kind == "pdf"
         && review
@@ -2540,7 +2513,7 @@ fn write_review(
             .as_ref()
             .is_none_or(|anchor| anchor.document_revision.is_none())
     {
-        let digest = document_sha256(&doc_path)?;
+        let digest = file_sha256(doc_path.open().map_err(|error| error.to_string())?)?;
         review
             .anchor
             .get_or_insert_with(ReviewAnchor::default)
@@ -2559,7 +2532,7 @@ fn write_review(
     Ok(reviews_for_file(store, &basename))
 }
 
-fn list_reviews(document: &str, allowed: &HashSet<PathBuf>) -> Result<ReviewFile, String> {
+fn list_reviews(document: &str, allowed: &AllowedDocuments) -> Result<ReviewFile, String> {
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
     match read_snapshot(&doc_path)? {
@@ -2576,7 +2549,7 @@ fn change_review_comment(
     id: &str,
     expected_comment: &str,
     comment: &str,
-    allowed: &HashSet<PathBuf>,
+    allowed: &AllowedDocuments,
 ) -> Result<ReviewFile, String> {
     if comment.len() > 2_000 {
         return Err("comment is too long (max 2 000 chars)".into());
@@ -2586,7 +2559,7 @@ fn change_review_comment(
     }
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
-    let _lock = ReviewLock::acquire(&review_sidecar(&doc_path))?;
+    let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
     let (sidecar, mut store) = load_store(&doc_path)?;
     let Some(review) = store
         .reviews
@@ -2607,14 +2580,14 @@ fn change_review_comment(
 fn remove_review(
     document: &str,
     id: &str,
-    allowed: &HashSet<PathBuf>,
+    allowed: &AllowedDocuments,
 ) -> Result<ReviewFile, String> {
     if id.is_empty() {
         return Err("review id is missing".into());
     }
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
-    let _lock = ReviewLock::acquire(&review_sidecar(&doc_path))?;
+    let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
     let (sidecar, mut store) = load_store(&doc_path)?;
     let before = store.reviews.len();
     store
@@ -2652,14 +2625,14 @@ fn remove_review_cas(
     document: &str,
     id: &str,
     expected_review: &serde_json::Value,
-    allowed: &HashSet<PathBuf>,
+    allowed: &AllowedDocuments,
 ) -> Result<ReviewFile, String> {
     if id.is_empty() {
         return Err("review id is missing".into());
     }
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
-    let sidecar_path = review_sidecar(&doc_path);
+    let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
     let (sidecar, mut store) = load_store(&doc_path)?;
     let index = store
@@ -2681,7 +2654,7 @@ fn patch_review_record(
     id: &str,
     patch: &serde_json::Value,
     expected: &serde_json::Value,
-    allowed: &HashSet<PathBuf>,
+    allowed: &AllowedDocuments,
     dry_run: bool,
 ) -> Result<ReviewFile, String> {
     const PATCHABLE: &[&str] = &[
@@ -2714,7 +2687,7 @@ fn patch_review_record(
     }
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
-    let sidecar_path = review_sidecar(&doc_path);
+    let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
     let (sidecar, mut store) = load_store(&doc_path)?;
     if let Some(revision) = expected.get("$revision") {
@@ -2764,7 +2737,7 @@ fn patch_review_record(
     Ok(reviews_for_file(store, &basename))
 }
 
-fn allowed_set(watched: &Watched) -> Result<HashSet<PathBuf>, String> {
+fn allowed_set(watched: &Watched) -> Result<AllowedDocuments, String> {
     let state = watched.0.lock().map_err(|error| error.to_string())?;
     Ok(state.allowed.clone())
 }
@@ -3583,18 +3556,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adopt, empty_store, review_sidecar, save_store, ReviewDocument, Watched, LEGACY_REVIEW_FILE,
+        adopt, empty_store, review_sidecar, save_store as save_bound_store, ReviewDocument,
+        Watched, LEGACY_REVIEW_FILE,
     };
     use super::{
         change_review_comment, document_watch_due, is_network_path, is_windows_replace_contention,
         list_reviews, natural_key, next_review_id, open_download, open_link, parse_cli,
-        parse_store, patch_review_record, read_snapshot, reduced_pdf_path, remove_review,
-        remove_review_cas, rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready,
-        trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
+        parse_store, patch_review_record, read_snapshot as read_bound_snapshot, reduced_pdf_path,
+        remove_review, remove_review_cas, rename_with_retry, render_markdown, shrink_pdf_bytes,
+        sidecar_ready, trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt,
+        ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
     use std::path::PathBuf;
+
+    fn admitted<const N: usize>(paths: [PathBuf; N]) -> super::AllowedDocuments {
+        let mut allowed = super::AllowedDocuments::default();
+        for path in paths {
+            allowed.insert(path).unwrap();
+        }
+        allowed
+    }
+
+    fn save_store(path: &std::path::Path, store: &mut super::ReviewFile) -> Result<(), String> {
+        save_bound_store(&super::ReviewPath::new(path.to_path_buf())?, store)
+    }
+
+    fn read_snapshot(path: &std::path::Path) -> Result<Option<super::ReviewFile>, String> {
+        read_bound_snapshot(&super::ReviewPath::new(path.to_path_buf())?)
+    }
 
     fn cli(words: &[&str]) -> Result<Cli, (i32, String)> {
         parse_cli(words.iter().map(OsString::from), None)
@@ -4075,6 +4066,194 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn review_transactions_keep_admitted_directory_after_ancestor_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected");
+        let nested = selected.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let doc = nested.join("collab.md");
+        std::fs::write(&doc, "# admitted\n").unwrap();
+        let original = r#"{"format":2,"reviews":[{"id":"r8","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"original"}]}"#;
+        std::fs::write(review_sidecar(&doc), original).unwrap();
+        let watched = Watched::default();
+        adopt(&watched, doc.clone(), true).unwrap();
+        let pdf = nested.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\noriginal\n%%EOF\n").unwrap();
+        std::fs::write(nested.join("paper.tex"), "original source").unwrap();
+        adopt(&watched, pdf.clone(), false).unwrap();
+
+        let retained = root.path().join("retained");
+        std::fs::rename(&selected, &retained).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(&doc, "# replacement\n").unwrap();
+        std::fs::write(&pdf, b"%PDF-1.1\nreplacement\n%%EOF\n").unwrap();
+        let replacement = r#"{"format":3,"revision":90,"nextId":100,"reviews":[{"id":"r99","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"replacement"}]}"#;
+        std::fs::write(review_sidecar(&doc), replacement).unwrap();
+        let before: Vec<_> = std::fs::read_dir(&nested)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+
+        // Tab activation must not replace the original admission handle.
+        adopt(&watched, doc.clone(), false).unwrap();
+        let allowed = super::allowed_set(&watched).unwrap();
+        // The canonical pathname still matches, but it now names another directory.
+        let written = write_review(doc.to_str().unwrap(), markdown_review(), &allowed).unwrap();
+        assert_eq!(written.reviews[1].id, "r9");
+        let listed = list_reviews(doc.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(listed.reviews[0].quote, "original");
+        let changed = change_review_comment(
+            doc.to_str().unwrap(),
+            "r9",
+            "tighten this",
+            "updated",
+            &allowed,
+        )
+        .unwrap();
+        let patch = serde_json::json!({"resolution":"checked"});
+        let expected = serde_json::json!({"$revision":changed.revision});
+        let patched = patch_review_record(
+            doc.to_str().unwrap(),
+            "r9",
+            &patch,
+            &expected,
+            &allowed,
+            false,
+        )
+        .unwrap();
+        let expected = serde_json::to_value(&patched.reviews[1]).unwrap();
+        remove_review_cas(doc.to_str().unwrap(), "r9", &expected, &allowed).unwrap();
+
+        let pdf_store = write_review(pdf.to_str().unwrap(), pdf_review(), &allowed).unwrap();
+        assert_eq!(
+            pdf_store.document.unwrap().tex.as_deref(),
+            Some("paper.tex")
+        );
+        assert_eq!(
+            pdf_store.reviews[0]
+                .anchor
+                .as_ref()
+                .unwrap()
+                .document_revision
+                .as_deref(),
+            Some(
+                super::document_sha256(&retained.join("nested/paper.pdf"))
+                    .unwrap()
+                    .as_str()
+            ),
+        );
+        let saved = retained.join("nested/collab_review.json");
+        assert_eq!(
+            parse_store(&std::fs::read_to_string(&saved).unwrap())
+                .unwrap()
+                .reviews
+                .len(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(saved.with_extension("json.pre-v3.bak")).unwrap(),
+            original
+        );
+        assert!(saved.with_extension("json.bak").is_file());
+        assert!(saved.with_extension("json.lock").is_file());
+        assert_eq!(
+            std::fs::read_to_string(review_sidecar(&doc)).unwrap(),
+            replacement
+        );
+        let after: Vec<_> = std::fs::read_dir(&nested)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "no lock, backup, or temporary file may reach the replacement directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_atomic_writes_preserve_private_defaults_and_existing_permissions() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("paper_review.json");
+        let mut store = empty_store();
+        save_store(&sidecar, &mut store).unwrap();
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().mode() & 0o777, 0o600);
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o640)).unwrap();
+        save_store(&sidecar, &mut store).unwrap();
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().mode() & 0o777, 0o640);
+        assert_eq!(
+            std::fs::metadata(sidecar.with_extension("json.bak"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_save_keeps_directory_when_ancestor_changes_after_loading() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected");
+        let nested = selected.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let doc = nested.join("collab.md");
+        std::fs::write(&doc, "# admitted\n").unwrap();
+        let legacy = r#"{"format":2,"reviews":[{"id":"r8","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"legacy"}]}"#;
+        std::fs::write(nested.join(LEGACY_REVIEW_FILE), legacy).unwrap();
+        let watched = Watched::default();
+        adopt(&watched, doc.clone(), true).unwrap();
+        let allowed = super::allowed_set(&watched).unwrap();
+        let authorized = super::open_review_document(doc.to_str().unwrap(), &allowed).unwrap();
+        let (sidecar, mut store) = super::load_store(&authorized).unwrap();
+        assert_eq!(store.reviews[0].quote, "legacy");
+
+        let retained = root.path().join("retained");
+        std::fs::rename(&selected, &retained).unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir_all(victim.join("nested")).unwrap();
+        symlink(&victim, &selected).unwrap();
+        // Locking and saving must still use the directory that supplied the legacy data.
+        let lock = super::ReviewLock::acquire(&sidecar).unwrap();
+        save_bound_store(&sidecar, &mut store).unwrap();
+        drop(lock);
+        assert_eq!(
+            super::read_snapshot(&authorized).unwrap().unwrap().reviews[0].quote,
+            "legacy"
+        );
+        let saved = retained.join("nested/collab_review.json");
+        assert!(saved.is_file());
+        assert_eq!(
+            std::fs::read_to_string(saved.with_extension("json.pre-v3.bak")).unwrap(),
+            legacy
+        );
+        assert_eq!(std::fs::read_dir(victim.join("nested")).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn admitted_review_directory_prevents_ancestor_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected");
+        std::fs::create_dir_all(selected.join("nested")).unwrap();
+        let doc = selected.join("nested/collab.md");
+        std::fs::write(&doc, "# admitted\n").unwrap();
+        let watched = Watched::default();
+        adopt(&watched, doc.clone(), true).unwrap();
+        assert!(std::fs::rename(&selected, root.path().join("moved")).is_err());
+        let allowed = super::allowed_set(&watched).unwrap();
+        write_review(doc.to_str().unwrap(), markdown_review(), &allowed).unwrap();
+        drop(allowed);
+        drop(watched);
+        std::fs::rename(&selected, root.path().join("moved")).unwrap();
+    }
+
     #[test]
     fn write_review_refuses_outside_open_set() {
         let dir = scratch("review_denied");
@@ -4084,7 +4263,7 @@ mod tests {
         let err = write_review(
             &doc.display().to_string(),
             markdown_review(),
-            &HashSet::new(),
+            &super::AllowedDocuments::default(),
         )
         .unwrap_err();
         assert!(err.contains("never opened"), "{err}");
@@ -4098,13 +4277,14 @@ mod tests {
         let sidecar = dir.join("collab_review.json");
         std::fs::write(&sidecar, "{}\n").unwrap();
         let canonical = std::fs::canonicalize(&sidecar).unwrap();
-        let mut allowed = HashSet::new();
-        allowed.insert(canonical);
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(canonical).unwrap();
 
         let err =
             write_review(&sidecar.display().to_string(), markdown_review(), &allowed).unwrap_err();
         assert!(err.contains("review file"), "{err}");
 
+        drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4113,7 +4293,7 @@ mod tests {
         let err = write_review(
             "/tmp/nonexistent_file_xyz_12345.md",
             markdown_review(),
-            &HashSet::new(),
+            &super::AllowedDocuments::default(),
         )
         .unwrap_err();
         assert!(!err.is_empty());
@@ -4123,7 +4303,8 @@ mod tests {
     fn write_review_refuses_quote_over_cap() {
         let mut review = markdown_review();
         review.quote = "x".repeat(20_001);
-        let err = write_review("/tmp/test.md", review, &HashSet::new()).unwrap_err();
+        let err =
+            write_review("/tmp/test.md", review, &super::AllowedDocuments::default()).unwrap_err();
         assert!(err.contains("quote"), "{err}");
     }
 
@@ -4131,7 +4312,8 @@ mod tests {
     fn write_review_refuses_comment_over_cap() {
         let mut review = markdown_review();
         review.comment = "x".repeat(2_001);
-        let err = write_review("/tmp/test.md", review, &HashSet::new()).unwrap_err();
+        let err =
+            write_review("/tmp/test.md", review, &super::AllowedDocuments::default()).unwrap_err();
         assert!(err.contains("comment"), "{err}");
     }
 
@@ -4143,9 +4325,11 @@ mod tests {
         std::fs::write(&md, "# hi\n").unwrap();
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
 
-        let mut allowed = HashSet::new();
-        allowed.insert(std::fs::canonicalize(&md).unwrap());
-        allowed.insert(std::fs::canonicalize(&pdf).unwrap());
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+        allowed
+            .insert(std::fs::canonicalize(&pdf).unwrap())
+            .unwrap();
 
         let first = write_review(&md.display().to_string(), markdown_review(), &allowed).unwrap();
         let second = write_review(&pdf.display().to_string(), pdf_review(), &allowed).unwrap();
@@ -4189,6 +4373,7 @@ mod tests {
             .unwrap()
             .starts_with("sha256:"));
 
+        drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4220,8 +4405,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let mut allowed = HashSet::new();
-        allowed.insert(std::fs::canonicalize(&pdf).unwrap());
+        let mut allowed = super::AllowedDocuments::default();
+        allowed
+            .insert(std::fs::canonicalize(&pdf).unwrap())
+            .unwrap();
 
         let listed = list_reviews(&pdf.display().to_string(), &allowed).unwrap();
         assert_eq!(listed.reviews.len(), 1);
@@ -4230,6 +4417,7 @@ mod tests {
         assert_eq!(listed.reviews[0].id, "r1");
         assert!(!dir.join("paper_review.json").exists());
 
+        drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4238,8 +4426,8 @@ mod tests {
         let dir = scratch("review_update");
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
-        let mut allowed = HashSet::new();
-        allowed.insert(std::fs::canonicalize(&md).unwrap());
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
         let path = md.display().to_string();
 
         write_review(&path, markdown_review(), &allowed).unwrap();
@@ -4265,6 +4453,7 @@ mod tests {
         assert_eq!(first.comment, "edited");
         assert_eq!(other.comment, "second");
 
+        drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4278,7 +4467,7 @@ mod tests {
         review.id = "r1".into();
         legacy.reviews.push(review);
         save_store(&dir.join(LEGACY_REVIEW_FILE), &mut legacy).unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let document = pdf.to_str().unwrap();
         let listed = list_reviews(document, &allowed).unwrap();
         let id = listed.reviews[0].id.clone();
@@ -4299,6 +4488,7 @@ mod tests {
         assert_eq!(updated.reviews[0].comment, "updated");
         remove_review(document, &id, &allowed).unwrap();
         assert!(list_reviews(document, &allowed).unwrap().reviews.is_empty());
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4318,6 +4508,7 @@ mod tests {
             .allowed
             .contains(&std::fs::canonicalize(&background).unwrap()));
         drop(state);
+        drop(watched);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4333,12 +4524,13 @@ mod tests {
         store.reviews.push(foreign.clone());
         store.next_id = 2;
         save_store(&review_sidecar(&pdf), &mut store).unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let document = pdf.to_str().unwrap();
         assert!(change_review_comment(document, "r1", "", "changed", &allowed).is_err());
         assert!(remove_review(document, "r1", &allowed).is_err());
         let saved = parse_store(&std::fs::read_to_string(review_sidecar(&pdf)).unwrap()).unwrap();
         assert_eq!(saved.reviews, vec![foreign]);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4396,8 +4588,8 @@ mod tests {
         let dir = scratch("review_delete");
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
-        let mut allowed = HashSet::new();
-        allowed.insert(std::fs::canonicalize(&md).unwrap());
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
         let path = md.display().to_string();
 
         write_review(&path, markdown_review(), &allowed).unwrap();
@@ -4412,6 +4604,7 @@ mod tests {
         let added = write_review(&path, markdown_review(), &allowed).unwrap();
         assert_eq!(added.reviews.last().unwrap().id, "r3");
 
+        drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4492,9 +4685,10 @@ mod tests {
         let sidecar = review_sidecar(&md);
         std::fs::write(&sidecar, "\n\t").unwrap();
         let before = std::fs::read(&sidecar).unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&md).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
         assert!(write_review(md.to_str().unwrap(), markdown_review(), &allowed).is_err());
         assert_eq!(std::fs::read(&sidecar).unwrap(), before);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4535,7 +4729,7 @@ mod tests {
         let dir = scratch("review_remove_cas");
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&md).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
         let path = md.to_str().unwrap();
         let initial = write_review(path, markdown_review(), &allowed).unwrap();
         change_review_comment(path, "r1", "tighten this", "newer comment", &allowed).unwrap();
@@ -4543,6 +4737,7 @@ mod tests {
         let error = remove_review_cas(path, "r1", &expected, &allowed).unwrap_err();
         assert!(error.starts_with("review conflict:"), "{error}");
         assert_eq!(list_reviews(path, &allowed).unwrap().reviews.len(), 1);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4595,7 +4790,7 @@ mod tests {
         let dir = scratch("review_cas_whole_numbers");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = pdf.to_str().unwrap();
         let mut review = pdf_review();
         review.anchor = Some(ReviewAnchor {
@@ -4628,6 +4823,7 @@ mod tests {
         let expected = as_javascript_sends(serde_json::to_value(&listed.reviews[1]).unwrap());
         let left = remove_review_cas(path, "r2", &expected, &allowed).unwrap();
         assert_eq!(left.reviews.len(), 1);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4636,7 +4832,7 @@ mod tests {
         let dir = scratch("review_read_no_lock");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = std::fs::canonicalize(&pdf).unwrap();
         assert!(read_snapshot(&path).unwrap().is_none());
         assert!(list_reviews(pdf.to_str().unwrap(), &allowed)
@@ -4648,6 +4844,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, [OsString::from("paper.pdf")]);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4682,10 +4879,11 @@ mod tests {
             r#"{"format":3,"revision":1,"nextId":2,"reviews":[{"id":"r1","at":{"page":1},"quote":"minimal","comment":"fix"}]}"#,
         )
         .unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let listed = list_reviews(pdf.to_str().unwrap(), &allowed).unwrap();
         assert_eq!(listed.reviews[0].file, "paper.pdf");
         assert_eq!(listed.reviews[0].kind, "pdf");
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4699,9 +4897,10 @@ mod tests {
             r#"{"format":3,"revision":1,"nextId":3,"reviews":[{"id":"r1","at":{"page":1},"quote":"ok"},{"id":"r2","at":{"page":1},"quote":"bad","status":"done"}]}"#,
         )
         .unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let error = list_reviews(pdf.to_str().unwrap(), &allowed).unwrap_err();
         assert!(error.starts_with("review r2: status must be"), "{error}");
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4726,7 +4925,7 @@ mod tests {
         let sidecar = review_sidecar(&pdf);
         let original = r#"{"format":2,"reviews":[{"id":"r8","file":"paper.pdf","kind":"pdf","at":{"page":3,"oldAt":true},"quote":"keep me","comment":"note","oldField":{"v":1}}],"oldStore":42}"#;
         std::fs::write(&sidecar, original).unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = pdf.to_str().unwrap();
         let listed = list_reviews(path, &allowed).unwrap();
         assert_eq!(listed.reviews[0].action, "improve");
@@ -4745,6 +4944,7 @@ mod tests {
         assert_eq!(migrated.format, 3);
         assert_eq!(migrated.reviews[0].extra["oldField"]["v"], 1);
         assert_eq!(migrated.extra["oldStore"], 42);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4753,7 +4953,7 @@ mod tests {
         let dir = scratch("review_comment_cas");
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&md).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
         let path = md.to_str().unwrap();
         write_review(path, markdown_review(), &allowed).unwrap();
         patch_review_record(
@@ -4777,6 +4977,7 @@ mod tests {
             list_reviews(path, &allowed).unwrap().reviews[0].resolution,
             "source updated"
         );
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4785,7 +4986,7 @@ mod tests {
         let dir = scratch("review_patch_cas");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = pdf.to_str().unwrap();
         let initial = write_review(path, pdf_review(), &allowed).unwrap();
         assert_eq!(
@@ -4837,6 +5038,7 @@ mod tests {
         .unwrap();
         assert_eq!(applied.reviews[0].status, "applied");
         assert_eq!(applied.reviews[0].build.as_ref().unwrap()["success"], true);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4846,7 +5048,7 @@ mod tests {
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
         let path = md.to_str().unwrap().to_string();
-        let allowed = HashSet::from([std::fs::canonicalize(&md).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let path = path.clone();
@@ -4870,6 +5072,7 @@ mod tests {
         assert_eq!(colors.len(), 8);
         assert_eq!(listed.next_id, 9);
         assert_eq!(listed.revision, 8);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4878,7 +5081,7 @@ mod tests {
         let dir = scratch("review_many_colors");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = pdf.to_str().unwrap();
         let mut previous_colors = Vec::new();
         for count in 1..=30 {
@@ -4912,6 +5115,7 @@ mod tests {
             counts[usize::from(review.color)] += 1;
         }
         assert!(counts[1..].iter().all(|count| (1..=2).contains(count)));
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4920,7 +5124,7 @@ mod tests {
         let dir = scratch("review_tex_metadata");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let missing = list_reviews(pdf.to_str().unwrap(), &allowed).unwrap();
         assert_eq!(
             missing.document.as_ref().unwrap().pdf.as_deref(),
@@ -4957,6 +5161,7 @@ mod tests {
             retained.document.as_ref().unwrap().tex.as_deref(),
             Some("chapters/main.tex")
         );
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4993,7 +5198,7 @@ mod tests {
         let bytes = b"%PDF-1.1\nsmall stable fixture\n%%EOF\n";
         std::fs::write(&pdf, bytes).unwrap();
         let expected = format!("sha256:{:x}", Sha256::digest(bytes));
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let stored = write_review(pdf.to_str().unwrap(), pdf_review(), &allowed).unwrap();
         assert_eq!(
             stored.reviews[0]
@@ -5007,6 +5212,7 @@ mod tests {
         let renamed = dir.join("moved.pdf");
         std::fs::rename(&pdf, &renamed).unwrap();
         std::fs::remove_file(renamed).unwrap();
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -5021,7 +5227,7 @@ mod tests {
             r#"{"format":2,"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"one"},{"id":"r2","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"two"},{"id":"r7","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"seven"},{"id":"r4","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"explicit","color":5}]}"#,
         )
         .unwrap();
-        let allowed = HashSet::from([std::fs::canonicalize(&pdf).unwrap()]);
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let listed = list_reviews(pdf.to_str().unwrap(), &allowed).unwrap();
         let colors: Vec<_> = listed.reviews.iter().map(|review| review.color).collect();
         assert_eq!(colors, [1, 2, 1, 5]);
@@ -5034,6 +5240,7 @@ mod tests {
             colors
         );
         assert_eq!(updated.reviews[4].color, 8);
+        drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
