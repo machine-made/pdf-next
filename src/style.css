@@ -1084,7 +1084,7 @@ body:not(.has-file) .file-only {
   display: none;
 }
 
-body:not(.kind-pdf) .page-view-only,
+body:not(.kind-pdf):not(.kind-markdown) .page-view-only,
 body:not(.kind-pdf):not(.kind-markdown) .find-only,
 body.kind-image .not-image,
 body:not(.kind-pdf):not(.kind-markdown) .review-only {
@@ -1225,6 +1225,53 @@ body.mode-sepia #markdownStage {
 #markdown[data-width="narrow"] { max-width: 30em; }
 #markdown[data-width="wide"] { max-width: 50em; }
 #markdown[data-width="full"] { max-width: none; }
+
+/* Page views. The article becomes a stack of A4 boxes on the stage; the text
+   menus and the zoom still apply inside them, the width menu does not. */
+#markdown {
+  --page-w: 210mm;
+  --page-h: 297mm;
+  --page-pad: 25mm;
+}
+
+body.pages-on #mdWidth {
+  display: none;
+}
+
+#markdown[data-pages] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, var(--page-w));
+  justify-content: center;
+  gap: 24px;
+  max-width: calc(2 * var(--page-w) + 24px);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+#markdown[data-pages="single"] {
+  max-width: var(--page-w);
+}
+
+.md-page {
+  box-sizing: border-box;
+  width: var(--page-w);
+  min-height: var(--page-h);
+  padding: var(--page-pad);
+  overflow-x: auto;
+  background: var(--md-bg);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fg) var(--page-ring), transparent),
+    0 2px 12px var(--shadow);
+}
+
+#markdown .md-page > :first-child {
+  margin-top: 0;
+}
+
+#markdown .md-page > :last-child {
+  margin-bottom: 0;
+}
 
 #markdown ::selection,
 #markdown *::selection {
@@ -1468,6 +1515,27 @@ body.mode-sepia #markdownStage {
   #markdownRaw {
     zoom: 1 !important;
     max-width: none !important;
+  }
+
+  /* A page view prints one page box per sheet; the sheet's own margins take
+     the place of the box padding. */
+  #markdown[data-pages] {
+    display: block;
+  }
+
+  .md-page {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+    box-shadow: none;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .md-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
   }
 
   #markdownRaw {

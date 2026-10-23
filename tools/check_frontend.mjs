@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
-import { validPageView } from '../src/md-pages.mjs';
+import { paginate, validPageView } from '../src/md-pages.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -226,35 +226,73 @@ function appFunction(name, next, context, source = app) {
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
 }
 
-// Page view for PDF: the menu validates, remembers, and asks PDF.js for spreads.
+// Page view: where a page ends, and the menu that picks the view per kind.
 {
-  assert.equal(validPageView('pdf', 'two'), 'two');
+  const block = (top, height, keepNext = false) => ({ top, bottom: top + height, keepNext });
+  const flow = (heights, keep = []) => {
+    let top = 0;
+    return heights.map((height, i) => {
+      const item = block(top, height, keep.includes(i));
+      top += height + 10;
+      return item;
+    });
+  };
+  assert.deepEqual(paginate([], 100), [], 'An empty article has no pages.');
+  assert.deepEqual(paginate(flow([40, 40]), 100), [[0, 2]], 'Blocks that fit share a page.');
+  assert.deepEqual(paginate(flow([40, 40, 40]), 100), [[0, 2], [2, 3]], 'The block that would overflow starts the next page.');
+  assert.deepEqual(paginate(flow([40, 50, 40]), 100), [[0, 2], [2, 3]], 'A page may be filled exactly.');
+  assert.deepEqual(paginate(flow([40, 40, 20, 40], [2]), 100), [[0, 2], [2, 4]],
+    'A heading at the foot of a page moves with the block after it.');
+  assert.deepEqual(paginate(flow([40, 20, 20, 40], [1, 2]), 100), [[0, 1], [1, 4]],
+    'A run of headings moves as one with its block.');
+  assert.deepEqual(paginate(flow([20, 20, 90], [0, 1]), 100), [[0, 2], [2, 3]],
+    'When the headings fill the page alone, the page ends on the last of them.');
+  assert.deepEqual(paginate(flow([30, 250, 30]), 100), [[0, 1], [1, 2], [2, 3]],
+    'A block taller than a page stands alone on its own page.');
+  assert.deepEqual(paginate(flow([250]), 100), [[0, 1]]);
+  assert.deepEqual(paginate(flow([250, 30]), 100), [[0, 1], [1, 2]]);
+
+  assert.equal(validPageView('md', 'two'), 'two');
+  assert.equal(validPageView('md', undefined), 'continuous', 'Markdown opens continuous.');
   assert.equal(validPageView('pdf', null), 'single', 'A PDF opens as it always has.');
   assert.equal(validPageView('pdf', 'continuous'), 'single', 'A PDF has no continuous view.');
-  assert.equal(validPageView('pdf', 'sideways'), 'single', 'An unknown value falls back.');
+  assert.equal(validPageView('md', 'sideways'), 'continuous', 'An unknown value falls back.');
 
   const stored = new Map();
+  const classes = new Set();
   const ui = { pageView: { value: '' } };
-  const state = { pageViews: { pdf: 'single' } };
-  let spreads = 0;
-  const setView = appFunction('setPageView', '/// Pages in pairs', {
+  const state = { file: { kind: 'markdown' }, pageViews: { pdf: 'single', md: 'continuous' } };
+  let paginated = 0;
+  const context = {
     state, ui, validPageView,
     localStorage: { setItem: (key, value) => stored.set(key, value) },
-    applyPdfSpread: () => { spreads += 1; }, scheduleWrap() {},
-  });
+    document: { body: { classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) } } },
+    schedulePaginate: () => { paginated += 1; },
+    applyPdfSpread() {}, scheduleWrap() {},
+  };
+  const setView = appFunction('setPageView', '/// Pages in pairs', context);
   setView('two');
-  assert.equal(state.pageViews.pdf, 'two');
+  assert.equal(state.pageViews.md, 'two');
   assert.equal(ui.pageView.value, 'two', 'The menu shows the chosen view.');
-  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'The view is remembered.');
-  assert.equal(spreads, 1, 'Choosing a view asks PDF.js for it.');
-  setView('single', { persist: false, apply: false });
-  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'A restore does not overwrite the saved choice.');
-  assert.equal(spreads, 1, 'A restore without apply leaves the viewer alone.');
+  assert.equal(stored.get('pdf-next.page-view.md'), 'two', 'The view is remembered for Markdown.');
+  assert.equal(classes.has('pages-on'), true, 'A page view hides the width menu.');
+  assert.equal(paginated, 1, 'Choosing a view repaginates.');
+  setView('continuous', { persist: false, apply: false });
+  assert.equal(stored.get('pdf-next.page-view.md'), 'two', 'A restore does not overwrite the saved choice.');
+  assert.equal(classes.has('pages-on'), false);
+  assert.equal(paginated, 1, 'A restore without apply leaves the article alone.');
+  state.file = { kind: 'pdf' };
+  setView('two');
+  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'The PDF view is remembered apart from Markdown.');
+  assert.equal(state.pageViews.md, 'continuous');
   setView('continuous');
   assert.equal(state.pageViews.pdf, 'single', 'A PDF rejects the continuous view.');
   assert.match(page, /id="pageView"[^>]*class="page-view-only"/, 'The menu is in the toolbar.');
-  assert.match(styles, /body:not\(\.kind-pdf\) \.page-view-only/, 'The menu shows for PDF only.');
-  assert.match(app, /SpreadMode\.EVEN/, 'Two pages in a PDF is PDF.js even spreads, the cover alone.');
+  assert.match(page, /<option value="continuous">[^]*<option value="single">[^]*<option value="two">/);
+  assert.match(styles, /body:not\(\.kind-pdf\):not\(\.kind-markdown\) \.page-view-only/,
+    'The menu shows for PDF and Markdown only.');
+  assert.match(app, /SpreadMode\.EVEN/, 'Two pages in a PDF is PDF.js even spreads.');
+  assert.match(styles, /\.md-page \{[^}]*break-after: page/, 'A page box prints on its own sheet.');
 }
 
 // Markdown highlighting must stay within a small synchronous work budget.
@@ -289,7 +327,7 @@ function appFunction(name, next, context, source = app) {
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
     embedMarkdownImages() {},
-    setRaw() {}, setMarkdownScale() {},
+    setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
     markdownBlocks: () => texts.map((text) => ({ text })),
     changedIndices: diff,
     highlightChangedBlocks() { assert.fail('An over-budget reload must skip highlighting.'); },
@@ -628,7 +666,7 @@ for (const kind of ['markdown', 'pdf']) {
     state, ui: { markdown: article, markdownRaw: {}, markdownStage: { scrollHeight: 1000 } },
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new', digest: 'sha256:aa' }),
-    embedMarkdownImages() {}, setRaw() {}, setMarkdownScale() {},
+    embedMarkdownImages() {}, setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
     markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
     MARKDOWN_WINDOW_WIDTH: 780,
     reviewPaintSignature, reviewIdNum: () => 1, renderReviewList() {},
