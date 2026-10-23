@@ -6,7 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext } from '../src/review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -334,6 +334,69 @@ function appFunction(name, next, context, source = app) {
   assert.equal(unwrapped, before + 1, 'Closing find removes the highlights.');
   clear();
   assert.equal(unwrapped, before + 1, 'Clearing twice does no work.');
+}
+
+// Markdown reviews are located by the text around the quote.
+{
+  const article = 'the wake is long. repeat this phrase here. other text. repeat this phrase there. last wake.';
+  const second = selectionContext('the wake is long. repeat this phrase here. other text. ', ' there. last wake.');
+  assert.deepEqual(second, { prefix: 'ke is long. repeat this phrase here. other text.', suffix: 'there. last wake.' },
+    'Context keeps at most 48 characters on each side, normalized.');
+  const located = resolveMarkdownReview(article, { quote: 'Repeat this phrase', anchor: second });
+  assert.equal(located.status, 'located', 'Repeated text is located by its context.');
+  assert.equal(article.slice(located.start, located.end), 'repeat this phrase');
+  assert.ok(located.start > article.indexOf('other text.'), 'The second occurrence is the one chosen.');
+  const lead = resolveMarkdownReview(`  ${article}`, { quote: 'Repeat this phrase', anchor: second });
+  assert.equal(`  ${article}`.slice(lead.start, lead.end), 'repeat this phrase', 'Offsets index the text as given.');
+  assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'repeat this phrase' }) },
+    { status: 'ambiguous', legacy: true }, 'Repeated text without context is ambiguous, and falls back to its line range.');
+  assert.equal(resolveMarkdownReview(article, { quote: 'repeat this phrase', anchor: { prefix: 'nowhere', suffix: '' } }).status,
+    'ambiguous', 'Context that matches nothing does not pick a candidate.');
+  assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'gone words', anchor: { prefix: 'x', suffix: '' } }) },
+    { status: 'unlocated', legacy: false });
+  assert.equal(resolveMarkdownReview(article, { quote: 'long' }).status, 'located',
+    'An old review with a unique quote is located without context.');
+  const moved = reattachedReviewAnchor({ prefix: 'old', suffix: 'old' }, { prefix: 'new', suffix: 'new' }, { line: 3 }, 'quote');
+  assert.deepEqual([moved.prefix, moved.suffix], ['new', 'new'], 'Reattaching moves the context.');
+  assert.deepEqual(moved.original, { anchor: { prefix: 'old', suffix: 'old' }, at: { line: 3 }, quote: 'quote' });
+}
+
+assert.match(app, /const kind = state\.file\?\.kind;\n  if \(!path \|\| \(kind !== 'pdf' && kind !== 'markdown'\)\) return;/,
+  'Reattach works for Markdown as well as PDF.');
+assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
+  'The Reattach button is not limited to PDF.');
+
+// What the Markdown paint does with each kind of review.
+{
+  const calls = [];
+  const state = { file: { path: 'a.md' }, mdFind: null, reviewLocations: new Map(), reviews: [] };
+  const context = {
+    state, ui: { markdown: { querySelectorAll: () => [] } },
+    unwrapMarks() {}, unwrapReviewMarks() {}, renderReviewList() {}, buildMarkdownFind() {},
+    collectTextParts: () => ({ joined: 'a repeat b repeat c', parts: [] }),
+    resolveMarkdownReview, reviewAction, reviewStatus,
+    reviewStateKey: (path, id) => `${path}\u0000${id}`,
+    wrapSpanParts: (root, parts, span) => { calls.push(['span', span.start]); return { parentElement: null }; },
+    markdownReviewMark: () => ({}),
+    markdownBadgeHost: () => null,
+    paintMarkdownByLines: (review) => { calls.push(['lines', review.id]); return null; },
+    placeMarkdownBadge() {},
+  };
+  const paint = appFunction('paintMarkdownMarks', 'function paintReviewMarks', context);
+  const at = { line: 1 };
+  state.reviews = [
+    { id: 'r1', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+    { id: 'r2', quote: 'repeat', at },
+    { id: 'r3', quote: 'repeat', at, anchor: { prefix: 'zzz' } },
+    { id: 'r4', quote: 'missing', at, action: 'delete', status: 'applied', anchor: { prefix: 'a' } },
+    { id: 'r5', quote: 'repeat', at: {}, anchor: { prefix: 'b' } },
+  ];
+  paint();
+  assert.deepEqual(calls.map((call) => call.join(':')), ['span:11', 'lines:r2'],
+    'Context locates one review, a context-free repeat uses its lines, the others paint nothing.');
+  const status = (id) => state.reviewLocations.get(`a.md\u0000${id}`);
+  assert.deepEqual([status('r1'), status('r2'), status('r3'), status('r4'), status('r5')],
+    ['located', undefined, 'ambiguous', 'preserved', undefined]);
 }
 
 // A reload replaces the article's DOM. Identical reviews must not leave it unmarked.
@@ -1694,7 +1757,7 @@ assert.match(
 // One selection record for Markdown and PDF. The Review panel lists them.
 assert.match(
   app,
-  /function describeSelection\(\)[\s\S]*?return \{ file, kind: 'markdown', at: atRange\(start, end, 'line'\), quote \}/,
+  /function describeSelection\([^)]*\)[\s\S]*?return \{ file, kind: 'markdown', at: atRange\(start, end, 'line'\), quote, \.\.\.\(anchor \? \{ anchor \} : \{\}\) \}/,
   'describeSelection must return a review record, not a display string.',
 );
 assert.match(

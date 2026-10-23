@@ -138,3 +138,25 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
   if (found) return { status: 'located', ...found };
   return { status: count > 1 ? 'ambiguous' : 'unlocated' };
 }
+
+/// Context for a selection: the normalized text just before and after it.
+export function selectionContext(before, after) {
+  return {
+    prefix: normalizeReviewText(before).slice(-48),
+    suffix: normalizeReviewText(after).slice(0, 48),
+  };
+}
+
+/// Locate a Markdown review in the article's text. Offsets index `text`. A
+/// review saved without context cannot be told apart from a repeat of its
+/// quote, so `legacy` asks the caller to use the line range instead.
+export function resolveMarkdownReview(text, review) {
+  const anchor = review?.anchor;
+  const found = resolveReviewAnchor([{ page: 1, text }], review?.quote, anchor);
+  if (found.status !== 'located') {
+    return { status: found.status, legacy: !anchor?.prefix && !anchor?.suffix };
+  }
+  // The match was found in the trimmed text.
+  const lead = text.length - text.trimStart().length;
+  return { status: 'located', start: found.start + lead, end: found.end + lead };
+}

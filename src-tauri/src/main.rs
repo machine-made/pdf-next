@@ -6146,6 +6146,35 @@ mod tests {
     }
 
     #[test]
+    fn markdown_review_keeps_its_context_anchor() {
+        let dir = scratch("review_md_anchor");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+
+        let mut review = markdown_review();
+        review.anchor = Some(ReviewAnchor {
+            prefix: Some("text before".into()),
+            suffix: Some("text after".into()),
+            ..ReviewAnchor::default()
+        });
+        write_review(&md.display().to_string(), review.clone(), &allowed).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("collab_review.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["reviews"][0]["anchor"]["prefix"], "text before");
+        assert_eq!(stored["reviews"][0]["anchor"]["suffix"], "text after");
+
+        review.anchor.as_mut().unwrap().suffix = Some("x".repeat(2_001));
+        let err = write_review(&md.display().to_string(), review, &allowed).unwrap_err();
+        assert!(err.contains("suffix"), "{err}");
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn list_reviews_reads_legacy_folder_sidecar() {
         let dir = scratch("review_legacy");
         let pdf = dir.join("paper.pdf");

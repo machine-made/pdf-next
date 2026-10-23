@@ -1,7 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, resolveReviewAnchor, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import {
@@ -2382,8 +2382,30 @@ function atRange(start, end, key) {
   return hi === lo ? { [key]: lo } : { [key]: lo, end: hi };
 }
 
-/// The current selection as a review record, or null.
-function describeSelection() {
+/// Text before and after a Markdown selection, read from a copy of the article
+/// with the review and find marks taken out, as paintMarkdownMarks reads it.
+function markdownAnchorForSelection(range) {
+  if (!ui.markdown.contains(range.startContainer) || !ui.markdown.contains(range.endContainer)) {
+    return null;
+  }
+  const textAround = (limit) => {
+    const edge = document.createRange();
+    edge.selectNodeContents(ui.markdown);
+    limit(edge);
+    const copy = edge.cloneContents();
+    unwrapMarks(copy, 'mark.aim');
+    unwrapReviewMarks(copy);
+    return collectTextParts(copy).joined;
+  };
+  const before = textAround((edge) => edge.setEnd(range.startContainer, range.startOffset));
+  const after = textAround((edge) => edge.setStart(range.endContainer, range.endOffset));
+  const { prefix, suffix } = selectionContext(before, after);
+  return prefix || suffix ? { prefix, suffix } : null;
+}
+
+/// The current selection as a review record, or null. `context` also reads the
+/// surrounding text, which costs a pass over the article: only for saving.
+function describeSelection({ context = false } = {}) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) {
     return null;
@@ -2396,7 +2418,8 @@ function describeSelection() {
   if (state.file?.kind === 'markdown') {
     const start = lineNear(selection.anchorNode, ui.markdown);
     const end = lineNear(selection.focusNode, ui.markdown);
-    return { file, kind: 'markdown', at: atRange(start, end, 'line'), quote };
+    const anchor = context ? markdownAnchorForSelection(selection.getRangeAt(0)) : null;
+    return { file, kind: 'markdown', at: atRange(start, end, 'line'), quote, ...(anchor ? { anchor } : {}) };
   }
   if (state.file?.kind === 'pdf') {
     const start = pageNear(selection.getRangeAt(0).startContainer);
@@ -2448,7 +2471,7 @@ function hasLocator(record) {
 let reviewAnchorRect = null;
 
 function openNoteBox(action = 'improve') {
-  const picked = describeSelection();
+  const picked = describeSelection({ context: true });
   const range = selectionInDocument();
   const rect =
     range && (range.getBoundingClientRect().width || range.getBoundingClientRect().height)
@@ -2858,7 +2881,7 @@ function renderReviewList() {
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
-    if (!review._draftOnly && state.file?.kind === 'pdf' &&
+    if (!review._draftOnly &&
         ['ambiguous', 'unlocated'].includes(locationStatus) && reviewStatus(review) === 'open') {
       const reattach = document.createElement('button');
       reattach.type = 'button';
@@ -3198,22 +3221,24 @@ async function saveDraftAfterConflict(id) {
 async function reattachReview(review) {
   const path = state.file?.path;
   const generation = state.generation;
-  if (!path || state.file?.kind !== 'pdf') return;
-  const picked = describeSelection();
-  if (!picked || picked.kind !== 'pdf' || !sameReviewQuote(review, picked.quote)) {
-    setStatus('Select the same quoted text in the PDF before reattaching', { error: true });
+  const kind = state.file?.kind;
+  if (!path || (kind !== 'pdf' && kind !== 'markdown')) return;
+  const label = kind === 'pdf' ? 'PDF' : 'Markdown';
+  const picked = describeSelection({ context: true });
+  if (!picked || picked.kind !== kind || !sameReviewQuote(review, picked.quote)) {
+    setStatus(`Select the same quoted text in the ${label} before reattaching`, { error: true });
     return;
   }
-  if (!picked.anchor?.position) {
-    setStatus('The selected text has no PDF position to attach to', { error: true });
+  if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor)) {
+    setStatus(`The selected text has no ${kind === 'pdf' ? 'PDF position' : 'surrounding text'} to attach to`, { error: true });
     return;
   }
   try {
-    const digest = await pdfDocumentDigest();
+    const digest = kind === 'pdf' ? await pdfDocumentDigest() : null;
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
-    nextAnchor.documentRevision = digest;
-    await patchReview(review, { anchor: nextAnchor }, 'Review reattached to the selected PDF text');
+    if (digest) nextAnchor.documentRevision = digest;
+    await patchReview(review, { anchor: nextAnchor }, `Review reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(`Could not reattach review: ${String(error)}`, { error: true });
@@ -3445,51 +3470,92 @@ function wrapQuoteIn(root, quote, id) {
   return wrapQuoteFragments(root, quote, id, { asMark: true });
 }
 
+function markdownReviewMark(id) {
+  const mark = document.createElement('mark');
+  mark.className = 'review';
+  applyReviewTint(mark, id);
+  return mark;
+}
+
+/// A review saved without context: look for its quote in the blocks of its
+/// line range, or tint those blocks. Returns the block that takes the badge.
+function paintMarkdownByLines(review) {
+  const start = review.at.line;
+  const end = review.at.end || start;
+  const hosts = [];
+  for (const anchor of ui.markdown.querySelectorAll('[data-line]')) {
+    const line = Number(anchor.dataset.line);
+    if (line < start || line > end) {
+      continue;
+    }
+    hosts.push(
+      anchor.parentElement && anchor.parentElement !== ui.markdown ? anchor.parentElement : anchor,
+    );
+  }
+  let badgeHost = null;
+  let wrapped = false;
+  for (const host of hosts) {
+    if (wrapQuoteIn(host, review.quote, review.id)) {
+      wrapped = true;
+      badgeHost ??= host;
+    }
+  }
+  if (!wrapped) {
+    for (const host of hosts) {
+      applyReviewTint(host, review.id);
+      badgeHost ??= host;
+    }
+  }
+  return badgeHost;
+}
+
+/// The block that carries a mark's line anchor, where its badge goes.
+function markdownBadgeHost(mark) {
+  let host = mark.parentElement;
+  while (host && host !== ui.markdown && !host.querySelector(':scope > [data-line]')) {
+    host = host.parentElement;
+  }
+  return host && host !== ui.markdown ? host : mark.parentElement;
+}
+
 function paintMarkdownMarks() {
   // A find mark inside a word would split the text a review quote is matched in.
   const finding = state.mdFind;
   unwrapMarks(ui.markdown, 'mark.aim.find');
   unwrapReviewMarks(ui.markdown);
+  const locations = new Map();
+  const badges = [];
   for (const review of state.reviews) {
-    const start = review.at?.line;
-    if (!start) {
+    if (!review.at?.line) {
       continue;
     }
-    const end = review.at.end || start;
-    const hosts = [];
-    for (const anchor of ui.markdown.querySelectorAll('[data-line]')) {
-      const line = Number(anchor.dataset.line);
-      if (line < start || line > end) {
-        continue;
-      }
-      const host =
-        anchor.parentElement && anchor.parentElement !== ui.markdown
-          ? anchor.parentElement
-          : anchor;
-      hosts.push(host);
-    }
+    // Read afresh: every mark and badge placed so far changes the text nodes.
+    const { joined, parts } = collectTextParts(ui.markdown);
+    const found = resolveMarkdownReview(joined, review);
     let badgeHost = null;
-    let wrapped = false;
-    for (const host of hosts) {
-      if (wrapQuoteIn(host, review.quote, review.id)) {
-        wrapped = true;
-        if (!badgeHost) {
-          badgeHost = host;
-        }
-      }
+    if (found.status === 'located') {
+      const first = wrapSpanParts(ui.markdown, parts, found, () => markdownReviewMark(review.id));
+      badgeHost = first && markdownBadgeHost(first);
+    } else if (found.legacy) {
+      badgeHost = paintMarkdownByLines(review);
     }
-    if (!wrapped) {
-      for (const host of hosts) {
-        applyReviewTint(host, review.id);
-        if (!badgeHost) {
-          badgeHost = host;
-        }
-      }
+    if (!found.legacy) {
+      const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+      locations.set(
+        reviewStateKey(state.file.path, review.id),
+        found.status === 'located' ? 'located' : gone ? 'preserved' : found.status,
+      );
     }
     if (badgeHost) {
-      placeMarkdownBadge(badgeHost, review);
+      badges.push([badgeHost, review]);
     }
   }
+  // After all the matching: a badge is text too.
+  for (const [host, review] of badges) {
+    placeMarkdownBadge(host, review);
+  }
+  state.reviewLocations = locations;
+  renderReviewList();
   if (finding) {
     buildMarkdownFind(true);
   }
