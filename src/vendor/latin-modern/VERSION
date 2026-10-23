@@ -1,0 +1,8 @@
+Latin Modern Roman 12 (regular, bold, italic), GUST Font License (GUST-FONT-LICENSE.txt).
+Source: font.zip from release v0.7.1 of https://github.com/carloskiki/pulldown-latex
+Used for the Markdown body text and for \text inside equations.
+Date: 2026-09-02T16:15:27Z
+SHA-256:
+  4bac38ebd070116aa4750eb291ac3f598f01f7d40eb9bf3114e0456e921f1c65  lmroman12-regular.woff2
+  676afdb55983085a5e44ddd595971051439e6f4960716c596551e3b759a3b9a3  lmroman12-bold.woff2
+  04facadc3131f3b2ba4a417ccccb879656d0b9d913761c482b92f276a795e484  lmroman12-italic.woff2

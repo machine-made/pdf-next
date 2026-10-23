@@ -157,6 +157,10 @@ mark.aim {
   color: inherit;
 }
 
+mark.aim.current {
+  outline: 2px solid var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -868,6 +872,21 @@ body.mode-invert #image {
   margin-bottom: 0;
 }
 
+/* Two pages: PDF.js pulls the pages of a spread together by 3.5px each to
+   cancel the border zeroed above, which would overlap them. Four pixels on
+   each side leaves the same 8px gap as between rows. */
+.pdfViewer .spread {
+  margin-inline: 0;
+}
+
+.pdfViewer .spread .page {
+  margin: 0 4px 8px;
+}
+
+.pdfViewer .spread:last-child .page {
+  margin-bottom: 0;
+}
+
 .pdfViewer .page {
   position: relative;
   box-shadow:
@@ -1065,6 +1084,8 @@ body:not(.has-file) .file-only {
   display: none;
 }
 
+body:not(.kind-pdf):not(.kind-markdown) .page-view-only,
+body:not(.kind-pdf):not(.kind-markdown) .find-only,
 body.kind-image .not-image,
 body:not(.kind-pdf):not(.kind-markdown) .review-only {
   display: none;
@@ -1073,21 +1094,21 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
 /* Latin Modern Roman typeface for markdown body text */
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-regular.woff2');
+  src: url('./vendor/latin-modern/lmroman12-regular.woff2');
   font-weight: 400;
   font-display: swap;
 }
 
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-bold.woff2');
+  src: url('./vendor/latin-modern/lmroman12-bold.woff2');
   font-weight: 700;
   font-display: swap;
 }
 
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-italic.woff2');
+  src: url('./vendor/latin-modern/lmroman12-italic.woff2');
   font-weight: 400;
   font-style: italic;
   font-display: swap;
@@ -1110,6 +1131,22 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
   --md-dim: #59626b;
   --md-rule: #d8dde3;
   --md-code-bg: #f0f2f4;
+  --md-code-keyword: #a626a4;
+  --md-code-built-in: #7a4a00;
+  --md-code-type: #0b6b6b;
+  --md-code-literal: #0a5fa8;
+  --md-code-number: #0a5fa8;
+  --md-code-string: #1a6e1a;
+  --md-code-comment: #5f6b76;
+  --md-code-meta: #7a5200;
+  --md-code-title: #8a2a00;
+  --md-code-params: #3a4650;
+  --md-code-variable: #b0204a;
+  --md-code-attr: #7a4a00;
+  --md-code-symbol: #8a3ba0;
+  --md-code-section: #8a2a00;
+  --md-code-addition: #1a6e1a;
+  --md-code-deletion: #b01e1e;
   --md-accent: #0b62c4;
 }
 
@@ -1130,6 +1167,22 @@ body.mode-invert #markdownStage {
   --md-dim: #9a958a;
   --md-rule: #3a3a3a;
   --md-code-bg: #282828;
+  --md-code-keyword: #d98aea;
+  --md-code-built-in: #e6b25a;
+  --md-code-type: #5fd0cf;
+  --md-code-literal: #74b8f5;
+  --md-code-number: #74b8f5;
+  --md-code-string: #9fd47a;
+  --md-code-comment: #8f9aa5;
+  --md-code-meta: #e0b860;
+  --md-code-title: #f0916a;
+  --md-code-params: #c4ccd4;
+  --md-code-variable: #f08098;
+  --md-code-attr: #e6b25a;
+  --md-code-symbol: #c8a0f0;
+  --md-code-section: #f0916a;
+  --md-code-addition: #9fd47a;
+  --md-code-deletion: #f48a8a;
   --md-accent: #6fb3f2;
 }
 
@@ -1139,6 +1192,22 @@ body.mode-sepia #markdownStage {
   --md-dim: #86735e;
   --md-rule: #ddd0b5;
   --md-code-bg: #ece2ca;
+  --md-code-keyword: #8e2b8c;
+  --md-code-built-in: #6e4300;
+  --md-code-type: #0a5f5f;
+  --md-code-literal: #0c559a;
+  --md-code-number: #0c559a;
+  --md-code-string: #2f6314;
+  --md-code-comment: #6e5c46;
+  --md-code-meta: #6e4a00;
+  --md-code-title: #8a2a00;
+  --md-code-params: #4a3a2c;
+  --md-code-variable: #a01c46;
+  --md-code-attr: #6e4300;
+  --md-code-symbol: #7a2f90;
+  --md-code-section: #8a2a00;
+  --md-code-addition: #2f6314;
+  --md-code-deletion: #a81c1c;
   --md-accent: #8f5f2a;
 }
 
@@ -1169,7 +1238,8 @@ body.mode-sepia #markdownStage {
 }
 
 #markdown {
-  font-family: "Latin Modern Roman", Georgia, "Times New Roman", serif;
+  --article-font: "Latin Modern Roman", Georgia, "Times New Roman", serif;
+  font-family: var(--article-font);
   font-size: 17px;
   line-height: 1.5;
   max-width: 38em;
@@ -1178,6 +1248,78 @@ body.mode-sepia #markdownStage {
   hyphens: auto;
   text-wrap: pretty;
   text-align: left;
+}
+
+#markdown[data-font="serif"] {
+  --article-font: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+}
+
+#markdown[data-font="sans"] {
+  --article-font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+#markdown[data-font="mono"] {
+  --article-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+}
+
+#markdown[data-size="14"] { font-size: 14px; }
+#markdown[data-size="15"] { font-size: 15px; }
+#markdown[data-size="16"] { font-size: 16px; }
+#markdown[data-size="18"] { font-size: 18px; }
+#markdown[data-size="20"] { font-size: 20px; }
+#markdown[data-size="22"] { font-size: 22px; }
+#markdown[data-size="24"] { font-size: 24px; }
+
+/* Width is in em of the text size, so a larger size keeps the words per line. */
+#markdown[data-width="narrow"] { max-width: 30em; }
+#markdown[data-width="wide"] { max-width: 50em; }
+#markdown[data-width="full"] { max-width: none; }
+
+/* Page views. The article becomes a stack of A4 boxes on the stage; the text
+   menus and the zoom still apply inside them, the width menu does not. */
+#markdown {
+  --page-w: 210mm;
+  --page-h: 297mm;
+  --page-pad: 25mm;
+}
+
+body.pages-on #mdWidth {
+  display: none;
+}
+
+#markdown[data-pages] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, var(--page-w));
+  justify-content: center;
+  gap: 24px;
+  max-width: calc(2 * var(--page-w) + 24px);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+#markdown[data-pages="single"] {
+  max-width: var(--page-w);
+}
+
+.md-page {
+  box-sizing: border-box;
+  width: var(--page-w);
+  min-height: var(--page-h);
+  padding: var(--page-pad);
+  overflow-x: auto;
+  background: var(--md-bg);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fg) var(--page-ring), transparent),
+    0 2px 12px var(--shadow);
+}
+
+#markdown .md-page > :first-child {
+  margin-top: 0;
+}
+
+#markdown .md-page > :last-child {
+  margin-bottom: 0;
 }
 
 #markdown ::selection,
@@ -1252,6 +1394,25 @@ body.mode-sepia #markdownStage {
   line-height: 1.5;
 }
 
+#markdown .hljs-keyword { color: var(--md-code-keyword); }
+#markdown .hljs-built_in { color: var(--md-code-built-in); }
+#markdown .hljs-type { color: var(--md-code-type); }
+#markdown .hljs-literal { color: var(--md-code-literal); }
+#markdown .hljs-number { color: var(--md-code-number); }
+#markdown .hljs-string,
+#markdown .hljs-regexp { color: var(--md-code-string); }
+#markdown .hljs-comment { color: var(--md-code-comment); font-style: italic; }
+#markdown .hljs-meta { color: var(--md-code-meta); }
+#markdown .hljs-title { color: var(--md-code-title); }
+#markdown .hljs-params { color: var(--md-code-params); }
+#markdown .hljs-variable { color: var(--md-code-variable); }
+#markdown .hljs-attr { color: var(--md-code-attr); }
+#markdown .hljs-symbol,
+#markdown .hljs-bullet { color: var(--md-code-symbol); }
+#markdown .hljs-section { color: var(--md-code-section); font-weight: 600; }
+#markdown .hljs-addition { color: var(--md-code-addition); }
+#markdown .hljs-deletion { color: var(--md-code-deletion); }
+
 #markdown blockquote {
   margin: 0.8em 0;
   padding: 2px 0 2px 14px;
@@ -1274,6 +1435,24 @@ body.mode-sepia #markdownStage {
 
 #markdown th {
   background: var(--md-code-bg);
+}
+
+#markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
+#markdown p > img:only-child {
+  display: block;
+  margin: 0 auto;
+}
+
+#markdown .md-image-refused {
+  padding: 1px 6px;
+  border: 1px dashed var(--md-rule);
+  border-radius: 4px;
+  color: var(--md-dim);
+  font-size: 0.9em;
 }
 
 #markdown hr {
@@ -1397,6 +1576,22 @@ body.mode-sepia #markdownStage {
     --md-dim: #4a4a4a !important;
     --md-rule: #b8b8b8 !important;
     --md-code-bg: #f2f2f2 !important;
+    --md-code-keyword: #a626a4 !important;
+    --md-code-built-in: #7a4a00 !important;
+    --md-code-type: #0b6b6b !important;
+    --md-code-literal: #0a5fa8 !important;
+    --md-code-number: #0a5fa8 !important;
+    --md-code-string: #1a6e1a !important;
+    --md-code-comment: #5f6b76 !important;
+    --md-code-meta: #7a5200 !important;
+    --md-code-title: #8a2a00 !important;
+    --md-code-params: #3a4650 !important;
+    --md-code-variable: #b0204a !important;
+    --md-code-attr: #7a4a00 !important;
+    --md-code-symbol: #8a3ba0 !important;
+    --md-code-section: #8a2a00 !important;
+    --md-code-addition: #1a6e1a !important;
+    --md-code-deletion: #b01e1e !important;
     --md-accent: #0b3f8f !important;
   }
 
@@ -1404,6 +1599,27 @@ body.mode-sepia #markdownStage {
   #markdownRaw {
     zoom: 1 !important;
     max-width: none !important;
+  }
+
+  /* A page view prints one page box per sheet; the sheet's own margins take
+     the place of the box padding. */
+  #markdown[data-pages] {
+    display: block;
+  }
+
+  .md-page {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+    box-shadow: none;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .md-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
   }
 
   #markdownRaw {
@@ -1427,11 +1643,22 @@ body.mode-sepia #markdownStage {
 }
 
 /* ── Markdown: equations, footnotes, task lists ──────────────────────── */
-/* The math font is the vendored Latin Modern (pulldown-latex's stylesheet
-   declares it); a system math font stands in until it loads. */
+/* The math font is New Computer Modern Math, patched by math-core's authors
+   so accents centre and primes sit right in browsers. A system math font
+   stands in until it loads. Text inside an equation uses the article's text face. */
+@font-face {
+  font-family: "New Computer Modern Math";
+  src: url('./vendor/math-core/NewCMMath-Book.woff2');
+  font-display: swap;
+}
+
 #markdown math {
-  font-family: "Latin Modern Math", "STIX Two Math", "Cambria Math", math, serif;
+  font-family: "New Computer Modern Math", "STIX Two Math", "Cambria Math", math, serif;
   font-size: 1.05em;
+}
+
+#markdown math mtext {
+  font-family: var(--article-font);
 }
 
 /* `display: block` alone would turn MathML layout off; `block math` keeps it.

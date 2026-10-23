@@ -93,8 +93,18 @@ winget validate --manifest winget/RicardoFrantz.pdf-next/0.14.5
 winget install --manifest winget/RicardoFrantz.pdf-next/0.14.5
 ```
 
-To publish a version, copy its folder into a fork of winget-pkgs at
-`manifests/r/RicardoFrantz/pdf-next/<version>/` and open a pull request.
+Each tag submits itself: after the release is published, `release.yml`
+calls `.github/workflows/winget.yml`, which runs `wingetcreate update
+--submit` and opens the pull request from the fork `ricardofrantz/winget-pkgs`.
+It needs the `WINGET_TOKEN` secret, a classic personal access token with only
+the `public_repo` scope; without it the job warns and skips. To submit a
+release again, run the workflow by hand with its tag:
+
+```
+gh workflow run winget.yml -R ricardofrantz/pdf-next -f tag=v0.14.5
+```
+
+The winget-pkgs bots and a moderator still review and merge the pull request.
 The [first submission](https://github.com/microsoft/winget-pkgs/pull/428398)
 added 0.14.0 and was merged on 2026-10-08, after the moderator waived the
 unsigned-installer policy check. Merging needs every review comment on the PR
@@ -102,7 +112,7 @@ resolved, including automated ones. The
 [0.14.3 update](https://github.com/microsoft/winget-pkgs/pull/450346) merged
 on 2026-10-11; the
 [0.14.4 update](https://github.com/microsoft/winget-pkgs/pull/451301) merged
-on 2026-10-12; the 0.14.5 manifests are in `winget/`, not yet submitted.
+on 2026-10-12.
 The manifests use schema 1.12.0 and omit `DisplayVersion` when it equals
 `PackageVersion`. Keep the publisher and product code entries: they describe
 the installer registry values. The 0.14.0 installer registers publisher
@@ -122,7 +132,7 @@ progress, then the app, no wizard (`/W` brings it back; `/S` stays
 silent for the Store). Re-copy the file from `@tauri-apps/cli` when that
 crate is upgraded.
 
-For a new version: copy the folder, change `PackageVersion`, `InstallerUrl`,
+To prepare manifests by hand: copy the folder, change `PackageVersion`, `InstallerUrl`,
 `InstallerSha256` (`sha256sum` of the `.exe` from the release page, upper
 case), `ReleaseDate` and `ReleaseNotesUrl`. Omit `DisplayVersion` when it is
 the same as `PackageVersion`. Or let

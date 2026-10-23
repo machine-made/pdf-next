@@ -1,9 +1,11 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findNormalizedSpan, normalizeReviewText, resolveReviewAnchor, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
+import { paginate, validPageView } from './md-pages.mjs';
+import { colourCode } from './code-colour.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -17,7 +19,7 @@ import * as pdfjsLib from './vendor/pdfjs/build/pdf.min.mjs';
 globalThis.pdfjsLib = pdfjsLib;
 
 const { getDocument, GlobalWorkerOptions, PDFWorker } = pdfjsLib;
-const { EventBus, PDFFindController, PDFLinkService, PDFViewer } = await import(
+const { EventBus, PDFFindController, PDFLinkService, PDFViewer, SpreadMode } = await import(
   './vendor/pdfjs/web/pdf_viewer.mjs'
 );
 
@@ -67,6 +69,10 @@ const ui = {
   mode: el('mode'),
   wrap: el('wrap'),
   raw: el('raw'),
+  mdFont: el('mdFont'),
+  mdSize: el('mdSize'),
+  mdWidth: el('mdWidth'),
+  pageView: el('pageView'),
   ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
@@ -140,6 +146,8 @@ const state = {
   imageRotation: 0,
   markdownScale: 1,
   markdownRaw: false,
+  /// The page view chosen for each kind, remembered between launches.
+  pageViews: { pdf: 'single', md: 'continuous' },
   statusTimer: 0,
   /// This build and its platform, from Rust; and the newer release a check
   /// found, if any — { version, url } — which turns the button into a download.
@@ -158,6 +166,10 @@ const state = {
   views: new Map(),
   // Blocks extracted from rendered markdown, per path: { path, texts: string[] }
   markdownBlocks: null,
+  // Find hits in the rendered article: { hits: Element[][], index }, or null.
+  mdFind: null,
+  // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
+  markdownDigest: null,
   pendingNote: null,
   pendingNotePdf: null,
   reviews: [],
@@ -649,6 +661,8 @@ function highlightChangedBlocks(indices, blocks) {
 // A reading column plus its margins. The window a fresh markdown file opens
 // into, before the reader resizes it and the per-file memory takes over.
 const MARKDOWN_WINDOW_WIDTH = 780;
+/// The space between two page boxes; style.css gives the grid the same.
+const PAGE_GAP = 24;
 const REVIEW_PANE_WIDTH = 280;
 const REVIEW_TINTS = 16;
 const REVIEW_CHIP_MS = 500;
@@ -662,11 +676,35 @@ function setRaw(on, { persist = true } = {}) {
   ui.markdownRaw.hidden = !on;
   ui.raw.classList.toggle('on', on);
   ui.raw.setAttribute('aria-pressed', String(on));
+  if (!on) {
+    schedulePaginate();
+  }
   if (!persist) {
     return;
   }
   try {
     localStorage.setItem('pdf-next.md-raw', on ? '1' : '');
+  } catch {
+    // Preference only.
+  }
+}
+
+/// One of the markdown text menus (font, size, width): the menu's `data-md`
+/// names the attribute on the article that style.css keys on. An unknown saved
+/// value falls back to the option the page marks as selected.
+function setMarkdownStyle(select, value, { persist = true } = {}) {
+  const options = Array.from(select.options);
+  const chosen = options.some((option) => option.value === value)
+    ? value
+    : (options.find((option) => option.defaultSelected) ?? options[0]).value;
+  const style = select.dataset.md;
+  select.value = chosen;
+  ui.markdown.dataset[style] = chosen;
+  if (!persist) {
+    return;
+  }
+  try {
+    localStorage.setItem(`pdf-next.md-${style}`, chosen);
   } catch {
     // Preference only.
   }
@@ -679,7 +717,178 @@ function setMarkdownScale(scale) {
   ui.markdown.style.zoom = String(scale);
   ui.markdownRaw.style.zoom = String(scale);
   updateZoomControl(String(scale), scale);
+  schedulePaginate();
   scheduleWrap();
+}
+
+// ── Page views ────────────────────────────────────────────────────────────
+
+/// The article's own block, as opposed to the article or one of its page boxes.
+function isBlockOwner(element) {
+  return Boolean(element) && element !== ui.markdown && !element.classList.contains('md-page');
+}
+
+/// One menu for PDF and Markdown, remembered per kind. PDF.js lays out the
+/// spreads itself; Markdown is cut into A4 page boxes by paginateMarkdown.
+function setPageView(value, { persist = true, apply = true } = {}) {
+  const key = state.file?.kind === 'pdf' ? 'pdf' : 'md';
+  const chosen = validPageView(key, value);
+  state.pageViews[key] = chosen;
+  ui.pageView.value = chosen;
+  document.body.classList.toggle('pages-on', key === 'md' && chosen !== 'continuous');
+  if (persist) {
+    try {
+      localStorage.setItem(`pdf-next.page-view.${key}`, chosen);
+    } catch {
+      // Preference only.
+    }
+  }
+  if (!apply) {
+    return;
+  }
+  if (key === 'pdf') {
+    applyPdfSpread();
+    scheduleWrap();
+  } else {
+    schedulePaginate();
+  }
+}
+
+/// Pages in pairs with the cover alone, as in a printed book: PDF.js calls that
+/// even spreads (1 | 2 3 | 4 5). PDF.js forgets the spread mode whenever a
+/// document is set, so this runs after every load.
+function applyPdfSpread() {
+  if (state.document) {
+    pdfViewer.spreadMode = state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE;
+  }
+}
+
+/// The menu shows only what the open kind can do: a PDF has no continuous
+/// A4 flow to switch to, it is one page per sheet already.
+function syncPageViewMenu(kind) {
+  const continuous = ui.pageView.querySelector('option[value="continuous"]');
+  continuous.hidden = continuous.disabled = kind === 'pdf';
+  setPageView(state.pageViews[kind === 'pdf' ? 'pdf' : 'md'], { persist: false, apply: false });
+}
+
+let paginateFrame = 0;
+
+/// One pass per frame, however many things changed in it.
+function schedulePaginate() {
+  const article = ui.markdown;
+  const paged = state.pageViews.md !== 'continuous' || article.querySelector(':scope > .md-page');
+  if (state.file?.kind !== 'markdown' || !paged || paginateFrame) {
+    return;
+  }
+  paginateFrame = window.requestAnimationFrame(() => {
+    paginateFrame = 0;
+    paginateMarkdown();
+    scheduleWrap();
+  });
+}
+
+/// Cut the article into A4 page boxes, or put it back in one column.
+///
+/// The article's nodes are moved, never cloned, so review marks, find marks and
+/// line anchors stay on the nodes they were painted on. A block's trailing
+/// whitespace text travels with it, which keeps the text the marks are matched
+/// in identical in every view. Blocks are laid out once in one box of page
+/// width and measured together, so a pass costs one layout, not one per block.
+/// A paragraph, table, code block or equation taller than a page is not split.
+function paginateMarkdown({ keepPosition = true } = {}) {
+  window.cancelAnimationFrame(paginateFrame);
+  paginateFrame = 0;
+  const article = ui.markdown;
+  const view = state.pageViews.md;
+  const started = performance.now();
+  // Nothing has a size while the raw text is showing; setRaw paginates when it leaves.
+  if (article.hidden || !ui.markdownStage.clientWidth) {
+    return;
+  }
+  const sheets = article.querySelectorAll(':scope > .md-page');
+  if (view === 'continuous' && !sheets.length) {
+    delete article.dataset.pages;
+    return;
+  }
+  const stage = ui.markdownStage;
+  const nodes = sheets.length
+    ? Array.from(sheets, (sheet) => Array.from(sheet.childNodes)).flat()
+    : Array.from(article.childNodes);
+  const elements = nodes.filter((node) => node.nodeType === 1);
+
+  let held = null;
+  if (keepPosition) {
+    const edge = stage.getBoundingClientRect().top;
+    const first = elements.find((element) => element.getBoundingClientRect().bottom > edge);
+    held = first && { element: first, offset: first.getBoundingClientRect().top - edge };
+  }
+
+  if (view === 'continuous') {
+    delete article.dataset.pages;
+    article.replaceChildren(...nodes);
+  } else {
+    article.dataset.pages = view;
+    const box = document.createElement('section');
+    box.className = 'md-page';
+    article.replaceChildren(box);
+    box.append(...nodes);
+    const probe = document.createElement('div');
+    probe.style.cssText =
+      'position:absolute;visibility:hidden;width:1px;height:calc(var(--page-h) - 2 * var(--page-pad))';
+    article.append(probe);
+    // A pixel of slack: a fractional overflow would grow the page by one.
+    const limit = probe.getBoundingClientRect().height - 1;
+    probe.remove();
+    const blocks = elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        keepNext: /^H[1-6]$/.test(element.tagName) || element.matches('span.src'),
+      };
+    });
+    // Each block with the text nodes that follow it; text before the first
+    // block goes with the first.
+    const units = [];
+    let lead = [];
+    for (const node of nodes) {
+      if (node.nodeType === 1) {
+        units.push([...lead, node]);
+        lead = [];
+      } else if (units.length) {
+        units[units.length - 1].push(node);
+      } else {
+        lead.push(node);
+      }
+    }
+    // Detached, the nodes move between boxes without touching a laid-out tree.
+    article.replaceChildren();
+    const pages = paginate(blocks, limit).map(([start, end]) => {
+      const sheet = document.createElement('section');
+      sheet.className = 'md-page';
+      sheet.append(...units.slice(start, end).flat());
+      return sheet;
+    });
+    article.replaceChildren(...(pages.length ? pages : nodes));
+  }
+
+  if (held) {
+    const edge = stage.getBoundingClientRect().top;
+    stage.scrollTop += held.element.getBoundingClientRect().top - edge - held.offset;
+  }
+  state.pagination = {
+    ms: performance.now() - started,
+    pages: article.querySelectorAll(':scope > .md-page').length,
+  };
+}
+
+/// An image arrives as `data-doc`, the canonical path Rust checked, and gets
+/// its `src` here, because only the frontend knows the platform's doc URL. The
+/// revision in the URL makes a regenerated figure load again.
+function embedMarkdownImages(root, revision) {
+  for (const image of root.querySelectorAll('img[data-doc]')) {
+    image.src = sourceUrl({ path: image.dataset.doc, revision });
+  }
 }
 
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
@@ -693,12 +902,18 @@ async function showMarkdown(file, view, generation, fit) {
   }
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
   ui.markdown.innerHTML = doc.html;
+  embedMarkdownImages(ui.markdown, file.revision);
+  colourCode(ui.markdown);
   ui.markdownRaw.textContent = doc.raw;
+  state.markdownDigest = doc.digest;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
 
-  // Highlight changed blocks on reload.
+  // The anchors are read where the renderer put them, before any block moves.
   const newBlocks = markdownBlocks(ui.markdown);
+  paginateMarkdown({ keepPosition: false });
+
+  // Highlight changed blocks on reload.
   const isReload =
     state.markdownBlocks &&
     state.markdownBlocks.path === file.path &&
@@ -717,6 +932,14 @@ async function showMarkdown(file, view, generation, fit) {
     path: file.path,
     texts: newBlocks.map((b) => b.text),
   };
+  // The new DOM has no marks, and the reviews that follow may be unchanged.
+  const reviewed = state.reviewDocumentPath === file.path;
+  if (reviewed) {
+    paintMarkdownMarks();
+  }
+  if (state.mdFind && !reviewed) {
+    buildMarkdownFind(true);
+  }
   // Measured with the content laid out; used by undock as well as the fit.
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -783,6 +1006,19 @@ function contentSize() {
     // screen.
     const column =
       state.file.kind === 'json' ? ui.markdownRaw : ui.markdown;
+    const sheet = ui.markdown.querySelector('.md-page');
+    if (sheet && column === ui.markdown) {
+      // The window wraps one row of pages, however long the document is. The
+      // row's width comes from the page box, not the column, which is only as
+      // wide as the window it is in.
+      const across = state.pageViews.md === 'two' ? 2 : 1;
+      const edge = getComputedStyle(ui.markdownStage);
+      return [
+        Math.ceil(sheet.offsetWidth * across + PAGE_GAP * (across - 1) +
+          parseFloat(edge.paddingLeft) + parseFloat(edge.paddingRight)),
+        Math.ceil(sheet.offsetHeight + parseFloat(edge.paddingTop) + parseFloat(edge.paddingBottom)),
+      ];
+    }
     return [
       Math.ceil(column.offsetWidth || MARKDOWN_WINDOW_WIDTH),
       Math.ceil(ui.markdownStage.scrollHeight),
@@ -793,17 +1029,18 @@ function contentSize() {
   }
   const index = Math.max(0, (pdfViewer.currentPageNumber || 1) - 1);
   const div = pdfViewer.getPageView?.(index)?.div;
+  // In two pages the window wraps a full pair, not the cover that stands
+  // alone, and each page carries 4px of margin on either side (style.css).
+  const pair = pdfViewer.spreadMode !== SpreadMode.NONE && pdfViewer.pagesCount > 1;
+  const across = (width) => Math.ceil(pair ? 2 * (width + 8) : width);
   if (div?.offsetWidth) {
-    return [Math.ceil(div.offsetWidth), Math.ceil(div.offsetHeight)];
+    return [across(div.offsetWidth), Math.ceil(div.offsetHeight)];
   }
   if (!state.natural) {
     return null;
   }
   const scale = pdfViewer.currentScale || 1;
-  return [
-    Math.ceil(state.natural.width * scale),
-    Math.ceil(state.natural.height * scale),
-  ];
+  return [across(state.natural.width * scale), Math.ceil(state.natural.height * scale)];
 }
 
 /// The window that wraps the content exactly. No scrollbar allowance — with an
@@ -1012,6 +1249,7 @@ async function showPdf(file, view, generation) {
   if (state.generation !== generation) {
     return;
   }
+  applyPdfSpread();
 
   if (view) {
     restoreView(view);
@@ -1268,6 +1506,7 @@ async function openFile(
   document.body.classList.toggle('kind-image', file.kind === 'image');
   document.body.classList.toggle('kind-markdown', file.kind === 'markdown');
   document.body.classList.toggle('kind-json', file.kind === 'json');
+  syncPageViewMenu(file.kind);
   setTitle(file.name);
 
   // Free what the outgoing kind was holding: a decoded bitmap or a rendered
@@ -1366,26 +1605,14 @@ async function applyTarget(target) {
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
     setRaw(false, { persist: false });
-    for (const mark of ui.markdown.querySelectorAll('mark.aim')) {
-      const parent = mark.parentNode;
-      if (!parent) {
-        continue;
-      }
-      while (mark.firstChild) {
-        parent.insertBefore(mark.firstChild, mark);
-      }
-      mark.remove();
-      parent.normalize();
-    }
+    // Find marks stay: state.mdFind still points at them.
+    unwrapMarks(ui.markdown, 'mark.aim:not(.find)');
     let from = null;
     if (target.line) {
       const anchors = ui.markdown.querySelectorAll('[data-line]');
       for (const anchor of anchors) {
         if (Number(anchor.dataset.line) >= target.line) {
-          from =
-            anchor.parentElement && anchor.parentElement !== ui.markdown
-              ? anchor.parentElement
-              : anchor;
+          from = isBlockOwner(anchor.parentElement) ? anchor.parentElement : anchor;
           break;
         }
       }
@@ -1457,6 +1684,26 @@ async function applyTarget(target) {
     runFind();
   }
   updatePageControls();
+}
+
+/// Replace each element matching `selector` under `root` by its children,
+/// then join the text that is left, once per parent.
+function unwrapMarks(root, selector) {
+  const parents = new Set();
+  for (const mark of root.querySelectorAll(selector)) {
+    const parent = mark.parentNode;
+    if (!parent) {
+      continue;
+    }
+    while (mark.firstChild) {
+      parent.insertBefore(mark.firstChild, mark);
+    }
+    mark.remove();
+    parents.add(parent);
+  }
+  for (const parent of parents) {
+    parent.normalize();
+  }
 }
 
 /// A target is an instruction, not a property of the tab: it fires once, and
@@ -1856,22 +2103,106 @@ function cycleMode(clear) {
 // ── Find ──────────────────────────────────────────────────────────────────
 
 function openFind() {
-  if (state.file?.kind !== 'pdf') {
+  if (state.file?.kind !== 'pdf' && state.file?.kind !== 'markdown') {
     return;
+  }
+  if (state.file.kind === 'markdown' && state.markdownRaw) {
+    setRaw(false, { persist: false });
   }
   ui.find.hidden = false;
   ui.findInput.focus();
   ui.findInput.select();
 }
 
+/// Markdown find marks the page, so typing waits for a pause first.
+let findTimer = 0;
+
 function closeFind() {
+  window.clearTimeout(findTimer);
+  findTimer = 0;
   ui.find.hidden = true;
   ui.findCount.textContent = '';
+  clearMarkdownFind();
   eventBus.dispatch('findbarclose', { source: null });
   ui.container.focus();
 }
 
+/// Most hits that are marked; the count then reads "1000+".
+const FIND_LIMIT = 1000;
+
+/// Find in the rendered article. Each hit is one `mark.aim.find`, or several
+/// when it crosses inline markup. `state.mdFind` holds them in reading order.
+/// One character matches nearly everything, so a search starts at two.
+function buildMarkdownFind(keepIndex = false) {
+  const index = keepIndex ? (state.mdFind?.index ?? 0) : 0;
+  unwrapMarks(ui.markdown, 'mark.aim.find');
+  const want = normalizeReviewText(ui.findInput.value);
+  const hits = [];
+  let capped = false;
+  if (want.length >= 2) {
+    const { joined, parts } = collectTextParts(ui.markdown, true);
+    const spans = findAllSpans(joined, want, FIND_LIMIT + 1);
+    capped = spans.length > FIND_LIMIT;
+    spans.length = Math.min(spans.length, FIND_LIMIT);
+    // Last to first, so that wrapping one hit leaves the offsets of the rest valid.
+    for (let at = spans.length - 1; at >= 0; at -= 1) {
+      const marks = [];
+      wrapSpanParts(ui.markdown, parts, spans[at], () => {
+        const mark = document.createElement('mark');
+        mark.className = 'aim find';
+        marks.push(mark);
+        return mark;
+      });
+      hits.push(marks);
+    }
+    hits.reverse();
+  }
+  state.mdFind = { hits, capped, index: Math.min(index, Math.max(0, hits.length - 1)) };
+  showMarkdownFind(false);
+}
+
+function showMarkdownFind(scroll) {
+  const { hits, index, capped } = state.mdFind;
+  ui.findCount.textContent = hits.length
+    ? `${index + 1} of ${hits.length}${capped ? '+' : ''}`
+    : (normalizeReviewText(ui.findInput.value).length >= 2 ? 'No match' : '');
+  hits.forEach((marks, at) => marks.forEach((mark) => mark.classList.toggle('current', at === index)));
+  if (scroll) {
+    hits[index]?.[0].scrollIntoView({ block: 'center' });
+  }
+}
+
+/// Move to the next (+1) or previous (-1) hit, wrapping at the ends. A step
+/// of 0 shows the current one.
+function stepMarkdownFind(step) {
+  if (!state.mdFind?.hits[0]?.[0].isConnected) {
+    buildMarkdownFind();
+    step = 0;
+  }
+  const { hits } = state.mdFind;
+  if (hits.length) {
+    state.mdFind.index = (state.mdFind.index + step + hits.length) % hits.length;
+  }
+  showMarkdownFind(true);
+}
+
+function clearMarkdownFind() {
+  if (state.mdFind) {
+    unwrapMarks(ui.markdown, 'mark.aim.find');
+    state.mdFind = null;
+  }
+}
+
 function runFind(type = '', again = false, backwards = false) {
+  if (state.file?.kind === 'markdown') {
+    if (again) {
+      stepMarkdownFind(backwards ? -1 : 1);
+    } else {
+      buildMarkdownFind();
+      showMarkdownFind(true);
+    }
+    return;
+  }
   eventBus.dispatch('find', {
     source: null,
     type,
@@ -2193,7 +2524,7 @@ function lineNear(node, root) {
     const line = Number(anchor.dataset.line);
     return Number.isFinite(line) && line >= 1 ? line : null;
   }
-  const block = el.closest('#markdown > *');
+  const block = el.closest('#markdown > *:not(.md-page), .md-page > *');
   const inBlock = block?.querySelector('[data-line]');
   if (inBlock) {
     const line = Number(inBlock.dataset.line);
@@ -2264,8 +2595,30 @@ function atRange(start, end, key) {
   return hi === lo ? { [key]: lo } : { [key]: lo, end: hi };
 }
 
-/// The current selection as a review record, or null.
-function describeSelection() {
+/// Text before and after a Markdown selection, read from a copy of the article
+/// with the review and find marks taken out, as paintMarkdownMarks reads it.
+function markdownAnchorForSelection(range) {
+  if (!ui.markdown.contains(range.startContainer) || !ui.markdown.contains(range.endContainer)) {
+    return null;
+  }
+  const textAround = (limit) => {
+    const edge = document.createRange();
+    edge.selectNodeContents(ui.markdown);
+    limit(edge);
+    const copy = edge.cloneContents();
+    unwrapMarks(copy, 'mark.aim');
+    unwrapReviewMarks(copy);
+    return collectTextParts(copy, true).joined;
+  };
+  const before = textAround((edge) => edge.setEnd(range.startContainer, range.startOffset));
+  const after = textAround((edge) => edge.setStart(range.endContainer, range.endOffset));
+  const { prefix, suffix } = selectionContext(before, after);
+  return { prefix, suffix, documentRevision: state.markdownDigest };
+}
+
+/// The current selection as a review record, or null. `context` also reads the
+/// surrounding text, which costs a pass over the article: only for saving.
+function describeSelection({ context = false } = {}) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) {
     return null;
@@ -2278,7 +2631,12 @@ function describeSelection() {
   if (state.file?.kind === 'markdown') {
     const start = lineNear(selection.anchorNode, ui.markdown);
     const end = lineNear(selection.focusNode, ui.markdown);
-    return { file, kind: 'markdown', at: atRange(start, end, 'line'), quote };
+    // Raw mode has no article to read context from, but the digest is still the one this view shows.
+    const anchor = context
+      ? (markdownAnchorForSelection(selection.getRangeAt(0)) ??
+        (state.markdownDigest ? { documentRevision: state.markdownDigest } : null))
+      : null;
+    return { file, kind: 'markdown', at: atRange(start, end, 'line'), quote, ...(anchor ? { anchor } : {}) };
   }
   if (state.file?.kind === 'pdf') {
     const start = pageNear(selection.getRangeAt(0).startContainer);
@@ -2330,7 +2688,7 @@ function hasLocator(record) {
 let reviewAnchorRect = null;
 
 function openNoteBox(action = 'improve') {
-  const picked = describeSelection();
+  const picked = describeSelection({ context: true });
   const range = selectionInDocument();
   const rect =
     range && (range.getBoundingClientRect().width || range.getBoundingClientRect().height)
@@ -2555,14 +2913,19 @@ function applyReviewStore(store, { authoritative = false } = {}) {
     void loadReviews({ fromDisk: true });
     return false;
   }
-  const samePaint = reviewPaintSignature(reviews) === reviewPaintSignature(state.reviews);
+  const samePaint = state.reviewDocumentPath === state.file?.path &&
+    reviewPaintSignature(reviews) === reviewPaintSignature(state.reviews);
+  // A Markdown paint draws the panel itself, with where it found each review.
+  const paintDrawsPanel = !samePaint && state.file?.kind === 'markdown';
   state.reviews = reviews;
   state.nextId = Number.isSafeInteger(Number(store?.nextId)) && Number(store.nextId) > 0
     ? Number(store.nextId)
     : Math.max(1, ...reviews.map((review) => reviewIdNum(review.id) + 1));
   state.reviewRevision = Number.isSafeInteger(revision) ? revision : 0;
   state.reviewDocumentPath = state.file?.path || null;
-  renderReviewList();
+  if (!paintDrawsPanel) {
+    renderReviewList();
+  }
   if (!samePaint) {
     paintReviewMarks();
   }
@@ -2674,7 +3037,7 @@ function renderReviewList() {
     if (conflict) row.classList.add('conflict');
     if (review._draftOnly) row.classList.add('draft-only');
     const locationStatus = state.reviewLocations.get(stateKey);
-    if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
+    if (locationStatus && !['located', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
       row.classList.add('unlocated');
     }
     if (review.id === state.selectedReviewId) {
@@ -2705,6 +3068,11 @@ function renderReviewList() {
       location.className = 'review-location';
       location.textContent = 'PDF position saved · text match unavailable';
       row.append(location);
+    } else if (locationStatus === 'lines') {
+      const location = document.createElement('div');
+      location.className = 'review-location';
+      location.textContent = 'Placed by its line range · select the text and Reattach to pin it';
+      row.append(location);
     } else if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -2712,6 +3080,12 @@ function renderReviewList() {
         ? 'Ambiguous match · not highlighted'
         : 'Unlocated · not highlighted';
       row.append(location);
+    }
+    if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest, locationStatus)) {
+      const older = document.createElement('div');
+      older.className = 'review-location';
+      older.textContent = 'Made on an earlier version of this file';
+      row.append(older);
     }
     if (conflict?.reason === 'changed') {
       const diskValue = document.createElement('div');
@@ -2739,8 +3113,8 @@ function renderReviewList() {
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
-    if (!review._draftOnly && state.file?.kind === 'pdf' &&
-        ['ambiguous', 'unlocated'].includes(locationStatus) && reviewStatus(review) === 'open') {
+    if (!review._draftOnly &&
+        ['ambiguous', 'unlocated', 'lines'].includes(locationStatus) && reviewStatus(review) === 'open') {
       const reattach = document.createElement('button');
       reattach.type = 'button';
       reattach.textContent = 'Reattach selection';
@@ -3079,22 +3453,27 @@ async function saveDraftAfterConflict(id) {
 async function reattachReview(review) {
   const path = state.file?.path;
   const generation = state.generation;
-  if (!path || state.file?.kind !== 'pdf') return;
-  const picked = describeSelection();
-  if (!picked || picked.kind !== 'pdf' || !sameReviewQuote(review, picked.quote)) {
-    setStatus('Select the same quoted text in the PDF before reattaching', { error: true });
+  const kind = state.file?.kind;
+  if (!path || (kind !== 'pdf' && kind !== 'markdown')) return;
+  const label = kind === 'pdf' ? 'PDF' : 'Markdown';
+  const picked = describeSelection({ context: true });
+  if (!picked || picked.kind !== kind || !sameReviewQuote(review, picked.quote)) {
+    setStatus(`Select the same quoted text in the ${label} before reattaching`, { error: true });
     return;
   }
-  if (!picked.anchor?.position) {
-    setStatus('The selected text has no PDF position to attach to', { error: true });
+  if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor?.prefix || picked.anchor?.suffix)) {
+    setStatus(`The selected text has no ${kind === 'pdf' ? 'PDF position' : 'surrounding text'} to attach to`, { error: true });
     return;
   }
   try {
-    const digest = await pdfDocumentDigest();
+    const digest = kind === 'pdf' ? await pdfDocumentDigest() : state.markdownDigest;
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
-    nextAnchor.documentRevision = digest;
-    await patchReview(review, { anchor: nextAnchor }, 'Review reattached to the selected PDF text');
+    if (digest) nextAnchor.documentRevision = digest;
+    // A Markdown selection can sit on other lines than the review did. A
+    // selection with no source line keeps the review's lines.
+    const patch = kind === 'markdown' && picked.at?.line ? { anchor: nextAnchor, at: picked.at } : { anchor: nextAnchor };
+    await patchReview(review, patch, `Review reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(`Could not reattach review: ${String(error)}`, { error: true });
@@ -3206,14 +3585,7 @@ function unwrapReviewMarks(root) {
   }
   // `review-q` — not `span`. PDF.js makes every textLayer span
   // `position:absolute`; a nested span's wash then covers the whole line.
-  for (const mark of [...root.querySelectorAll('mark.review, review-q')]) {
-    const parent = mark.parentNode;
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark);
-    }
-    mark.remove();
-    parent?.normalize();
-  }
+  unwrapMarks(root, 'mark.review, review-q');
   for (const el of [...root.querySelectorAll('.review-block, span.review, [data-review-tint]')]) {
     if (el.classList.contains('review-no') || el.classList.contains('review-nos')) {
       el.remove();
@@ -3223,22 +3595,51 @@ function unwrapReviewMarks(root) {
   }
 }
 
-function collectTextParts(root) {
+const BLOCK_ELEMENTS = 'p,li,h1,h2,h3,h4,h5,h6,td,th,tr,table,ul,ol,dt,dd,blockquote,pre,div,hr,figcaption,summary';
+
+/// The text of `root` in reading order, lower-cased and with runs of white
+/// space as one space, plus where each text node sits in it. Badges are not
+/// text of the document. PDF.js splits a line into spans, so between two nodes
+/// a space is added; with `inline` (Markdown) nodes inside one block run
+/// together, as `wa**ke**` reads, and a space goes only where the source has
+/// one or a block ends.
+function collectTextParts(root, inline = false) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const parts = [];
   let joined = '';
   let node;
+  let owner = null;
+  let badge = false;
+  let block = null;
+  let lastBlock = null;
+  let spaced = false;
+  // `joined.endsWith` would flatten a string of megabytes at every node.
+  let endsSpace = false;
   while ((node = walker.nextNode())) {
-    const piece = node.textContent.replace(/\s+/g, ' ').toLowerCase();
-    if (!piece.trim()) {
+    const parent = node.parentElement;
+    if (parent !== owner) {
+      owner = parent;
+      badge = Boolean(parent?.closest('.review-nos'));
+      block = inline ? (parent?.closest(BLOCK_ELEMENTS) ?? null) : null;
+    }
+    if (badge) {
       continue;
     }
-    if (joined && !joined.endsWith(' ') && !piece.startsWith(' ')) {
-      joined += ' ';
+    const piece = node.textContent.replace(/\s+/g, ' ').toLowerCase();
+    if (!piece.trim()) {
+      spaced = inline;
+      continue;
     }
-    const used = piece.startsWith(' ') && joined.endsWith(' ') ? piece.trimStart() : piece;
+    if (joined && !endsSpace && !piece.startsWith(' ') && (!inline || spaced || block !== lastBlock)) {
+      joined += ' ';
+      endsSpace = true;
+    }
+    spaced = false;
+    lastBlock = block;
+    const used = piece.startsWith(' ') && endsSpace ? piece.trimStart() : piece;
     const start = joined.length;
     joined += used;
+    endsSpace = used.endsWith(' ');
     parts.push({
       node,
       start,
@@ -3269,16 +3670,39 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
   if (!root || needle.length < 2) {
     return null;
   }
-  const { joined, parts } = collectTextParts(root);
+  const { joined, parts } = collectTextParts(root, asMark);
   const found = match || findNormalizedSpan(joined, needle);
   if (!found) {
     return null;
   }
-  let first = null;
-  for (const part of parts) {
-    if (part.end <= found.start || part.start >= found.end) {
-      continue;
+  return wrapSpanParts(root, parts, found, () => {
+    const wrap = document.createElement(asMark ? 'mark' : 'review-q');
+    if (asMark) {
+      wrap.className = 'review';
     }
+    applyReviewTint(wrap, id);
+    return wrap;
+  });
+}
+
+/// Wrap the text nodes under `found` in elements from `makeWrap`, splitting
+/// the first and last node at the span's edges. Returns the first element.
+/// Wrapping later spans first keeps the offsets of earlier ones valid.
+function wrapSpanParts(root, parts, found, makeWrap) {
+  let first = null;
+  // `parts` is in reading order: find the first one that ends after the span
+  // starts, and stop at the first that starts after it ends.
+  let low = 0;
+  for (let high = parts.length; low < high;) {
+    const middle = (low + high) >> 1;
+    if (parts[middle].end > found.start) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  for (let at = low; at < parts.length && parts[at].start < found.end; at += 1) {
+    const part = parts[at];
     const node = part.node;
     if (!node.parentNode || !root.contains(node)) {
       continue;
@@ -3294,11 +3718,7 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
       node.splitText(endAt);
     }
     const mid = startAt > 0 ? node.splitText(startAt) : node;
-    const wrap = document.createElement(asMark ? 'mark' : 'review-q');
-    if (asMark) {
-      wrap.className = 'review';
-    }
-    applyReviewTint(wrap, id);
+    const wrap = makeWrap();
     mid.parentNode.insertBefore(wrap, mid);
     wrap.appendChild(mid);
     if (!first) {
@@ -3316,47 +3736,106 @@ function wrapQuoteIn(root, quote, id) {
   return wrapQuoteFragments(root, quote, id, { asMark: true });
 }
 
-function paintMarkdownMarks() {
-  unwrapReviewMarks(ui.markdown);
-  for (const review of state.reviews) {
-    const start = review.at?.line;
-    if (!start) {
+function markdownReviewMark(id) {
+  const mark = document.createElement('mark');
+  mark.className = 'review';
+  applyReviewTint(mark, id);
+  return mark;
+}
+
+/// A review saved without context: look for its quote in the blocks of its
+/// line range, or tint those blocks. Returns the block that takes the badge.
+function paintMarkdownByLines(review) {
+  const start = review.at.line;
+  const end = review.at.end || start;
+  const hosts = [];
+  for (const anchor of ui.markdown.querySelectorAll('[data-line]')) {
+    const line = Number(anchor.dataset.line);
+    if (line < start || line > end) {
       continue;
     }
-    const end = review.at.end || start;
-    const hosts = [];
-    for (const anchor of ui.markdown.querySelectorAll('[data-line]')) {
-      const line = Number(anchor.dataset.line);
-      if (line < start || line > end) {
-        continue;
-      }
-      const host =
-        anchor.parentElement && anchor.parentElement !== ui.markdown
-          ? anchor.parentElement
-          : anchor;
-      hosts.push(host);
+    hosts.push(isBlockOwner(anchor.parentElement) ? anchor.parentElement : anchor);
+  }
+  let badgeHost = null;
+  let wrapped = false;
+  for (const host of hosts) {
+    if (wrapQuoteIn(host, review.quote, review.id)) {
+      wrapped = true;
+      badgeHost ??= host;
     }
-    let badgeHost = null;
-    let wrapped = false;
+  }
+  if (!wrapped) {
     for (const host of hosts) {
-      if (wrapQuoteIn(host, review.quote, review.id)) {
-        wrapped = true;
-        if (!badgeHost) {
-          badgeHost = host;
-        }
-      }
+      applyReviewTint(host, review.id);
+      badgeHost ??= host;
     }
-    if (!wrapped) {
-      for (const host of hosts) {
-        applyReviewTint(host, review.id);
-        if (!badgeHost) {
-          badgeHost = host;
-        }
-      }
+  }
+  return badgeHost;
+}
+
+/// The block that carries a mark's line anchor, where its badge goes.
+function markdownBadgeHost(mark) {
+  let host = mark.parentElement;
+  while (isBlockOwner(host) && !host.querySelector(':scope > [data-line]')) {
+    host = host.parentElement;
+  }
+  return isBlockOwner(host) ? host : mark.parentElement;
+}
+
+function paintMarkdownMarks() {
+  // A find mark inside a word would split the text a review quote is matched in.
+  const finding = state.mdFind;
+  unwrapMarks(ui.markdown, 'mark.aim');
+  unwrapReviewMarks(ui.markdown);
+  // Every review is matched against the text as it is now, before any mark
+  // splits it, then wrapped from the last offset to the first.
+  const text = collectTextParts(ui.markdown, true);
+  const joined = text.joined;
+  let parts = text.parts;
+  const locations = new Map();
+  const located = [];
+  const byLines = new Map();
+  for (const review of state.reviews) {
+    if (!review.at?.line) {
+      continue;
     }
-    if (badgeHost) {
-      placeMarkdownBadge(badgeHost, review);
+    const found = resolveMarkdownReview(joined, review, { normalized: true });
+    if (found.status === 'located') {
+      located.push({ review, found });
+    } else if (found.legacy) {
+      byLines.set(review, null);
     }
+    const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+    // `lines`: no context was saved, so the line range stands in for the text.
+    locations.set(
+      reviewStateKey(state.file.path, review.id),
+      found.status === 'located' ? 'located' : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
+    );
+  }
+  const hosts = new Map();
+  let lowest = Infinity;
+  for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
+    if (item.found.end > lowest) {
+      // Overlaps one already wrapped: the text nodes have been split since.
+      ({ parts } = collectTextParts(ui.markdown, true));
+    }
+    lowest = item.found.start;
+    const first = wrapSpanParts(ui.markdown, parts, item.found, () => markdownReviewMark(item.review.id));
+    hosts.set(item.review, first && markdownBadgeHost(first));
+  }
+  for (const review of byLines.keys()) {
+    hosts.set(review, paintMarkdownByLines(review));
+  }
+  // After all the matching: a badge is text too.
+  for (const review of state.reviews) {
+    if (hosts.get(review)) {
+      placeMarkdownBadge(hosts.get(review), review);
+    }
+  }
+  state.reviewLocations = locations;
+  renderReviewList();
+  if (finding) {
+    buildMarkdownFind(true);
   }
 }
 
@@ -3820,6 +4299,16 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
+ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
+// A figure that arrives after the cut changes its block's height.
+ui.markdown.addEventListener('load', schedulePaginate, true);
+for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
+  select.addEventListener('change', () => {
+    setMarkdownStyle(select, select.value);
+    schedulePaginate();
+    scheduleWrap();
+  });
+}
 ui.ask.addEventListener('click', () => void askSelection());
 ui.note.addEventListener('click', () => void openNoteBox());
 ui.notes.addEventListener('click', () => toggleReviewPanel());
@@ -3888,6 +4377,20 @@ ui.container.addEventListener('click', (event) => {
   }
 });
 
+// An equation label keeps its percent-encoding in the id as well as in the
+// link, while a hand-written link to a heading may be encoded where the id is
+// not. The fragment is tried as written, then decoded.
+function markdownFragmentTarget(fragment) {
+  const find = (id) => id && ui.markdown.querySelector(`[id="${CSS.escape(id)}"]`);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch {
+    decoded = '';
+  }
+  return find(fragment) || find(decoded) || null;
+}
+
 ui.markdown.addEventListener('click', (event) => {
   const reviewId = reviewFromEvent(event);
   if (reviewId) {
@@ -3903,14 +4406,7 @@ ui.markdown.addEventListener('click', (event) => {
   const href = anchor.getAttribute('href') || '';
   if (href.startsWith('#')) {
     // Same page: footnotes, and links to headings.
-    let id;
-    try {
-      id = decodeURIComponent(href.slice(1));
-    } catch {
-      return;
-    }
-    const target = id && ui.markdown.querySelector(`[id="${CSS.escape(id)}"]`);
-    target?.scrollIntoView({ block: 'start' });
+    markdownFragmentTarget(href.slice(1))?.scrollIntoView({ block: 'start' });
     return;
   }
   if (/^https?:/i.test(href)) {
@@ -4003,10 +4499,27 @@ ui.findClose.addEventListener('click', closeFind);
 ui.findNext.addEventListener('click', () => runFind('again', true, false));
 ui.findPrev.addEventListener('click', () => runFind('again', true, true));
 
-ui.findInput.addEventListener('input', () => runFind(''));
+ui.findInput.addEventListener('input', () => {
+  window.clearTimeout(findTimer);
+  if (state.file?.kind === 'markdown') {
+    findTimer = window.setTimeout(() => {
+      findTimer = 0;
+      runFind('');
+    }, 150);
+  } else {
+    runFind('');
+  }
+});
 ui.findInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
+    if (findTimer) {
+      // Enter on a query that has not been searched yet searches it.
+      window.clearTimeout(findTimer);
+      findTimer = 0;
+      runFind('');
+      return;
+    }
     runFind('again', true, event.shiftKey);
   } else if (event.key === 'Escape') {
     event.preventDefault();
@@ -4353,7 +4866,7 @@ listen('file-changed', async (event) => {
   await openFile({ ...state.file, revision }, { preserveView: true });
   if (state.file?.path !== path || state.file?.revision !== revision) return;
   setStatus('Reloaded');
-  if (launch?.smoke && state.file?.kind === 'pdf') void reportSmoke();
+  if (launch?.smoke && (state.file?.kind === 'pdf' || state.file?.name === 'review-parity.md')) void reportSmoke();
 });
 
 document.addEventListener('visibilitychange', async () => {
@@ -4413,6 +4926,25 @@ try {
   setRaw(localStorage.getItem('pdf-next.md-raw') === '1', { persist: false });
 } catch {
   setRaw(false, { persist: false });
+}
+for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(`pdf-next.md-${select.dataset.md}`);
+  } catch {
+    // Preference only.
+  }
+  setMarkdownStyle(select, saved, { persist: false });
+}
+
+for (const key of ['pdf', 'md']) {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(`pdf-next.page-view.${key}`);
+  } catch {
+    // Preference only.
+  }
+  state.pageViews[key] = validPageView(key, saved);
 }
 
 // Watching is on by default at one second; the control only exists to slow it
@@ -4620,6 +5152,171 @@ async function smokePdfScroll() {
   }
 }
 
+/// Smoke only, on review-parity.md. Stage 1 drives find and review creation in
+/// the real page; the build server then edits the file, and stage 2 checks that
+/// the review is still painted on the right occurrence after the reload.
+/// Returns what to report.
+async function smokeMarkdownReview() {
+  const second = () => {
+    const mark = ui.markdown.querySelector('mark.review');
+    const marks = ui.markdown.querySelectorAll('mark.review').length;
+    return marks === 1 && mark.textContent === 'Repeat this phrase' &&
+      mark.closest('p')?.textContent.includes('there');
+  };
+  const counted = (text) => settles(() => ui.findCount.textContent === text, 5_000);
+  if (!await settles(() => ui.markdown.textContent.includes('Review parity'))) throw new Error('fixture not shown');
+  const staged = state.reviews.length ? 2 : 1;
+  if (staged === 1) {
+    openFind();
+    const type = (text) => {
+      ui.findInput.value = text;
+      ui.findInput.dispatchEvent(new Event('input'));
+    };
+    const current = () => ui.markdown.querySelectorAll('mark.find.current').length;
+    // `wake` is `wa**ke**` in the first paragraph: one hit across two marks.
+    type('wake');
+    if (!await counted('1 of 2') || current() !== 2) throw new Error(`find across markup: ${ui.findCount.textContent}, ${current()} current marks`);
+    ui.findNext.click();
+    if (ui.findCount.textContent !== '2 of 2' || current() !== 1) throw new Error(`find next: ${ui.findCount.textContent}`);
+    ui.findPrev.click();
+    if (ui.findCount.textContent !== '1 of 2' || current() !== 2) throw new Error(`find previous: ${ui.findCount.textContent}`);
+    type('wake is long');
+    if (!await counted('1 of 1')) throw new Error(`find across two marks and a space: ${ui.findCount.textContent}`);
+    type('w');
+    if (!await counted('') || ui.markdown.querySelector('mark.find')) throw new Error('one character must not search');
+    closeFind();
+    if (ui.markdown.querySelector('mark.find')) throw new Error('closing find left marks');
+    // A review on the second of two identical phrases, made as a reader makes it.
+    const node = document.createTreeWalker([...ui.markdown.querySelectorAll('p')].at(-1), NodeFilter.SHOW_TEXT).nextNode();
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, 'Repeat this phrase'.length);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    openNoteBox('delete');
+    await saveNote();
+    if (!await settles(second, 5_000)) throw new Error(`review on the second occurrence: ${ui.markdown.querySelectorAll('mark.review').length} marks`);
+    const review = state.reviews[0];
+    if (!review?.anchor?.prefix || review.anchor.documentRevision !== state.markdownDigest) throw new Error('review saved without context or digest');
+    // The reload that follows paints the review into page boxes: small ones,
+    // so this short file spans several.
+    ui.markdown.style.setProperty('--page-h', '40mm');
+    ui.markdown.style.setProperty('--page-pad', '5mm');
+    setPageView('two', { persist: false });
+    return `find and review checked, stage=1; digest=${state.markdownDigest}`;
+  }
+  const digest = state.reviews[0].anchor.documentRevision;
+  if (!await settles(() => ui.markdown.textContent.includes('Appended after') && second(), 10_000)) {
+    throw new Error(`review not painted on the second occurrence after reload: ${ui.markdown.querySelectorAll('mark.review').length} marks`);
+  }
+  if (digest === state.markdownDigest) throw new Error('the file changed but its digest did not');
+  if (ui.reviewList.textContent.includes('earlier version')) throw new Error('a located review was flagged as made on an earlier version');
+  openFind();
+  ui.findInput.value = 'phrase';
+  ui.findInput.dispatchEvent(new Event('input'));
+  if (!await counted('1 of 2')) throw new Error(`find after reload: ${ui.findCount.textContent}`);
+  if (ui.markdown.querySelectorAll('mark.review').length !== 1) throw new Error('find split the review mark');
+  closeFind();
+  const boxes = ui.markdown.querySelectorAll(':scope > .md-page').length;
+  if (boxes < 2 || !ui.markdown.querySelector('.md-page mark.review')) throw new Error(`review not inside the pages: ${boxes} boxes`);
+  setPageView('continuous', { persist: false });
+  if (!await settles(() => !ui.markdown.querySelector('.md-page') && second())) throw new Error('review lost when the pages were removed');
+  return `review still on the second occurrence after reload, in ${boxes} page boxes and in one column, stage=2`;
+}
+
+/// Smoke only. A long Markdown file in A4 boxes: nothing lost or reordered,
+/// the same find hits as in one column, and the time one pagination takes.
+async function smokeMarkdownPages() {
+  if (!await settles(() => ui.markdown.textContent.includes('Page view'))) throw new Error('fixture not shown');
+  const boxes = () => ui.markdown.querySelectorAll(':scope > .md-page');
+  const whole = ui.markdown.textContent;
+  const hits = async () => {
+    closeFind();
+    openFind();
+    ui.findInput.value = 'paragraph';
+    ui.findInput.dispatchEvent(new Event('input'));
+    if (!await settles(() => /^\d+ of \d+\+?$/.test(ui.findCount.textContent))) throw new Error(`no find count: ${ui.findCount.textContent}`);
+    const count = ui.findCount.textContent;
+    closeFind();
+    return count;
+  };
+  const continuous = await hits();
+  setPageView('single', { persist: false });
+  if (!await settles(() => boxes().length >= 2 && state.pagination?.pages === boxes().length)) throw new Error(`single page view: ${boxes().length} boxes`);
+  const { ms, pages } = state.pagination;
+  const a4 = 210 / 25.4 * 96;
+  const first = boxes()[0];
+  if (Math.abs(first.offsetWidth - a4) > 2) throw new Error(`page box ${first.offsetWidth} px wide, not A4`);
+  const tall = [...boxes()].filter((box) => box.children.length > 1 && box.offsetHeight > 297 / 25.4 * 96 + 2);
+  if (tall.length) throw new Error(`${tall.length} pages grew past A4 with more than one block`);
+  if (ui.markdown.textContent !== whole) throw new Error('pagination changed the text');
+  if (await hits() !== continuous) throw new Error(`find in pages: ${ui.findCount.textContent}, in one column: ${continuous}`);
+  setPageView('two', { persist: false });
+  if (!await settles(() => ui.markdown.dataset.pages === 'two' && boxes().length === pages)) throw new Error('two page view');
+  const inRow = () => [...boxes()].filter((box) => box.offsetTop === boxes()[0].offsetTop).length;
+  // A narrow window shows one per row; wrapping the window to the pages widens it.
+  await trimWindowToContent({ recenter: true });
+  // A screen narrower than two A4 pages (CI runners are) needs zooming out, as a reader would.
+  const scale = state.markdownScale;
+  // Only #markdown is zoomed; the stage's 32 px padding stays fixed.
+  const room = (ui.markdown.parentElement.clientWidth - 32) / (2 * a4 + 24) * 0.98;
+  if (!await settles(() => inRow() === 2, 1_000) && room < scale) setMarkdownScale(room);
+  if (!await settles(() => inRow() === 2, 3_000)) throw new Error(`two page view: ${inRow()} per row`);
+  const row = inRow();
+  setMarkdownScale(scale);
+  setPageView('continuous', { persist: false });
+  if (!await settles(() => boxes().length === 0 && ui.markdown.textContent === whole)) throw new Error('continuous view did not restore the article');
+  setPageView('two', { persist: false });
+  if (!await settles(() => boxes().length === pages)) throw new Error('two page view after continuous');
+  return `${pages} pages, one pagination ${Math.round(ms)} ms, ${row} per row, find ${continuous}`;
+}
+
+/// Smoke only. A PDF in two pages: PDF.js even spreads, the cover alone.
+async function smokePdfSpread() {
+  setPageView('two', { persist: false });
+  pdfViewer.currentScaleValue = 'page-fit';
+  const spreads = () => ui.viewer.querySelectorAll('.spread');
+  if (pdfViewer.spreadMode !== SpreadMode.EVEN) throw new Error(`spread mode ${pdfViewer.spreadMode}`);
+  const pagesIn = () => [...spreads()].map((spread) => spread.querySelectorAll('.page').length).join('+');
+  if (!await settles(() => pagesIn() === '1+2')) throw new Error(`spreads ${pagesIn()}`);
+  const [, pair] = spreads();
+  const [left, right] = pair.querySelectorAll('.page');
+  if (right.getBoundingClientRect().left < left.getBoundingClientRect().right - 1) throw new Error('pages 2 and 3 are not side by side');
+  if (!await settles(() => [...pair.querySelectorAll('canvas')].length === 2 &&
+    [...pair.querySelectorAll('canvas')].every((canvas) => canvas.width > 0))) throw new Error('the pair did not render');
+  return `spreads ${pagesIn()}, spreadMode=EVEN`;
+}
+
+/// The coloured blocks in the real window: spans exist only where a tag asked
+/// for them, the text is untouched, and every mode's token colour reaches the
+/// screen with AA contrast against the block's own background.
+async function smokeMarkdownCode() {
+  if (!await settles(() => ui.markdown.querySelector('.hljs-keyword'))) throw new Error('python block not coloured');
+  const [tagged, untagged, unknown] = ui.markdown.querySelectorAll('pre > code');
+  if (untagged.querySelector('[class^="hljs"]') || unknown.querySelector('[class^="hljs"]')) throw new Error('untagged or unknown block coloured');
+  if (!tagged.querySelector(':scope > [data-line]')) throw new Error('coloured block lost its line anchor');
+  if (!tagged.textContent.startsWith('def wake(re, n=3):\n    """Strouhal number."""')) throw new Error('coloured text changed');
+  const light = (css) => {
+    const [r, g, b] = css.match(/\d+/g).slice(0, 3).map((v) => v / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const seen = [];
+  for (const mode of [null, 'night', 'sepia', 'invert']) {
+    setMode(mode, false);
+    const bg = getComputedStyle(tagged.parentElement).backgroundColor;
+    const colours = [...new Set([...tagged.querySelectorAll('[class^="hljs-"]')].map((el) => getComputedStyle(el).color))];
+    const low = Math.min(...colours.map((c) => {
+      const [hi, lo] = [light(c), light(bg)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    }));
+    if (colours.length < 4 || low < 4.5) throw new Error(`${mode || 'day'}: ${colours.length} colours, lowest contrast ${low.toFixed(2)}`);
+    seen.push(`${mode || 'day'} ${colours.length} colours >= ${low.toFixed(2)}:1`);
+  }
+  setMode(null, false);
+  return `code colour: ${seen.join(', ')}`;
+}
+
 /// Report to the build server whether this launch works, then let it end the
 /// process. Only ever runs under PDF_NEXT_SMOKE; a reader never gets here.
 async function reportSmoke() {
@@ -4691,6 +5388,11 @@ async function reportSmoke() {
       if (!currentReport()) return;
       const ok = pages > 0 && painted && sharp && failures.length === 0;
       let revisionDetail = '';
+      let spreadDetail = '';
+      if (ok && file.name === 'three-pages.pdf') {
+        spreadDetail = `; ${await smokePdfSpread()}`;
+        if (!currentReport()) return;
+      }
       if (ok) {
         const digest = await pdfDocumentDigest();
         if (!currentReport()) return;
@@ -4723,9 +5425,22 @@ async function reportSmoke() {
       await invoke('smoke_report', {
         ok,
         detail: ok
-          ? `${file.name} rendered sharply at 600%, ${pages} page${pages === 1 ? '' : 's'}; scroll=${JSON.stringify(scroll)}${revisionDetail}`
+          ? `${file.name} rendered sharply at 600%, ${pages} page${pages === 1 ? '' : 's'}; scroll=${JSON.stringify(scroll)}${revisionDetail}${spreadDetail}`
           : `${file.name} did not render sharply: ${pages} pages, painted=${painted}, sharp=${sharp}${note()}`,
       });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'review-parity.md' && failures.length === 0) {
+      const detail = await smokeMarkdownReview();
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${detail}; sourceRevision=${file.revision}` });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'code.md' && failures.length === 0) {
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${await smokeMarkdownCode()}` });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'pages.md' && failures.length === 0) {
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${await smokeMarkdownPages()}` });
       return;
     }
     // Images and markdown have their own containers; a non-empty one is the
@@ -4738,7 +5453,10 @@ async function reportSmoke() {
         : file.kind === 'json'
           ? (ui.markdownRaw?.textContent || '').trim().length > 0
           : (ui.markdown?.textContent || '').trim().length > 0,
-    );
+    ) && (file.name !== 'images.md' || await settles(() => {
+      const images = [...ui.markdown.querySelectorAll('img')];
+      return images.length > 0 && images.every((image) => image.naturalWidth > 0);
+    }));
     // A new picture opens whole: the window wraps it, and no part of it
     // needs a scroll. The resize lands after the open, so wait for it.
     const whole = file.kind !== 'image' || await settles(() =>

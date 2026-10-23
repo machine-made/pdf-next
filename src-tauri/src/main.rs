@@ -29,6 +29,9 @@ use tauri_plugin_dialog::DialogExt;
 static POLL_SECONDS: AtomicU64 = AtomicU64::new(1);
 const IDLE_TICK: Duration = Duration::from_millis(500);
 
+/// Modification time and length: what the watcher compares.
+type Stamp = (Option<SystemTime>, u64);
+
 /// Snapshot of the watched file. `missing` is a state, not an error: TeX-style
 /// builds delete and recreate the PDF, and the viewer must hold the last good
 /// render across that gap instead of clearing.
@@ -50,6 +53,16 @@ struct WatchState {
     /// nothing else; `adopt` is the only way in, and it takes supported kinds
     /// only.
     allowed: AllowedDocuments,
+    /// Canonical images that an opened Markdown file referenced and that
+    /// passed `judge_image`. Only the doc protocol reads this set; no command
+    /// accepts a path because it is in here.
+    embedded: HashSet<PathBuf>,
+    /// The images of the watched Markdown file, with their last `stat`. A
+    /// change to one counts as a change to the document. An image that was
+    /// missing at render time is listed too, so its arrival is seen.
+    images: Vec<(PathBuf, Option<Stamp>)>,
+    /// Where the next watcher tick starts in `images`.
+    image_cursor: usize,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -240,9 +253,14 @@ fn describe(path: &Path) -> FileInfo {
     }
 }
 
-fn stat(path: &Path) -> Option<(Option<SystemTime>, u64)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.modified().ok(), metadata.len()))
+fn stamp_of(metadata: &std::fs::Metadata) -> Stamp {
+    (metadata.modified().ok(), metadata.len())
+}
+
+fn stat(path: &Path) -> Option<Stamp> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| stamp_of(&metadata))
 }
 
 /// Is the file finished being written?
@@ -313,6 +331,7 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
         state.sidecar_modified = sidecar_modified;
         state.sidecar_len = sidecar_len;
         state.sidecar_missing = !sidecar.exists();
+        state.images.clear();
     }
     drop(state);
 
@@ -332,6 +351,7 @@ fn open_path(
 fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.path = None;
+    state.images.clear();
     Ok(())
 }
 
@@ -854,6 +874,8 @@ const MARKDOWN_LIMIT: u64 = 10 * 1024 * 1024;
 struct MarkdownDoc {
     html: String,
     raw: String,
+    /// `sha256:` of the file's bytes, as stored in a review's `documentRevision`.
+    digest: String,
 }
 
 /// CommonMark plus the GitHub extras people actually write, sanitized before
@@ -861,8 +883,15 @@ struct MarkdownDoc {
 /// attacker controls every byte of the file, and the rendered HTML lands in
 /// the app origin — so scripts, event handlers and javascript: URLs must not
 /// survive, and they don't: ammonia strips everything outside its allowlist.
-/// Images are dropped too, deliberately: loading them would widen file access
-/// beyond the one file the reader opened. Relative links go the same way: a
+/// Images are shown only when they are local files: a relative or absolute
+/// path that resolves to a regular file of a known image type, at most 64 MiB.
+/// Remote, `data:` and `file:` sources are refused, because a remote image
+/// tells a server when the file is read, and the reader opened one file, not
+/// the network. A refused image becomes its alt text in a marked placeholder.
+/// Accepted paths go into the `embedded` set, which only the doc protocol
+/// reads.
+///
+/// A relative link must not navigate the webview: a
 /// click on `[notes](other.md)` would be a top-level navigation inside the
 /// app origin, which the navigation guard allows, and the viewer would be
 /// replaced by a blank page with no way back. Absolute links stay, and are
@@ -873,6 +902,10 @@ struct MarkdownDoc {
 /// elements, and fragment links are rewritten to match; the frontend scrolls
 /// to them rather than letting them navigate.
 const MARKDOWN_ID_PREFIX: &str = "md-";
+const DRIVE_LETTERS: [&str; 26] = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z",
+];
 
 /// ammonia asks this about every relative URL. A fragment is pointed at the
 /// prefixed id it will find in the cleaned document; any other relative path
@@ -891,12 +924,26 @@ fn keep_local_links(url: &str) -> Option<std::borrow::Cow<'_, str>> {
     )))
 }
 
-// Bounds apply before parsing and while writing, independently of the source-file
+// Bounds apply before parsing and after writing, independently of the source-file
 // limit. A minimum charge also caps the number of tiny equations per document.
 const MATH_EXPRESSION_LIMIT: usize = 16 * 1024;
 const MATH_SOURCE_BUDGET: usize = 256 * 1024;
 const MATH_OUTPUT_BUDGET: usize = 4 * 1024 * 1024;
 const MATH_MIN_CHARGE: usize = 256;
+// A macro body can copy its argument and a macro can be called again and
+// again, so a few KiB of source can expand to hundreds of MB before the output
+// budget is checked. The converter's own limit is 1000 expansions, which still
+// allows about 1.6 GB and two seconds from 12 KiB of source (measured on
+// math-core 0.9.0). These two limits and the definition rules in
+// `math_definitions_are_bounded` keep the work near the output budget.
+const MATH_MAX_EXPANSIONS: u32 = 100;
+const MATH_PARAMETER_LIMIT: usize = 32;
+// Address space reserved for one conversion's recursion; pages are used only
+// as deep as an equation nests. The deepest equation the limits allow (16 KiB
+// of nested braces plus 100 expansions of a 512-byte body of braces) needed
+// 51 MiB in a release build; this is five times that. A debug build needs
+// about 18 times as much, so there the deepest of these overflow.
+const MATH_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 struct MathBudget {
     source: usize,
@@ -912,24 +959,22 @@ impl Default for MathBudget {
     }
 }
 
-struct MathWriter<'a> {
-    bytes: Vec<u8>,
-    remaining: &'a mut usize,
-}
-
-impl std::io::Write for MathWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > *self.remaining {
-            return Err(std::io::Error::other("math output limit exceeded"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        *self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+/// One converter per document. A `\newcommand` stays defined for the equations
+/// after it, equation numbers count across the file, and `\eqref` finds its
+/// `\label`. Labels get their own id prefix so they cannot meet a footnote or
+/// a heading. A command it does not know is shown as red text and the rest of
+/// the equation still renders. No annotation, which would carry the TeX source
+/// through unescaped.
+fn math_converter() -> math_core::LatexToMathML {
+    let config = math_core::MathCoreConfig {
+        global_group: true,
+        ignore_unknown_commands: true,
+        annotation: false,
+        max_expansions: math_core::MaxExpansions(MATH_MAX_EXPANSIONS),
+        id_prefix: "math:".into(),
+        ..Default::default()
+    };
+    math_core::LatexToMathML::new(config, Vec::new()).expect("no custom macros to parse")
 }
 
 fn math_source(tex: &str) -> String {
@@ -939,59 +984,232 @@ fn math_source(tex: &str) -> String {
     fallback
 }
 
+// The commands that define a macro which the definition rules below can read.
+const MATH_DEFINERS: [&str; 4] = ["newcommand", "renewcommand", "providecommand", "def"];
+// Other ways to define or alias a command. An equation with one of these is
+// shown as source: their expansion is not bounded by the rules below.
+const MATH_REFUSED_DEFINERS: [&str; 9] = [
+    "edef",
+    "gdef",
+    "xdef",
+    "let",
+    "futurelet",
+    "global",
+    "newenvironment",
+    "renewenvironment",
+    "DeclareMathOperator",
+];
+const MATH_BODY_LIMIT: usize = 512;
+
+/// TeX source split into commands and single characters the way the
+/// converter's lexer splits it: a command is a run of ASCII letters with an
+/// optional `*`, or one other character, and a `%` hides the rest of its line.
+#[derive(Clone)]
+struct TexTokens<'a> {
+    rest: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum TexToken<'a> {
+    Command(&'a str),
+    Char(char),
+}
+
+impl<'a> Iterator for TexTokens<'a> {
+    type Item = TexToken<'a>;
+
+    fn next(&mut self) -> Option<TexToken<'a>> {
+        loop {
+            let mut chars = self.rest.chars();
+            let first = chars.next()?;
+            if first == '%' {
+                let line_end = self.rest.find('\n').map_or(self.rest.len(), |at| at + 1);
+                self.rest =
+                    self.rest[line_end..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+                continue;
+            }
+            if first != '\\' {
+                self.rest = chars.as_str();
+                return Some(TexToken::Char(first));
+            }
+            let after = &self.rest[1..];
+            let mut end = after
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(after.len());
+            if after[end..].starts_with('*') {
+                end += 1;
+            }
+            if end == 0 {
+                end = after.chars().next().map_or(0, char::len_utf8);
+            }
+            let (name, rest) = after.split_at(end);
+            self.rest = rest;
+            return Some(TexToken::Command(name));
+        }
+    }
+}
+
+impl<'a> TexTokens<'a> {
+    /// The next token that is not white space.
+    fn next_solid(&mut self) -> Option<TexToken<'a>> {
+        self.find(|token| !matches!(token, TexToken::Char(c) if c.is_ascii_whitespace()))
+    }
+
+    fn peek_solid(&self) -> Option<TexToken<'a>> {
+        self.clone().next_solid()
+    }
+}
+
+fn is_math_definer(name: &str) -> bool {
+    let base = name.trim_end_matches('*');
+    MATH_DEFINERS.contains(&base) || MATH_REFUSED_DEFINERS.contains(&base)
+}
+
+/// Whether every macro definition in an equation keeps its expansion small.
+/// The converter copies a macro argument as often as the body names it and
+/// counts only expansions, so one `\newcommand{\a}[1]{\a{#1#1}}` doubles its
+/// argument each time. Here a body may name each parameter once and hold at
+/// most `MATH_BODY_LIMIT` bytes, so each expansion adds at most that much.
+fn math_definitions_are_bounded(tex: &str) -> bool {
+    let mut tokens = TexTokens { rest: tex };
+    while let Some(token) = tokens.next() {
+        let TexToken::Command(name) = token else {
+            continue;
+        };
+        if !is_math_definer(name) {
+            continue;
+        }
+        if !MATH_DEFINERS.contains(&name) || !math_definition_is_bounded(&mut tokens, name == "def")
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reads one definition after its command: `{\name}` or `\name`, then `[n]`
+/// for the LaTeX forms or `#1#2…` for `\def`, then a braced body. The
+/// converter has no default argument, so `[default]` is refused here.
+fn math_definition_is_bounded(tokens: &mut TexTokens, plain_def: bool) -> bool {
+    let braced = !plain_def && tokens.peek_solid() == Some(TexToken::Char('{'));
+    if braced {
+        tokens.next_solid();
+    }
+    if !matches!(tokens.next_solid(), Some(TexToken::Command(_))) {
+        return false;
+    }
+    if braced && tokens.next_solid() != Some(TexToken::Char('}')) {
+        return false;
+    }
+    let mut parameters = 0;
+    if plain_def {
+        while tokens.peek_solid() == Some(TexToken::Char('#')) {
+            tokens.next_solid();
+            parameters += 1;
+            if tokens.next() != char::from_digit(parameters, 10).map(TexToken::Char) {
+                return false;
+            }
+        }
+    } else if tokens.peek_solid() == Some(TexToken::Char('[')) {
+        tokens.next_solid();
+        let Some(TexToken::Char(digit @ '1'..='9')) = tokens.next_solid() else {
+            return false;
+        };
+        parameters = digit.to_digit(10).unwrap_or(0);
+        if tokens.next_solid() != Some(TexToken::Char(']')) {
+            return false;
+        }
+    }
+    if tokens.next_solid() != Some(TexToken::Char('{')) {
+        return false;
+    }
+    let start = tokens.rest.len();
+    let mut depth = 0usize;
+    let mut used = 0u16;
+    loop {
+        let before = tokens.rest.len();
+        match tokens.next() {
+            None => return false,
+            Some(TexToken::Char('{')) => depth += 1,
+            Some(TexToken::Char('}')) if depth == 0 => return start - before <= MATH_BODY_LIMIT,
+            Some(TexToken::Char('}')) => depth -= 1,
+            Some(TexToken::Char('#')) => {
+                let Some(TexToken::Char(digit)) = tokens.next() else {
+                    return false;
+                };
+                let bit = match digit.to_digit(10) {
+                    Some(n @ 1..) if n <= parameters => 1u16 << n,
+                    _ => return false,
+                };
+                if used & bit != 0 {
+                    return false;
+                }
+                used |= bit;
+            }
+            Some(TexToken::Command(name)) if is_math_definer(name) => return false,
+            Some(_) => {}
+        }
+    }
+}
+
 /// One TeX equation as MathML, for the sanitizer to read like any other
-/// markup. The writer does not escape everything it emits (an operator `<`
-/// goes out bare), so nothing here is trusted on its own: it is cleaned with
-/// the rest of the document against the MathML allowlist below. No annotation,
-/// which would carry the TeX source through unescaped.
-fn render_math(tex: &str, display: bool, budget: &mut MathBudget) -> String {
-    use pulldown_latex::{config::DisplayMode, write_mathml, Parser, RenderConfig, Storage};
+/// markup. Nothing here is trusted on its own: the result is cleaned with the
+/// rest of the document against the MathML allowlist below. A macro that
+/// calls itself stops at the converter's expansion limit; an equation that
+/// fails, or whose markup would overrun the document's output budget, is
+/// shown as its escaped source.
+fn render_math(
+    converter: &mut math_core::LatexToMathML,
+    tex: &str,
+    display: bool,
+    budget: &mut MathBudget,
+) -> String {
+    use math_core::MathDisplay;
     let charge = tex.len().max(MATH_MIN_CHARGE);
     if tex.len() > MATH_EXPRESSION_LIMIT || charge > budget.source || budget.output == 0 {
         return math_source(tex);
     }
     budget.source -= charge;
+    if tex.bytes().filter(|&byte| byte == b'#').count() > MATH_PARAMETER_LIMIT
+        || !math_definitions_are_bounded(tex)
+    {
+        return math_source(tex);
+    }
 
-    // pulldown-latex 0.8.0 expands macros before checking its allocation limit.
-    // These are all primitives that populate its initially empty MacroContext
-    // (parser/primitives.rs). Its lexer reads literal ASCII command names; it
-    // has no csname/catcode processing. Scan every backslash, even in comments
-    // or escaped text, so reparsing a group cannot hide a definition or alias.
-    // Keep the dependency pinned until this guard is rechecked or fixed upstream.
-    if tex.split('\\').skip(1).any(|tail| {
-        [
-            "def",
-            "let",
-            "futurelet",
-            "newcommand",
-            "renewcommand",
-            "providecommand",
-        ]
-        .iter()
-        .any(|command| tail.starts_with(command))
-    }) {
-        return math_source(tex);
-    }
-    let storage = Storage::new();
-    let parser = Parser::new(tex, &storage);
-    let config = RenderConfig {
-        display_mode: if display {
-            DisplayMode::Block
-        } else {
-            DisplayMode::Inline
-        },
-        ..RenderConfig::default()
+    // The converter has no `split`; `aligned` lays out the same inside an equation.
+    let converted = tex
+        .replace(r"\begin{split}", r"\begin{aligned}")
+        .replace(r"\end{split}", r"\end{aligned}");
+    let mode = if display {
+        MathDisplay::Block
+    } else {
+        MathDisplay::Inline
     };
-    let mut writer = MathWriter {
-        bytes: Vec::new(),
-        remaining: &mut budget.output,
-    };
-    if write_mathml(&mut writer, parser, config).is_err() {
-        // Discard partial markup on a parse or output-limit failure. Bytes
-        // already written still count against the document's shared budget.
+    // The converter recurses once per nesting level, and a 16 KiB equation can
+    // nest thousands deep: more than a worker thread's stack. It converts on a
+    // thread of its own with room for that. A thread that cannot start, or a
+    // panic there, ends as source for this equation only.
+    let converted = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(MATH_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                converter.convert_with_global_state(&converted, mode)
+            })
+            .ok()?
+            .join()
+            .ok()
+    });
+    let Some(Ok(result)) = converted else {
         return math_source(tex);
+    };
+    // Markup that is discarded still counts against the document's budget.
+    let fits = result.mathml.len() <= budget.output;
+    budget.output = budget.output.saturating_sub(result.mathml.len());
+    if fits {
+        result.mathml
+    } else {
+        math_source(tex)
     }
-    String::from_utf8(writer.bytes).expect("MathML writer emits UTF-8")
 }
 
 fn html_escape_into(out: &mut String, text: &str) {
@@ -1006,85 +1224,134 @@ fn html_escape_into(out: &mut String, text: &str) {
     }
 }
 
-/// MathML Core: the elements the equation renderer writes, and the
-/// presentation attributes it sets on them. None of them runs anything;
-/// `style` is the only one that could say more than it should, and it is
-/// filtered below.
-const MATHML_TAGS: [&str; 30] = [
-    "math",
-    "semantics",
-    "mrow",
-    "mi",
-    "mn",
-    "mo",
-    "mtext",
-    "mspace",
-    "ms",
-    "msup",
-    "msub",
-    "msubsup",
-    "mfrac",
-    "msqrt",
-    "mroot",
-    "mstyle",
-    "merror",
-    "mpadded",
-    "mphantom",
-    "mover",
-    "munder",
-    "munderover",
-    "mmultiscripts",
-    "mprescripts",
-    "mtable",
-    "mtr",
-    "mtd",
-    "maction",
-    "menclose",
-    "mglyph",
+/// The MathML elements the converter writes and the attributes it sets on
+/// each, found by converting a wide list of equations (see
+/// `mathml_allowlist_matches_the_converter`). `style` is the only attribute
+/// that could say more than it should, and it is filtered below. There is no
+/// `href`: the one link an equation makes, `\eqref`, is an ordinary `<a>` in
+/// an `<mtext>`.
+const MATHML: [(&str, &[&str]); 25] = [
+    ("math", &["display"]),
+    ("menclose", &["notation"]),
+    ("merror", &[]),
+    (
+        "mfrac",
+        &["displaystyle", "linethickness", "scriptlevel", "style"],
+    ),
+    ("mi", &["mathvariant"]),
+    ("mmultiscripts", &[]),
+    ("mn", &[]),
+    (
+        "mo",
+        &[
+            "form",
+            "lspace",
+            "maxsize",
+            "minsize",
+            "movablelimits",
+            "rspace",
+            "stretchy",
+            "symmetric",
+        ],
+    ),
+    ("mover", &["accent"]),
+    ("mpadded", &["height", "style", "voffset", "width"]),
+    ("mphantom", &[]),
+    ("mprescripts", &[]),
+    ("mroot", &[]),
+    ("mrow", &["displaystyle", "scriptlevel", "style"]),
+    ("mspace", &["style", "width"]),
+    ("msqrt", &[]),
+    ("msub", &[]),
+    ("msubsup", &[]),
+    ("msup", &[]),
+    ("mtable", &["displaystyle", "scriptlevel", "style"]),
+    ("mtd", &["id", "style"]),
+    ("mtext", &[]),
+    ("mtr", &[]),
+    ("munder", &["accentunder"]),
+    ("munderover", &[]),
 ];
 
-const MATHML_ATTRIBUTES: [&str; 35] = [
-    "class",
-    "style",
-    "display",
-    "displaystyle",
-    "scriptlevel",
-    "mathvariant",
-    "mathsize",
-    "mathcolor",
-    "mathbackground",
-    "stretchy",
-    "symmetric",
-    "largeop",
-    "movablelimits",
-    "fence",
-    "separator",
-    "form",
-    "lspace",
-    "rspace",
-    "minsize",
-    "maxsize",
-    "accent",
-    "accentunder",
-    "linethickness",
+/// The fence tags the frontend colours (src/code-colour.mjs TAGS). The class
+/// stays on `code` for these and nothing else, so a document cannot put its
+/// own class names on the page.
+const CODE_CLASSES: [&str; 35] = [
+    "language-python",
+    "language-py",
+    "language-c",
+    "language-h",
+    "language-cpp",
+    "language-hpp",
+    "language-cc",
+    "language-cxx",
+    "language-rust",
+    "language-rs",
+    "language-fortran",
+    "language-f90",
+    "language-f95",
+    "language-f",
+    "language-julia",
+    "language-jl",
+    "language-bash",
+    "language-sh",
+    "language-zsh",
+    "language-shell",
+    "language-console",
+    "language-toml",
+    "language-yaml",
+    "language-yml",
+    "language-json",
+    "language-latex",
+    "language-tex",
+    "language-matlab",
+    "language-makefile",
+    "language-mk",
+    "language-cmake",
+    "language-diff",
+    "language-patch",
+    "language-javascript",
+    "language-js",
+];
+
+/// The class names the converter writes, by element: red text for an unknown
+/// command, the strokes of a crossed-out term, and the two `\textsf` and
+/// `\textrm` spans inside text.
+const MATHML_CLASSES: [(&str, &[&str]); 3] = [
+    ("merror", &["math-core-unknown-cmd"]),
+    (
+        "mrow",
+        &[
+            "menclose-updiagonalstrike",
+            "menclose-downdiagonalstrike",
+            "menclose-phasorangle",
+        ],
+    ),
+    (
+        "span",
+        &["math-core-sans-serif-font", "math-core-serif-font"],
+    ),
+];
+
+const MATH_STYLE_PROPERTIES: [&str; 11] = [
+    "border-right",
+    "border-top",
+    "color",
+    "justify-items",
+    "margin-left",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
+    "text-align",
     "width",
-    "height",
-    "depth",
-    "voffset",
-    "lspace",
-    "columnalign",
-    "rowalign",
-    "columnspacing",
-    "rowspacing",
-    "columnlines",
-    "rowlines",
-    "notation",
 ];
 
-/// The only inline styles that pass: a column alignment on a table cell, and
-/// the handful of declarations the equation renderer writes on MathML
-/// elements — each one a known property with a value made of nothing but
-/// letters, digits, spaces and the punctuation a colour or a length needs.
+/// The only inline styles that pass: a column alignment on a table cell, the
+/// small capitals of `\textsc`, and the handful of declarations the converter
+/// writes on MathML elements. Each is a known property with a value made of
+/// nothing but letters, digits, spaces and the punctuation a colour or a
+/// length needs.
 fn keep_known_styles<'a>(
     element: &str,
     attribute: &str,
@@ -1100,7 +1367,11 @@ fn keep_known_styles<'a>(
         )
         .then_some(std::borrow::Cow::Borrowed(value));
     }
-    if !MATHML_TAGS.contains(&element) {
+    if element == "span" {
+        return (value == "font-variant-caps: small-caps")
+            .then_some(std::borrow::Cow::Borrowed(value));
+    }
+    if !MATHML.iter().any(|(tag, _)| *tag == element) {
         return None;
     }
     let every_declaration_known = value.split(';').all(|declaration| {
@@ -1111,10 +1382,7 @@ fn keep_known_styles<'a>(
         let Some((property, rest)) = declaration.split_once(':') else {
             return false;
         };
-        let known = matches!(
-            property.trim(),
-            "color" | "margin-left" | "height" | "border-color" | "width"
-        );
+        let known = MATH_STYLE_PROPERTIES.contains(&property.trim());
         let plain = rest.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '#' | '(' | ')' | '%')
         });
@@ -1163,7 +1431,189 @@ fn hides_anchor(html: &str) -> bool {
     html.to_ascii_lowercase().contains("data-line")
 }
 
-fn render_markdown(source: &str) -> String {
+type OffsetEvent<'a> = (pulldown_cmark::Event<'a>, std::ops::Range<usize>);
+
+/// GitHub's other way to write display math: a fenced block whose info string
+/// is `math`. It becomes the same event as `$$…$$`; every other fence, and
+/// any `$` inside one, stays code.
+fn math_fences(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len());
+    let mut open: Option<(std::ops::Range<usize>, String)> = None;
+    for (event, range) in events {
+        match (open.as_mut(), event) {
+            (Some((_, tex)), Event::Text(text)) => tex.push_str(&text),
+            (Some(_), Event::End(TagEnd::CodeBlock)) => {
+                let (start, mut tex) = open.take().expect("matched Some above");
+                tex.truncate(tex.trim_end().len());
+                out.push((Event::DisplayMath(tex.into()), start));
+            }
+            (None, Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))))
+                if info.split_whitespace().next() == Some("math") =>
+            {
+                open = Some((range, String::new()));
+            }
+            (_, event) => out.push((event, range)),
+        }
+    }
+    out
+}
+
+/// GitHub's heading ids, so `[see](#results)` finds `## Results`: lower case,
+/// spaces to `-`, other punctuation dropped, and `-1`, `-2` on repeats. The
+/// sanitizer adds the `md-` prefix to the id and to the links that point at it.
+fn name_headings(events: &mut [OffsetEvent<'_>]) {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    let mut used = HashSet::new();
+    for start in 0..events.len() {
+        if !matches!(
+            &events[start].0,
+            Event::Start(Tag::Heading { id: None, .. })
+        ) {
+            continue;
+        }
+        let mut slug = String::new();
+        for (event, _) in &events[start + 1..] {
+            match event {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(text) | Event::Code(text) => {
+                    for c in text.chars().flat_map(char::to_lowercase) {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            slug.push(c);
+                        } else if c == ' ' {
+                            slug.push('-');
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // `Foo`, `Foo`, `Foo-1` must not share `foo-1`, so every id given
+        // out is kept and the suffix grows until the id is free.
+        let count = seen.entry(slug.clone()).or_insert(0);
+        let mut id = slug.clone();
+        while !used.insert(id.clone()) {
+            *count += 1;
+            id = format!("{slug}-{count}");
+        }
+        slug = id;
+        if let Event::Start(Tag::Heading { id, .. }) = &mut events[start].0 {
+            *id = Some(slug.into());
+        }
+    }
+}
+
+/// Bare web addresses in prose become links, as on GitHub: `http://`,
+/// `https://` and `www.` runs, never inside code, math or an existing link.
+/// Trailing punctuation and an unmatched `)` stay outside the link.
+fn link_bare_urls(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len());
+    let mut shielded = 0usize;
+    for (event, range) in events {
+        match &event {
+            Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_)) => shielded += 1,
+            Event::End(TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) => {
+                shielded = shielded.saturating_sub(1)
+            }
+            Event::InlineHtml(tag) if tag.to_ascii_lowercase().starts_with("<a") => shielded += 1,
+            Event::InlineHtml(tag) if tag.to_ascii_lowercase().starts_with("</a") => {
+                shielded = shielded.saturating_sub(1)
+            }
+            _ => {}
+        }
+        let Event::Text(text) = &event else {
+            out.push((event, range));
+            continue;
+        };
+        if shielded > 0 {
+            out.push((event, range));
+            continue;
+        }
+        let spans = bare_urls(text);
+        if spans.is_empty() {
+            out.push((event, range));
+            continue;
+        }
+        let mut last = 0;
+        for (from, to) in spans {
+            if from > last {
+                out.push((
+                    Event::Text(text[last..from].to_string().into()),
+                    range.clone(),
+                ));
+            }
+            let shown = &text[from..to];
+            let dest = if shown.starts_with("www.") {
+                format!("https://{shown}")
+            } else {
+                shown.to_string()
+            };
+            out.push((
+                Event::Start(Tag::Link {
+                    link_type: LinkType::Autolink,
+                    dest_url: dest.into(),
+                    title: "".into(),
+                    id: "".into(),
+                }),
+                range.clone(),
+            ));
+            out.push((Event::Text(shown.to_string().into()), range.clone()));
+            out.push((Event::End(TagEnd::Link), range.clone()));
+            last = to;
+        }
+        if last < text.len() {
+            out.push((Event::Text(text[last..].to_string().into()), range));
+        }
+    }
+    out
+}
+
+/// Byte spans of the web addresses in `text`, found in one forward pass.
+fn bare_urls(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        // The prefixes are ASCII, so a match starts on a character boundary.
+        let Some(prefix) = ["https://", "http://", "www."]
+            .into_iter()
+            .find(|prefix| bytes[at..].starts_with(prefix.as_bytes()))
+        else {
+            at += 1;
+            continue;
+        };
+        let from = at;
+        let after_word = text[..from]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace() || "([{<\"'*_~".contains(c));
+        let mut to = from
+            + text[from..]
+                .find(|c: char| c.is_whitespace() || c == '<')
+                .unwrap_or(text.len() - from);
+        let opens = text[from..to].matches('(').count();
+        let mut closes = text[from..to].matches(')').count();
+        loop {
+            match text[from..to].chars().next_back() {
+                Some(c) if ".,:;!?'\"*_~".contains(c) => to -= c.len_utf8(),
+                Some(')') if closes > opens => {
+                    to -= 1;
+                    closes -= 1;
+                }
+                _ => break,
+            }
+        }
+        if after_word && to > from + prefix.len() {
+            spans.push((from, to));
+        }
+        at = to.max(from + prefix.len());
+    }
+    spans
+}
+
+fn render_markdown(source: &str, base: &Path) -> Rendered {
     use pulldown_cmark::{html, Event, Options, Parser, Tag};
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -1178,10 +1628,17 @@ fn render_markdown(source: &str) -> String {
     // `$…$` and `$$…$$` become MathML in the same stream, and the sanitizer
     // reads them along with everything else.
     let mut rendered = String::with_capacity(source.len() + source.len() / 2);
-    let events_with_offset = Parser::new_ext(source, options).into_offset_iter();
+    // Adjacent text is merged first, so a URL or heading is never split at a `_`.
+    let mut merged: Vec<_> = pulldown_cmark::TextMergeWithOffset::new(
+        Parser::new_ext(source, options).into_offset_iter(),
+    )
+    .collect();
+    name_headings(&mut merged);
+    let events_with_offset = link_bare_urls(math_fences(merged));
     let mut math_budget = MathBudget::default();
+    let mut converter = math_converter();
 
-    let events = events_with_offset.flat_map(|(event, range)| {
+    let events = events_with_offset.into_iter().flat_map(|(event, range)| {
         let mut result = vec![];
 
         // Handle Start tags: order depends on tag type.
@@ -1219,14 +1676,16 @@ fn render_markdown(source: &str) -> String {
         let event_to_push = match &event {
             Event::Html(h) if hides_anchor(h) => Event::Text(h.clone()),
             Event::InlineHtml(h) if hides_anchor(h) => Event::Text(h.clone()),
-            Event::InlineMath(tex) => Event::Html(render_math(tex, false, &mut math_budget).into()),
+            Event::InlineMath(tex) => {
+                Event::Html(render_math(&mut converter, tex, false, &mut math_budget).into())
+            }
             Event::DisplayMath(tex) => {
                 // Emit line anchor before the rendered math.
                 let line = line_at_offset(&line_offsets, range.start);
                 result.push(Event::Html(
                     format!(r#"<span class="src" data-line="{}"></span>"#, line).into(),
                 ));
-                Event::Html(render_math(tex, true, &mut math_budget).into())
+                Event::Html(render_math(&mut converter, tex, true, &mut math_budget).into())
             }
             other => other.clone(),
         };
@@ -1238,29 +1697,321 @@ fn render_markdown(source: &str) -> String {
     html::push_html(&mut rendered, events);
 
     let mut builder = ammonia::Builder::default();
-    builder.rm_tags(["img"]);
     builder.add_generic_attributes(["id"]);
     builder.id_prefix(Some(MARKDOWN_ID_PREFIX));
     builder.url_relative(ammonia::UrlRelative::Custom(Box::new(keep_local_links)));
+    // A Windows drive path (`C:/figs/a.png`) parses as a URL with scheme `c`,
+    // which ammonia drops before `judge_image` sees it, in Markdown images and
+    // raw `<img>` alike. A link to such a scheme is not followed on click.
+    if cfg!(windows) {
+        builder.add_url_schemes(DRIVE_LETTERS);
+    }
     // Task-list checkboxes; forms are inert anyway (form-action 'none').
     builder.add_tags(["input"]);
     builder.add_tag_attributes("input", ["type", "checked", "disabled"]);
     // Footnotes are styled by class, and table columns keep their alignment.
     builder.add_allowed_classes("div", ["footnote-definition"]);
+    builder.add_allowed_classes("code", CODE_CLASSES);
     builder.add_allowed_classes("sup", ["footnote-definition-label", "footnote-reference"]);
     builder.add_tag_attributes("th", ["style"]);
     builder.add_tag_attributes("td", ["style"]);
     // Source line anchors for mapping selections back to markdown.
     builder.add_tags(["span"]);
-    builder.add_tag_attributes("span", ["data-line"]);
+    builder.add_tag_attributes("span", ["data-line", "style"]);
     builder.add_allowed_classes("span", ["src"]);
     // Equations.
-    builder.add_tags(MATHML_TAGS);
-    for tag in MATHML_TAGS {
-        builder.add_tag_attributes(tag, MATHML_ATTRIBUTES);
+    for (tag, attributes) in MATHML {
+        builder.add_tags([tag]);
+        builder.add_tag_attributes(tag, attributes);
     }
-    builder.attribute_filter(keep_known_styles);
-    builder.clean(&rendered).to_string()
+    for (tag, classes) in MATHML_CLASSES {
+        builder.add_allowed_classes(tag, classes);
+    }
+    // Every `img src` is judged here and replaced by `img:<n>`, an index into
+    // `verdicts`. `replace_images` turns the index into the final markup, so
+    // nothing the file wrote reaches the output as an image source.
+    let verdicts = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let judged = std::sync::Arc::clone(&verdicts);
+    let base = base.to_path_buf();
+    builder.attribute_filter(move |element, attribute, value| {
+        if (element, attribute) != ("img", "src") {
+            return keep_known_styles(element, attribute, value);
+        }
+        let mut judged = judged.lock().ok()?;
+        let verdict = if judged.len() < MARKDOWN_IMAGE_COUNT {
+            judge_image(value, &base)
+        } else {
+            ImageVerdict::refused("too many images in this document")
+        };
+        judged.push(verdict);
+        Some(std::borrow::Cow::Owned(format!("img:{}", judged.len() - 1)))
+    });
+    let cleaned = builder.clean(&rendered).to_string();
+    drop(builder);
+    let verdicts = verdicts.lock().map(|v| v.clone()).unwrap_or_default();
+    let mut shown = Vec::new();
+    let mut watch: Vec<(PathBuf, Option<Stamp>)> = Vec::new();
+    for verdict in &verdicts {
+        let (path, stamp) = match verdict {
+            ImageVerdict::Shown { path, stamp } => {
+                if !shown.contains(path) {
+                    shown.push(path.clone());
+                }
+                (path, Some(*stamp))
+            }
+            ImageVerdict::Refused {
+                watch: Some(path), ..
+            } => (path, None),
+            _ => continue,
+        };
+        if !watch.iter().any(|(seen, _)| seen == path) {
+            watch.push((path.clone(), stamp));
+        }
+    }
+    Rendered {
+        html: replace_images(&cleaned, &verdicts),
+        shown,
+        watch,
+    }
+}
+
+/// What `render_markdown` hands back: the sanitized page, the canonical paths
+/// of the images it shows, and every local image path the watcher should
+/// follow (shown or missing) with its `stat` from the moment it was judged.
+/// Each image is judged once and the count is capped, so `watch` is too.
+struct Rendered {
+    html: String,
+    shown: Vec<PathBuf>,
+    watch: Vec<(PathBuf, Option<Stamp>)>,
+}
+
+const IMAGE_LIMIT: u64 = 64 * 1024 * 1024;
+/// A document is read on every reload, and each image costs a few disk calls.
+const MARKDOWN_IMAGE_COUNT: usize = 1024;
+const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "avif", "gif", "bmp", "svg"];
+
+#[derive(Clone, Debug)]
+enum ImageVerdict {
+    /// `stamp` is the file's `stat` when it was judged.
+    Shown { path: PathBuf, stamp: Stamp },
+    /// `watch` is where a missing file was looked for, so the watcher can see
+    /// it arrive.
+    Refused {
+        reason: &'static str,
+        watch: Option<PathBuf>,
+    },
+}
+
+impl ImageVerdict {
+    fn refused(reason: &'static str) -> Self {
+        Self::Refused {
+            reason,
+            watch: None,
+        }
+    }
+}
+
+/// Why a canonical path may not be shown as an image, if it may not.
+/// `metadata` comes from the caller, so a file already open is judged by the
+/// handle and not by a path that may have changed since.
+fn image_problem(canonical: &Path, metadata: &std::fs::Metadata) -> Option<&'static str> {
+    if !metadata.is_file() {
+        return Some("not a regular file");
+    }
+    let known = canonical
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+    if !known {
+        return Some("not an image type");
+    }
+    (metadata.len() > IMAGE_LIMIT).then_some("larger than 64 MB")
+}
+
+fn is_separator(c: char) -> bool {
+    c == '/' || c == '\\'
+}
+
+/// `C:/dir` or `C:\dir`: a drive letter, a colon and a separator.
+fn drive_path(src: &str) -> bool {
+    let mut chars = src.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.next() == Some(':')
+        && chars.next().is_some_and(is_separator)
+}
+
+/// A Windows path prefix other than a plain drive letter (UNC share, verbatim
+/// or device path) that the folder of the document does not already have.
+/// Joining such a source would send the reader to another machine or device.
+/// Other systems have no prefixes.
+fn foreign_prefix(joined: &Path, base: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match joined.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_))
+                && base.components().next() != Some(Component::Prefix(prefix))
+        }
+        _ => false,
+    }
+}
+
+/// A resolved path on a network share or device that the folder of the
+/// document is not on. A link can lead there from a local-looking source.
+fn network_target(canonical: &Path, base: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match canonical.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+                && base.components().next() != Some(Component::Prefix(prefix))
+        }
+        _ => false,
+    }
+}
+
+/// Decide whether an `img src` written in a Markdown file may be shown. The
+/// source is a path, never a URL: anything with a scheme, and anything that
+/// starts like a network share, is refused before the disk is touched. A
+/// local source that resolves to a Windows network share is refused too. A
+/// Windows drive path counts as a path on Windows only.
+fn judge_image(src: &str, base: &Path) -> ImageVerdict {
+    let decoded = percent_encoding::percent_decode_str(src).decode_utf8_lossy();
+    let mut leading = decoded.chars();
+    let share =
+        leading.next().is_some_and(is_separator) && leading.next().is_some_and(is_separator);
+    let drive = cfg!(windows) && drive_path(&decoded);
+    if share || (!drive && ammonia::Url::parse(&decoded).is_ok()) {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
+    let joined = base.join(decoded.as_ref());
+    if foreign_prefix(&joined, base) {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
+    let Ok(canonical) = std::fs::canonicalize(&joined) else {
+        return ImageVerdict::Refused {
+            reason: "not found",
+            watch: Some(joined),
+        };
+    };
+    if network_target(&canonical, base) {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
+    let Ok(metadata) = std::fs::metadata(&canonical) else {
+        return ImageVerdict::Refused {
+            reason: "not found",
+            watch: Some(canonical),
+        };
+    };
+    match image_problem(&canonical, &metadata) {
+        Some(reason) => ImageVerdict::refused(reason),
+        None => ImageVerdict::Shown {
+            stamp: stamp_of(&metadata),
+            path: canonical,
+        },
+    }
+}
+
+/// Escaped text from the serializer is safe in an attribute and in text once
+/// the angle brackets, which it leaves alone inside attribute values, are
+/// escaped too.
+fn angle_free(value: &str) -> String {
+    value.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn escape_attribute(value: &str) -> String {
+    angle_free(&value.replace('&', "&amp;").replace('"', "&quot;"))
+}
+
+/// The index of the closing `>` of the tag at the start of `html`, quoted
+/// values skipped. ammonia writes every attribute value in double quotes.
+fn tag_len(html: &str) -> usize {
+    let mut quoted = false;
+    for (at, c) in html.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '>' if !quoted => return at + 1,
+            _ => {}
+        }
+    }
+    html.len()
+}
+
+/// Rewrite each `<img>` in sanitized HTML. A shown image keeps `alt`, `title`
+/// and a plain `width` and `height`, and carries its canonical path in
+/// `data-doc` for the frontend to turn into a doc URL. A refused one becomes
+/// its alt text in a placeholder. Text in sanitized HTML never holds a raw
+/// `<`, so each `<` starts a tag.
+fn replace_images(html: &str, verdicts: &[ImageVerdict]) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let end = tag_len(rest);
+        let tag = &rest[..end];
+        let is_img = tag
+            .strip_prefix("<img")
+            .is_some_and(|after| after.starts_with(|c: char| c.is_ascii_whitespace() || c == '>'));
+        if is_img {
+            out.push_str(&image_markup(tag, verdicts));
+        } else {
+            out.push_str(tag);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn image_markup(tag: &str, verdicts: &[ImageVerdict]) -> String {
+    let mut attributes: Vec<(&str, &str)> = Vec::new();
+    let mut rest = tag.strip_prefix("<img").unwrap_or_default();
+    while let Some((name, after)) = rest.trim_start().split_once("=\"") {
+        let Some((value, tail)) = after.split_once('"') else {
+            break;
+        };
+        attributes.push((name.trim(), value));
+        rest = tail;
+    }
+    let get = |name: &str| {
+        attributes
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| angle_free(value))
+    };
+    let alt = get("alt").unwrap_or_default();
+    let verdict = get("src")
+        .and_then(|src| {
+            src.strip_prefix("img:")
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .and_then(|n| verdicts.get(n));
+    let Some(ImageVerdict::Shown { path, .. }) = verdict else {
+        let reason = match verdict {
+            Some(ImageVerdict::Refused { reason, .. }) => reason,
+            _ => "only local image files are shown",
+        };
+        return format!(
+            r#"<span class="md-image-refused" title="image not shown: {reason}">{alt}</span>"#
+        );
+    };
+    let mut markup = format!(
+        r#"<img data-doc="{}" alt="{alt}""#,
+        escape_attribute(&display_path(path))
+    );
+    if let Some(title) = get("title") {
+        markup.push_str(&format!(r#" title="{title}""#));
+    }
+    for name in ["width", "height"] {
+        let plain = get(name).filter(|value| {
+            let digits = value.strip_suffix('%').unwrap_or(value);
+            (1..=5).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit())
+        });
+        if let Some(value) = plain {
+            markup.push_str(&format!(r#" {name}="{value}""#));
+        }
+    }
+    markup.push('>');
+    markup
 }
 
 /// Rendered and raw in one call, so the raw/rendered toggle costs nothing.
@@ -1283,8 +2034,20 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
         return Err("markdown file is larger than 10 MB".into());
     }
     let raw = std::fs::read_to_string(&canonical).map_err(|error| error.to_string())?;
-    let html = render_markdown(&raw);
-    Ok(MarkdownDoc { html, raw })
+    let rendered = render_markdown(&raw, canonical.parent().unwrap_or(Path::new("")));
+    {
+        let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+        state.embedded.extend(rendered.shown);
+        if state.path.as_deref() == Some(canonical.as_path()) {
+            state.images = rendered.watch;
+            state.image_cursor = 0;
+        }
+    }
+    Ok(MarkdownDoc {
+        html: rendered.html,
+        digest: text_sha256(&raw),
+        raw,
+    })
 }
 
 /// Raw text of an allowed `_review.json`. The sidecar is not Markdown, so it
@@ -1325,10 +2088,85 @@ fn mime_for(path: &Path) -> &'static str {
         Some("avif") => "image/avif",
         Some("gif") => "image/gif",
         Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
         Some("md" | "markdown") => "text/markdown",
         Some("json") => "application/json",
         _ => "application/octet-stream",
     }
+}
+
+/// Which set a path to serve belongs to. Opened files are read whole; an
+/// embedded image is checked and capped again at read time.
+#[derive(Debug, PartialEq)]
+enum Served {
+    Opened,
+    Embedded,
+}
+
+fn serving(state: &WatchState, canonical: &Path) -> Option<Served> {
+    if state.allowed.contains(canonical) {
+        Some(Served::Opened)
+    } else if state.embedded.contains(canonical) {
+        Some(Served::Embedded)
+    } else {
+        None
+    }
+}
+
+/// Open for reading without waiting. Opening a FIFO that no process writes
+/// to blocks forever otherwise, and a file can be swapped for one after it was
+/// judged.
+fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK is 0o4000 on Linux and Android, 0x4 on macOS and the BSDs.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const O_NONBLOCK: i32 = 0o4000;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        const O_NONBLOCK: i32 = 0x4;
+        options.custom_flags(O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// The bytes of an embedded image, if it is still a regular image file within
+/// the size cap. The file is opened first and judged by its own handle; the
+/// read is capped as well, in case the file grows after the check.
+fn read_image(canonical: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let file = open_nonblocking(canonical).ok()?;
+    if image_problem(canonical, &file.metadata().ok()?).is_some() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(IMAGE_LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= IMAGE_LIMIT).then_some(bytes)
+}
+
+/// The response for bytes that passed the allow check. Nothing may be sniffed
+/// into another type. An embedded image is Markdown-controlled content: an SVG
+/// opened as a document must not run script or load anything. PDF.js needs
+/// none of that for the documents the reader opened.
+fn document_response(served: &Served, canonical: &Path, bytes: Vec<u8>) -> http::Response<Vec<u8>> {
+    let mut response = http::Response::builder()
+        .status(200)
+        .header("Content-Type", mime_for(canonical))
+        .header("Content-Length", bytes.len().to_string())
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        // PDF.js fetches these bytes from the app origin; without this header
+        // the cross-origin fetch to doc.localhost is blocked by the webview.
+        .header("Access-Control-Allow-Origin", "*");
+    if *served == Served::Embedded {
+        response = response.header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+        );
+    }
+    response.body(bytes).expect("document response")
 }
 
 /// The `doc://` protocol carries document bytes into the webview, replacing
@@ -1339,7 +2177,8 @@ fn mime_for(path: &Path) -> &'static str {
 /// `Cache-Control: no-store` keeps revisions out of the cache entirely.
 ///
 /// Security: the allowlist check lives in this handler, in our own code, and
-/// the served set is exactly the files the reader has opened this session.
+/// the served set is the files the reader has opened this session, plus the
+/// local images those Markdown files showed.
 fn serve_document(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let deny = |status: u16| {
         http::Response::builder()
@@ -1361,32 +2200,20 @@ fn serve_document(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Re
     let Ok(canonical) = std::fs::canonicalize(PathBuf::from(requested.as_ref())) else {
         return deny(404);
     };
-    let allowed = app
-        .try_state::<Watched>()
-        .and_then(|watched| {
-            watched
-                .0
-                .lock()
-                .ok()
-                .map(|state| state.allowed.contains(&canonical))
-        })
-        .unwrap_or(false);
-    if !allowed {
-        return deny(404);
-    }
-    let Ok(bytes) = std::fs::read(&canonical) else {
+    let Some(served) = app.try_state::<Watched>().and_then(|watched| {
+        let state = watched.0.lock().ok()?;
+        serving(&state, &canonical)
+    }) else {
         return deny(404);
     };
-    http::Response::builder()
-        .status(200)
-        .header("Content-Type", mime_for(&canonical))
-        .header("Content-Length", bytes.len().to_string())
-        .header("Cache-Control", "no-store")
-        // PDF.js fetches these bytes from the app origin; without this header
-        // the cross-origin fetch to doc.localhost is blocked by the webview.
-        .header("Access-Control-Allow-Origin", "*")
-        .body(bytes)
-        .expect("document response")
+    let bytes = match served {
+        Served::Opened => std::fs::read(&canonical).ok(),
+        Served::Embedded => read_image(&canonical),
+    };
+    let Some(bytes) = bytes else {
+        return deny(404);
+    };
+    document_response(&served, &canonical, bytes)
 }
 
 /// How much bigger the whole window is than its content, in logical pixels.
@@ -1694,6 +2521,60 @@ fn watch_review_sidecar(
     }
 }
 
+/// At most this many image paths are stat-ed per watcher tick, so a document
+/// with a thousand figures does not stall the loop. Ticks go round the list.
+const IMAGES_PER_TICK: usize = 256;
+
+/// Did an image of the watched Markdown file change, appear or disappear since
+/// the last look? One batch of the list is checked per call, and its new
+/// `stat`s are recorded, so one change is reported once.
+fn embedded_images_changed(
+    watched: &Watched,
+    path: &Path,
+    stat: impl Fn(&Path) -> Option<Stamp>,
+) -> bool {
+    let Ok(mut state) = watched.0.lock() else {
+        return false;
+    };
+    let total = state.images.len();
+    if state.path.as_deref() != Some(path) || total == 0 {
+        return false;
+    }
+    let start = state.image_cursor % total;
+    let count = total.min(IMAGES_PER_TICK);
+    state.image_cursor = (start + count) % total;
+    let batch: Vec<_> = (0..count)
+        .map(|offset| {
+            let at = (start + offset) % total;
+            (at, state.images[at].clone())
+        })
+        .collect();
+    drop(state);
+    let now: Vec<_> = batch
+        .iter()
+        .map(|(at, (image, _))| (*at, image.clone(), stat(image)))
+        .collect();
+    let changed = now
+        .iter()
+        .zip(&batch)
+        .any(|((_, _, stamp), (_, (_, recorded)))| stamp != recorded);
+    if !changed {
+        return false;
+    }
+    let Ok(mut state) = watched.0.lock() else {
+        return false;
+    };
+    if state.path.as_deref() != Some(path) {
+        return false;
+    }
+    for (at, image, stamp) in now {
+        if let Some(entry) = state.images.get_mut(at).filter(|entry| entry.0 == image) {
+            entry.1 = stamp;
+        }
+    }
+    true
+}
+
 /// Sidecar `stat` every IDLE_TICK. Document `stat` follows POLL_SECONDS, and
 /// not at all when that is 0.
 ///
@@ -1773,7 +2654,9 @@ fn spawn_watcher(app: AppHandle) {
                         state.len = len;
                         state.missing = false;
                     }
-                    if changed || reappeared {
+                    let images =
+                        !changed && !reappeared && embedded_images_changed(&watched, &path, stat);
+                    if changed || reappeared || images {
                         let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                         let _ = app.emit(
                             "file-changed",
@@ -2333,6 +3216,13 @@ fn file_sha256(mut file: std::fs::File) -> Result<String, String> {
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
+/// Same digest as `file_sha256`, for text already read. `read_to_string`
+/// accepts only valid UTF-8, so the string holds exactly the file's bytes.
+fn text_sha256(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
 struct ReviewLock(std::fs::File);
 
 impl ReviewLock {
@@ -2366,13 +3256,20 @@ impl ReviewLock {
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("json")
         ));
-        lock_path.open_with(
-            cap_std::fs::OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false),
-        )
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        // macOS answers ENOENT to every writer that loses a race to create
+        // the same name relative to a directory handle, although the file
+        // then exists. One more try opens it; a missing folder still fails.
+        let mut tries = 0;
+        loop {
+            match lock_path.open_with(&options) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && tries < 3 => {
+                    tries += 1;
+                }
+                result => return result,
+            }
+        }
     }
 
     fn wait(file: std::fs::File) -> Result<Self, String> {
@@ -2628,11 +3525,10 @@ fn write_review(
 
     let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
-    if review.kind == "pdf"
-        && review
-            .anchor
-            .as_ref()
-            .is_none_or(|anchor| anchor.document_revision.is_none())
+    if review
+        .anchor
+        .as_ref()
+        .is_none_or(|anchor| anchor.document_revision.is_none())
     {
         let digest = file_sha256(doc_path.open().map_err(|error| error.to_string())?)?;
         review
@@ -2786,6 +3682,7 @@ fn patch_review_record(
         "build",
         "color",
         "anchor",
+        "at",
     ];
     let changes = patch
         .as_object()
@@ -2842,9 +3739,10 @@ fn patch_review_record(
         }
         current.insert(key.clone(), value.clone());
     }
-    let patched: Review = serde_json::from_value(serde_json::Value::Object(current))
+    let mut patched: Review = serde_json::from_value(serde_json::Value::Object(current))
         .map_err(|error| format!("invalid review patch: {error}"))?;
     validate_review(&patched)?;
+    drop_redundant_end(&mut patched);
     let index = store
         .reviews
         .iter()
@@ -3572,8 +4470,13 @@ fn main() {
         .plugin(navigation_guard())
         .plugin(tauri_plugin_dialog::init())
         .manage(Watched::default())
-        .register_uri_scheme_protocol("doc", |ctx, request| {
-            serve_document(ctx.app_handle(), &request)
+        // The disk read runs off the UI thread: a slow file or network share
+        // must not freeze the window.
+        .register_asynchronous_uri_scheme_protocol("doc", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(serve_document(&app, &request).map(std::borrow::Cow::Owned));
+            });
         })
         .invoke_handler(tauri::generate_handler![
             open_path,
@@ -3691,6 +4594,521 @@ mod tests {
     use std::collections::HashSet;
     use std::ffi::OsString;
     use std::path::PathBuf;
+
+    fn render_html(source: &str) -> String {
+        render_markdown(source, std::path::Path::new("/nonexistent")).html
+    }
+
+    #[test]
+    fn heading_links_find_their_heading() {
+        let html =
+            render_html("# Results\n\n## Results\n\n## Wake `Re` = 100!\n\n[see](#results-1)\n");
+        assert!(html.contains(r#"<h1 id="md-results">"#), "{html}");
+        assert!(html.contains(r#"<h2 id="md-results-1">"#), "{html}");
+        assert!(html.contains(r#"id="md-wake-re--100""#), "{html}");
+        assert!(html.contains(r##"href="#md-results-1""##), "{html}");
+    }
+
+    #[test]
+    fn heading_ids_never_repeat() {
+        let html = render_html("# Foo\n\n# Foo\n\n# Foo-1\n\n# Foo\n");
+        for id in ["md-foo", "md-foo-1", "md-foo-1-1", "md-foo-2"] {
+            assert_eq!(html.matches(&format!(r#"id="{id}""#)).count(), 1, "{html}");
+        }
+    }
+
+    #[test]
+    fn bare_addresses_are_found_in_linear_time() {
+        let text = "https://a.b/ ".repeat(1024 * 1024 / 13);
+        let started = std::time::Instant::now();
+        let spans = super::bare_urls(&text);
+        assert_eq!(spans.len(), 1024 * 1024 / 13);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn bare_web_addresses_become_links() {
+        let html = render_html(
+            "See https://example.org/a_b(c). Or (www.example.org), not `https://code.example`.\n\n\
+             ```\nhttps://block.example\n```\n\n[named](https://named.example) and <a href=\"https://raw.example\">https://raw.example</a>\n",
+        );
+        assert!(
+            html.contains(r#"<a href="https://example.org/a_b(c)""#),
+            "{html}"
+        );
+        assert!(html.contains(">https://example.org/a_b(c)</a>."), "{html}");
+        assert!(html.contains(r#"<a href="https://www.example.org" rel="noopener noreferrer">www.example.org</a>)"#), "{html}");
+        assert!(!html.contains(r#"href="https://code.example""#), "{html}");
+        assert!(!html.contains(r#"href="https://block.example""#), "{html}");
+        assert_eq!(
+            html.matches(r#"href="https://named.example""#).count(),
+            1,
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"href="https://raw.example""#).count(),
+            1,
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn address_like_words_stay_text() {
+        let html =
+            render_html("javascript:https://x.example and abchttps://y.example and https://\n");
+        assert!(!html.contains("<a "), "{html}");
+    }
+
+    /// A folder with `pics/ok.png`, and a Markdown file `doc/notes.md` beside
+    /// a `doc/figs/` folder.
+    fn image_tree() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("doc");
+        std::fs::create_dir_all(doc.join("figs")).unwrap();
+        std::fs::create_dir_all(dir.path().join("pics")).unwrap();
+        std::fs::write(doc.join("figs").join("a.png"), b"png").unwrap();
+        std::fs::write(doc.join("figs").join("my pic.PNG"), b"png").unwrap();
+        std::fs::write(dir.path().join("pics").join("ok.png"), b"png").unwrap();
+        (dir, doc)
+    }
+
+    fn shown_in(source: &str, base: &std::path::Path) -> (String, Vec<PathBuf>) {
+        let rendered = render_markdown(source, base);
+        (rendered.html, rendered.shown)
+    }
+
+    #[test]
+    fn local_images_are_shown_by_path() {
+        let (dir, doc) = image_tree();
+        let absolute = dir.path().join("pics").join("ok.png");
+        let source = format!(
+            "![one](figs/a.png \"t\")\n\n![two](../pics/ok.png)\n\n![three]({})\n\n\
+             ![four](figs/my%20pic.PNG)\n\n<img src=figs/a.png alt=raw width=40 height=10%>",
+            // Markdown reads `\.` in a Windows path such as `Temp\.tmpX` as
+            // an escaped dot, so the path is written with forward slashes.
+            absolute.display().to_string().replace('\\', "/")
+        );
+        let (html, shown) = shown_in(&source, &doc);
+        assert_eq!(html.matches("<img data-doc=").count(), 5, "{html}");
+        assert!(!html.contains("src="), "{html}");
+        assert!(html.contains(r#"title="t""#), "{html}");
+        assert!(
+            html.contains(r#"alt="raw" width="40" height="10%""#),
+            "{html}"
+        );
+        let canonical = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+        assert!(shown.contains(&canonical(doc.join("figs/a.png"))));
+        assert!(shown.contains(&canonical(absolute)));
+        assert!(shown.contains(&canonical(doc.join("figs/my pic.PNG"))));
+        assert_eq!(shown.len(), 3, "{shown:?}");
+    }
+
+    fn refused(source: &str, base: &std::path::Path) -> String {
+        let (html, shown) = shown_in(source, base);
+        assert!(shown.is_empty(), "{html}");
+        assert!(!html.contains("<img"), "{html}");
+        assert!(html.contains("md-image-refused"), "{html}");
+        html
+    }
+
+    #[test]
+    fn images_that_are_not_local_files_are_refused() {
+        let (_dir, doc) = image_tree();
+        for (source, reason) in [
+            (
+                "![x](http://example.com/a.png)",
+                "remote images are not loaded",
+            ),
+            (
+                "![x](https://example.com/a.png)",
+                "remote images are not loaded",
+            ),
+            ("![x](//example.com/a.png)", "remote images are not loaded"),
+            ("![x](figs/nope.png)", "not found"),
+            ("![x](figs)", "not a regular file"),
+            ("![x](../pics)", "not a regular file"),
+            (
+                "![x](data:image/png;base64,AAAA)",
+                "only local image files are shown",
+            ),
+            (
+                "![x](javascript:alert(1))",
+                "only local image files are shown",
+            ),
+            (
+                "![x](file:///etc/passwd)",
+                "only local image files are shown",
+            ),
+            ("<img alt=x>", "only local image files are shown"),
+        ] {
+            let html = refused(source, &doc);
+            assert!(
+                html.contains(&format!("image not shown: {reason}")),
+                "{source}: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn images_are_judged_where_their_links_lead() {
+        let (dir, doc) = image_tree();
+        std::fs::write(dir.path().join("secret.txt"), b"text").unwrap();
+        #[cfg(unix)]
+        let made =
+            std::os::unix::fs::symlink(dir.path().join("secret.txt"), doc.join("figs/text.png"))
+                .and_then(|()| {
+                    std::os::unix::fs::symlink(dir.path().join("pics"), doc.join("figs/dir.png"))
+                });
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(
+            dir.path().join("secret.txt"),
+            doc.join("figs/text.png"),
+        )
+        .and_then(|()| {
+            std::os::windows::fs::symlink_dir(dir.path().join("pics"), doc.join("figs/dir.png"))
+        });
+        // Windows makes symbolic links only with developer mode or admin rights.
+        if made.is_err() {
+            return;
+        }
+        let html = refused("![x](figs/text.png)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+        let html = refused("![x](figs/dir.png)", &doc);
+        assert!(html.contains("not a regular file"), "{html}");
+    }
+
+    #[test]
+    fn network_targets_are_told_by_their_resolved_prefix() {
+        let local = std::path::Path::new(r"\\?\C:\doc");
+        let share = std::path::Path::new(r"\\?\UNC\server\share\a.png");
+        assert_eq!(super::network_target(share, local), cfg!(windows));
+        assert!(!super::network_target(
+            std::path::Path::new(r"\\?\D:\figs\a.png"),
+            local
+        ));
+        assert!(!super::network_target(
+            share,
+            std::path::Path::new(r"\\?\UNC\server\share\doc")
+        ));
+        assert!(!super::network_target(
+            std::path::Path::new("/srv/a.png"),
+            std::path::Path::new("/home/doc")
+        ));
+    }
+
+    #[test]
+    fn drive_paths_follow_the_system() {
+        assert!(super::drive_path("C:/figs/a.png"));
+        assert!(super::drive_path(r"c:\figs\a.png"));
+        assert!(!super::drive_path("C:figs"));
+        assert!(!super::drive_path("http://x"));
+        let (_dir, doc) = image_tree();
+        let slash = "![x](C:/figs/a.png)";
+        let back = r"![x](C:\figs\a.png)";
+        let html_img = "<img src='C:/figs/a.png'>";
+        if cfg!(windows) {
+            // `figs` is not on the drive root, so the file is not there; the
+            // verdict is "not found", which only a path can give.
+            for source in [slash, back, html_img] {
+                let html = refused(source, &doc);
+                assert!(html.contains("not found"), "{source}: {html}");
+            }
+        } else {
+            for source in [slash, back, html_img] {
+                let html = refused(source, &doc);
+                assert!(
+                    html.contains("only local image files are shown"),
+                    "{source}: {html}"
+                );
+            }
+            let verdict = super::judge_image("C:/figs/a.png", &doc);
+            assert!(matches!(
+                verdict,
+                super::ImageVerdict::Refused { watch: None, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn network_share_sources_are_refused_without_touching_the_disk() {
+        let (_dir, doc) = image_tree();
+        for source in [
+            "//host/share/a.png",
+            r"\\host\share\a.png",
+            r"/\host/share/a.png",
+            r"\/host/share/a.png",
+            "%2F%5Chost/share/a.png",
+            "%5C%5Chost%5Cshare%5Ca.png",
+        ] {
+            assert!(
+                matches!(
+                    super::judge_image(source, &doc),
+                    super::ImageVerdict::Refused {
+                        reason: "remote images are not loaded",
+                        watch: None
+                    }
+                ),
+                "{source}"
+            );
+            let rendered = render_markdown(&format!("<img src=\"{source}\">"), &doc);
+            assert!(
+                rendered.shown.is_empty() && rendered.watch.is_empty(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_with_wrong_extension_is_refused() {
+        let (_dir, doc) = image_tree();
+        std::fs::write(doc.join("figs/data.txt"), b"x").unwrap();
+        let html = refused("![x](figs/data.txt)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+    }
+
+    #[test]
+    fn oversize_image_is_refused() {
+        let (_dir, doc) = image_tree();
+        let big = std::fs::File::create(doc.join("figs/big.png")).unwrap();
+        big.set_len(super::IMAGE_LIMIT + 1).unwrap();
+        let html = refused("![x](figs/big.png)", &doc);
+        assert!(html.contains("larger than 64 MB"), "{html}");
+        big.set_len(super::IMAGE_LIMIT).unwrap();
+        let (_, shown) = shown_in("![x](figs/big.png)", &doc);
+        assert_eq!(shown.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_symlink_is_followed_and_its_target_checked() {
+        let (_dir, doc) = image_tree();
+        std::os::unix::fs::symlink(doc.join("figs/a.png"), doc.join("link.png")).unwrap();
+        let (_, shown) = shown_in("![x](link.png)", &doc);
+        assert_eq!(
+            shown,
+            vec![std::fs::canonicalize(doc.join("figs/a.png")).unwrap()]
+        );
+        std::fs::write(doc.join("secret.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(doc.join("secret.txt"), doc.join("sneaky.png")).unwrap();
+        let html = refused("![x](sneaky.png)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_named_like_an_image_is_refused() {
+        let (_dir, doc) = image_tree();
+        let fifo = doc.join("x.png");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let html = refused("![x](x.png)", &doc);
+        assert!(html.contains("not a regular file"), "{html}");
+        assert!(super::read_image(&fifo).is_none());
+    }
+
+    #[test]
+    fn raw_image_keeps_no_event_handler() {
+        let (_dir, doc) = image_tree();
+        let (html, shown) = shown_in(
+            "<img src=figs/a.png onerror=x style=\"x:y\" class=c alt=a>",
+            &doc,
+        );
+        assert_eq!(shown.len(), 1);
+        assert!(html.contains("<img data-doc="), "{html}");
+        for banned in ["onerror", "style", "class", "src="] {
+            assert!(!html.contains(banned), "{banned}: {html}");
+        }
+    }
+
+    #[test]
+    fn hostile_alt_text_stays_text() {
+        let (_dir, doc) = image_tree();
+        let html = refused("<img src=nope.png alt='<b onclick=x>\"&'>", &doc);
+        assert!(!html.contains("<b"), "{html}");
+        let html = render_markdown("<a title='<img src=x>'>t</a>", &doc).html;
+        assert!(html.contains(">t</a>"), "{html}");
+        assert!(!html.contains("md-image-refused"), "{html}");
+    }
+
+    #[test]
+    fn images_beyond_the_count_cap_are_refused() {
+        let (_dir, doc) = image_tree();
+        let source = "![x](figs/a.png)\n\n".repeat(super::MARKDOWN_IMAGE_COUNT + 1);
+        let html = render_markdown(&source, &doc).html;
+        assert_eq!(html.matches("<img").count(), super::MARKDOWN_IMAGE_COUNT);
+        assert!(html.contains("too many images"), "{html}");
+    }
+
+    #[test]
+    fn missing_images_are_reported_for_the_watcher() {
+        let (_dir, doc) = image_tree();
+        let rendered = render_markdown("![x](figs/later.png)", &doc);
+        assert_eq!(rendered.watch, vec![(doc.join("figs/later.png"), None)]);
+    }
+
+    fn watching(
+        doc: &std::path::Path,
+        watch: Vec<(PathBuf, Option<super::Stamp>)>,
+    ) -> super::Watched {
+        let watched = super::Watched::default();
+        {
+            let mut state = watched.0.lock().unwrap();
+            state.path = Some(doc.to_path_buf());
+            state.images = watch;
+        }
+        watched
+    }
+
+    #[test]
+    fn figure_created_after_it_was_judged_counts_as_a_change() {
+        let (_dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        let rendered = render_markdown("![x](figs/later.png)", &doc);
+        // The figure appears after judging but before anything else stats it.
+        std::fs::write(doc.join("figs/later.png"), b"png").unwrap();
+        let watched = watching(&notes, rendered.watch);
+        assert!(super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+        assert!(!super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+    }
+
+    #[test]
+    fn shown_image_keeps_the_stat_it_was_judged_with() {
+        let (_dir, doc) = image_tree();
+        let rendered = render_markdown("![x](figs/a.png)", &doc);
+        let image = std::fs::canonicalize(doc.join("figs/a.png")).unwrap();
+        assert_eq!(rendered.watch, vec![(image.clone(), super::stat(&image))]);
+        std::fs::write(&image, b"changed").unwrap();
+        let notes = doc.join("notes.md");
+        let watched = watching(&notes, rendered.watch);
+        assert!(super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+    }
+
+    #[test]
+    fn shown_and_missing_images_share_one_cap() {
+        let (_dir, doc) = image_tree();
+        let source: String = (0..super::MARKDOWN_IMAGE_COUNT + 500)
+            .map(|n| {
+                let name = if n % 2 == 0 {
+                    "a".to_string()
+                } else {
+                    format!("gone{n}")
+                };
+                format!("![x](figs/{name}.png)\n\n")
+            })
+            .collect();
+        let rendered = render_markdown(&source, &doc);
+        assert!(rendered.watch.len() <= super::MARKDOWN_IMAGE_COUNT);
+        assert!(rendered.watch.len() > 500, "{}", rendered.watch.len());
+    }
+
+    #[test]
+    fn watcher_stats_a_bounded_batch_per_tick_and_covers_every_image() {
+        let (_dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        let images: Vec<_> = (0..600)
+            .map(|n| (doc.join(format!("figs/{n}.png")), None))
+            .collect();
+        let watched = watching(&notes, images.clone());
+        let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+        let counted = |path: &std::path::Path| {
+            seen.borrow_mut().insert(path.to_path_buf());
+            None
+        };
+        let mut most = 0;
+        for _ in 0..3 {
+            let before = seen.borrow().len();
+            assert!(!super::embedded_images_changed(&watched, &notes, counted));
+            most = most.max(seen.borrow().len() - before);
+        }
+        assert!(most <= super::IMAGES_PER_TICK, "{most}");
+        assert_eq!(seen.borrow().len(), images.len());
+        // One of the last images changes; it is found within a few ticks.
+        let late = images[599].0.clone();
+        std::fs::write(&late, b"png").unwrap();
+        let found = (0..3).any(|_| super::embedded_images_changed(&watched, &notes, super::stat));
+        assert!(found);
+    }
+
+    #[test]
+    fn embedded_images_are_served_but_only_the_allow_set_is_acted_on() {
+        let (dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        std::fs::write(&notes, "![x](figs/a.png)").unwrap();
+        let notes = std::fs::canonicalize(notes).unwrap();
+        let shown = std::fs::canonicalize(doc.join("figs/a.png")).unwrap();
+        let beside = std::fs::canonicalize(dir.path().join("pics/ok.png")).unwrap();
+
+        let mut state = super::WatchState::default();
+        state.allowed.insert(notes.clone()).unwrap();
+        state.embedded.insert(shown.clone());
+        assert_eq!(super::serving(&state, &notes), Some(super::Served::Opened));
+        assert_eq!(
+            super::serving(&state, &shown),
+            Some(super::Served::Embedded)
+        );
+        assert_eq!(super::serving(&state, &beside), None);
+        assert_eq!(super::read_image(&shown).unwrap(), b"png");
+        // Every other use of `embedded` is ruled out by tools/check_frontend.mjs.
+    }
+
+    #[test]
+    fn embedded_responses_are_sandboxed_and_opened_ones_are_not() {
+        let png = std::path::Path::new("a.png");
+        let embedded = super::document_response(&super::Served::Embedded, png, b"x".to_vec());
+        let opened = super::document_response(&super::Served::Opened, png, b"x".to_vec());
+        for response in [&embedded, &opened] {
+            assert_eq!(response.headers()["X-Content-Type-Options"], "nosniff");
+            assert_eq!(response.headers()["Cache-Control"], "no-store");
+        }
+        assert_eq!(
+            embedded.headers()["Content-Security-Policy"],
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+        );
+        assert!(opened.headers().get("Content-Security-Policy").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_swapped_in_after_judging_does_not_block_the_read() {
+        let (_dir, doc) = image_tree();
+        let (_, shown) = shown_in("![x](figs/a.png)", &doc);
+        let image = shown[0].clone();
+        std::fs::remove_file(&image).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&image)
+            .status()
+            .unwrap()
+            .success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(super::read_image(&image)).unwrap());
+        let read = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("read_image blocked on a FIFO");
+        assert!(read.is_none());
+    }
+
+    #[test]
+    fn svg_is_served_as_an_image() {
+        assert_eq!(
+            super::mime_for(std::path::Path::new("a.SVG")),
+            "image/svg+xml"
+        );
+    }
 
     fn admitted<const N: usize>(paths: [PathBuf; N]) -> super::AllowedDocuments {
         let mut allowed = super::AllowedDocuments::default();
@@ -4003,11 +5421,11 @@ mod tests {
 
     #[test]
     fn hostile_markdown_is_inert() {
-        let html = render_markdown(
+        let html = render_html(
             "# Hi\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n\
              [link](javascript:alert(1))\n\n<p onclick=\"alert(1)\">text</p>",
         );
-        assert!(html.contains("<h1>"));
+        assert!(html.contains(r#"<h1 id="md-hi">"#));
         assert!(!html.contains("<script"));
         assert!(!html.contains("<img"));
         assert!(!html.contains("javascript:"));
@@ -4017,7 +5435,7 @@ mod tests {
 
     #[test]
     fn links_are_kept_for_the_frontend_to_route() {
-        let html = render_markdown(
+        let html = render_html(
             "[here](other.md) [site](https://example.com/x) [run](javascript:alert(1)) note[^1]\n\n[^1]: the note",
         );
         // Relative and web links survive as written; the click handler decides.
@@ -4031,70 +5449,559 @@ mod tests {
         assert!(html.contains("class=\"footnote-definition\""), "{html}");
     }
 
+    /// Equations that every document may use: the converter must handle each
+    /// one, and the sanitizer must keep what it writes.
+    const MATH_PROBES: &[&str] = &[
+        r"\begin{align} a &= b \\ c &= d \end{align}",
+        r"\begin{cases} 1 & x>0 \\ 0 & \text{otherwise} \end{cases}",
+        r"\mathbf{u}, \boldsymbol{\omega}, \mathrm{Re}, \mathcal{L}, \mathbb{R}^n, \operatorname{tr}",
+        r"\underbrace{a+b}_{c} \overbrace{d}^{e}",
+        r"\xrightarrow{f} \Rightarrow \iff \mapsto",
+        r"\begin{gather} a \\ b \end{gather}",
+        r"\begin{multline} a \\ b \end{multline}",
+        r"\begin{equation} a = b \label{eq:1} \end{equation}",
+        r"\boxed{x}",
+        r"\color{red}{x}",
+        r"\mathscr{F} \mathfrak{g}",
+        r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}",
+        r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+        r"\left( \frac{a}{b} \right) \bigg[ x \bigg]",
+        r"\langle u, v \rangle \| u \|_2 \lvert x \rvert",
+        r"\dot{x} \ddot{x} \vec{v} x' x'' \hat{x} \bar{x} \overline{x}",
+        r"\partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u} = -\nabla p + \frac{1}{\mathit{Re}}\Delta\mathbf{u}",
+        r"\sqrt{x} \sqrt[3]{y} \binom{n}{k} \sum_{i=0}^{n} \int_a^b \lim_{x\to 0} \prod_i",
+        r"{}^{a}_{b}x x_a^b \phantom{x} \hphantom{y} \vphantom{z}",
+        r"\text{abc } \textbf{b} \textit{i} \textsf{s} \textrm{r} \textsc{c} \quad \qquad \, \; \!",
+        r"\cancel{x} \bcancel{x} \xcancel{x} \phase{45} \not= \displaystyle x",
+        r"\begin{array}{c|cc} a & b & c \\ \hline d & e & f \end{array}",
+        r"\begin{align*} a &= b \end{align*} \begin{aligned} a &= b \end{aligned}",
+        r"\sideset{_a^b}{_c^d}\sum \overset{a}{b} \underset{a}{b} \overleftarrow{x} \widehat{xy} \tfrac12 \dfrac12 \pmod{n}",
+        r"\cfrac12 \raisebox{1em}{x} \mathstrut \mathop{x} \textstyle y \scriptstyle z",
+        r"\genfrac{(}{)}{0pt}{}{a}{b} \Big\| \hspace{1em} \mspace{3mu} \sum\limits_a",
+        r"\begin{subarray}{c} a \end{subarray} \left\{ x \right. \begin{bmatrix} 1 \end{bmatrix}",
+        r"\begin{equation}\begin{aligned} a &= b \\ &= c \end{aligned}\end{equation}",
+    ];
+
+    fn html_names(markup: &str) -> Vec<(String, String, String)> {
+        // (tag, attribute, value) for every tag, `("tag", "", "")` when it has none.
+        let mut found = Vec::new();
+        let mut rest = markup;
+        while let Some(at) = rest.find('<') {
+            rest = &rest[at + 1..];
+            let end = rest.find('>').expect("tag closes");
+            let (inside, after) = (&rest[..end], &rest[end..]);
+            rest = after;
+            if inside.starts_with('/') {
+                continue;
+            }
+            let tag: String = inside
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            found.push((tag.clone(), String::new(), String::new()));
+            let mut attributes = &inside[tag.len()..];
+            while let Some(eq) = attributes.find("=\"") {
+                let name = attributes[..eq].rsplit(' ').next().unwrap().to_string();
+                let value_and_rest = &attributes[eq + 2..];
+                let close = value_and_rest.find('"').expect("value closes");
+                found.push((tag.clone(), name, value_and_rest[..close].to_string()));
+                attributes = &value_and_rest[close + 1..];
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn mathml_allowlist_matches_the_converter() {
+        use std::collections::BTreeSet;
+        let html_tags = ammonia::Builder::default().clone_tags();
+        let mut tags = BTreeSet::new();
+        let mut attributes = BTreeSet::new();
+        let mut classes = BTreeSet::new();
+        let mut properties = BTreeSet::new();
+        let converter = super::math_converter();
+        for tex in MATH_PROBES.iter().copied().chain([r"\notacommand{x}"]) {
+            for mode in [
+                math_core::MathDisplay::Block,
+                math_core::MathDisplay::Inline,
+            ] {
+                let mathml = converter
+                    .convert_with_local_state(tex, mode)
+                    .unwrap_or_else(|error| panic!("{tex}: {error:?}"))
+                    .mathml;
+                for (tag, name, value) in html_names(&mathml) {
+                    if name.is_empty() {
+                        if !html_tags.contains(tag.as_str()) {
+                            tags.insert(tag);
+                        }
+                    } else if name == "class" {
+                        classes.insert((tag, value));
+                    } else if html_tags.contains(tag.as_str()) {
+                        // Text styling writes HTML: `a`, `span`.
+                        if name == "style" {
+                            assert_eq!(value, "font-variant-caps: small-caps");
+                        } else {
+                            assert_eq!((tag.as_str(), name.as_str()), ("a", "href"), "{tex}");
+                        }
+                    } else {
+                        if name == "style" {
+                            for declaration in value.split(';').filter(|d| !d.is_empty()) {
+                                let (property, _) = declaration.split_once(':').unwrap();
+                                properties.insert(property.trim().to_string());
+                            }
+                        }
+                        attributes.insert((tag, name));
+                    }
+                }
+            }
+        }
+        let allowed_tags: BTreeSet<_> = super::MATHML.iter().map(|(t, _)| t.to_string()).collect();
+        assert_eq!(tags, allowed_tags, "the converter writes other elements");
+        let allowed_attributes: BTreeSet<_> = super::MATHML
+            .iter()
+            .flat_map(|(t, names)| names.iter().map(move |n| (t.to_string(), n.to_string())))
+            .collect();
+        assert_eq!(
+            attributes, allowed_attributes,
+            "the converter writes other attributes"
+        );
+        let allowed_classes: BTreeSet<_> = super::MATHML_CLASSES
+            .iter()
+            .flat_map(|(t, names)| names.iter().map(move |n| (t.to_string(), n.to_string())))
+            .collect();
+        assert_eq!(
+            classes, allowed_classes,
+            "the converter writes other classes"
+        );
+        let allowed_properties: BTreeSet<_> = super::MATH_STYLE_PROPERTIES
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        // `margin-left` and the borders belong to constructs outside this list.
+        assert!(properties.is_subset(&allowed_properties), "{properties:?}");
+    }
+
     #[test]
     fn equations_become_mathml() {
-        let html = render_markdown("mass $E = mc^2$ and\n\n$$\\int_0^1 x\\,dx$$\n");
+        let html = render_html("mass $E = mc^2$ and\n\n$$\\int_0^1 x\\,dx$$\n");
         assert!(html.contains("<math"), "{html}");
         assert!(html.contains("display=\"block\""), "{html}");
         assert!(html.contains("<msup>"), "{html}");
         assert!(!html.contains("<annotation"), "{html}");
-        // A colour the renderer wrote survives the style filter.
-        let colour = render_markdown("$\\color{red}{x}$");
-        assert!(colour.contains("style=\"color: rgb("), "{colour}");
+        // A colour the converter wrote survives the style filter.
+        let colour = render_html("$\\color{red}{x}$");
+        assert!(colour.contains("style=\"color:#FF0000;\""), "{colour}");
     }
 
     #[test]
-    fn equation_macros_are_shown_as_escaped_source() {
-        for tex in [
-            r"\def\dup#1{#1#1}\dup{x}",
-            r"\newcommand{\dup}[1]{#1#1}\dup{x}",
-            r"\renewcommand{\dup}[1]{#1#1}\dup{x}",
-            r"\providecommand{\dup}[1]{#1#1}\dup{x}",
-            r"\let\alias=x\alias",
-            r"\futurelet\alias xy\alias",
-            r"\let\alias=\def\alias\dup#1{#1#1}\dup{x}",
-            r"\futurelet\alias\def\dup#1{#1#1}\dup{x}",
-            r"\sqrt{\def\dup#1{#1#1}\dup{x}}",
-            r"\text{\\def\dup#1{<img src=x onerror=x>}}",
-            "% comment\n\\def\\dup#1{#1#1}\\dup{x}",
-        ] {
-            for delimiter in ["$", "$$"] {
-                let html = render_markdown(&format!("{delimiter}{tex}{delimiter}"));
-                assert!(html.contains(&super::math_source(tex)), "{html}");
-                assert!(!html.contains("<math"), "{html}");
-                assert!(!html.contains("<img"), "{html}");
+    fn fence_tag_class_survives_for_coloured_languages_only() {
+        for class in super::CODE_CLASSES {
+            let tag = class.strip_prefix("language-").expect("prefix");
+            let html = render_html(&format!("```{tag}\nx = 1\n```"));
+            assert!(
+                html.contains(&format!("<pre><code class=\"{class}\">")),
+                "{tag}: {html}"
+            );
+        }
+        for tag in ["ruby", "math2", "python-x", "Python"] {
+            let html = render_html(&format!("```{tag}\nx = 1\n```"));
+            assert!(!html.contains("language-"), "{tag}: {html}");
+        }
+        let html = render_html("<code class=\"language-python evil\">x</code>");
+        assert!(!html.contains("evil"), "{html}");
+        assert!(render_html("```python title=a\nx\n```").contains("language-python"));
+    }
+
+    #[test]
+    fn probe_equations_render_inline_and_display() {
+        for tex in MATH_PROBES {
+            for markdown in [format!("${tex}$"), format!("$$ {tex} $$")] {
+                let html = render_html(&markdown);
+                assert!(html.contains("<math"), "{markdown}: {html}");
+                assert!(!html.contains("<code>"), "{markdown}: {html}");
+                assert!(!html.contains("<merror"), "{markdown}: {html}");
             }
         }
+    }
 
-        // A small source can otherwise copy several MB before the parser's
-        // first expansion-budget check. It must never reach that allocation.
+    #[test]
+    fn a_macro_defined_in_one_equation_serves_the_next() {
+        let html = render_html(
+            "$$\\newcommand{\\Rey}{\\mathit{Re}} \\Rey$$\n\nlater $\\frac{1}{\\Rey}$ and \\def:\n\n$$\\def\\x{y} \\x$$\n",
+        );
+        assert_eq!(html.matches("<math").count(), 3, "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+        assert!(!html.contains("<merror"), "{html}");
+        // Another document starts with nothing defined.
+        let other = render_html("$\\Rey$");
+        assert!(other.contains("math-core-unknown-cmd"), "{other}");
+    }
+
+    #[test]
+    fn runaway_macros_end_as_source_within_the_budget() {
+        let doubling: String = (b'A'..b'Y')
+            .map(|c| {
+                format!(
+                    r"\newcommand{{\m{0}}}{{\m{1}\m{1}}}",
+                    c as char,
+                    (c + 1) as char
+                )
+            })
+            .collect::<String>()
+            + r"\mA";
+        for tex in [r"\newcommand{\a}{\a\a} \a".to_string(), doubling] {
+            let start = std::time::Instant::now();
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(html.contains(&super::math_source(&tex)), "{html}");
+            assert!(!html.contains("<math"), "{html}");
+        }
+        // A definition longer than a body may be is refused before any work.
         let tex = format!(
-            r"\def\dup#1{{{}}}\dup{{{}}}",
-            "#1".repeat(2000),
-            "x".repeat(2048)
+            r"\newcommand{{\blob}}{{{}}}{}",
+            "x".repeat(12000),
+            r"\blob".repeat(99)
         );
         assert!(tex.len() < super::MATH_EXPRESSION_LIMIT);
         let mut budget = super::MathBudget::default();
-        assert_eq!(
-            super::render_math(&tex, false, &mut budget),
-            super::math_source(&tex)
+        let start = std::time::Instant::now();
+        let shown = super::render_math(&mut super::math_converter(), &tex, true, &mut budget);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
         );
+        assert_eq!(shown, super::math_source(&tex));
         assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+        // The longest allowed body, used again and again in equation after
+        // equation, writes more markup than the document may hold.
+        let mut converter = super::math_converter();
+        let mut budget = super::MathBudget::default();
+        let define = format!(
+            r"\newcommand{{\blob}}{{{}}}",
+            "x".repeat(super::MATH_BODY_LIMIT)
+        );
+        assert!(super::render_math(&mut converter, &define, true, &mut budget).contains("<math"));
+        let uses = r"\blob".repeat(100);
+        assert!(super::render_math(&mut converter, &uses, true, &mut budget).contains("<math"));
+        let mut equations = 1;
+        while budget.output > 0 {
+            let shown = super::render_math(&mut converter, &uses, true, &mut budget);
+            equations += 1;
+            assert!(equations < 100, "the output budget never ran out");
+            if budget.output == 0 {
+                assert_eq!(shown, super::math_source(&uses));
+            }
+        }
+
+        // Copying an argument thousands of times is refused before conversion;
+        // a macro with a parameter or two is ordinary.
+        let tex = format!(
+            r"\newcommand{{\blob}}[1]{{{}}}\blob{{{}}}",
+            "#1".repeat(4000),
+            "x".repeat(4000)
+        );
+        let mut budget = super::MathBudget::default();
+        let shown = super::render_math(&mut super::math_converter(), &tex, true, &mut budget);
+        assert_eq!(shown, super::math_source(&tex));
+        assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+        let html = render_html(r"$$\newcommand{\vect}[1]{\mathbf{#1}} \vect{u} + \vect{v}$$");
+        assert!(html.contains("<math"), "{html}");
+    }
+
+    #[test]
+    fn equation_numbers_and_references_link_after_sanitizing() {
+        let html = render_html(
+            "$$\\begin{equation} a = b \\label{eq:one} \\end{equation}$$\n\nsee $\\eqref{eq:one}$ and [^1]\n\n[^1]: note\n",
+        );
+        assert!(html.contains("id=\"md-math:eq:one\""), "{html}");
+        assert!(html.contains("href=\"#md-math:eq:one\""), "{html}");
+        assert!(html.contains("<mtext>(1)</mtext>"), "{html}");
+        assert!(html.contains("(1)</a>"), "{html}");
+        // The footnote keeps its own id; the label cannot take it.
+        assert!(html.contains("id=\"md-1\""), "{html}");
+        // A reference to nothing is a visible placeholder, not a live link out.
+        let hostile = render_html(
+            "$\\eqref{javascript:alert(1)}$ $\\eqref{x\" onclick=\"y}$ $\\href{javascript:alert(1)}{x}$ $\\url{javascript:alert(1)}{x}$",
+        );
+        assert!(
+            html_names(&hostile)
+                .iter()
+                .all(|(_, name, _)| !name.starts_with("on")),
+            "{hostile}"
+        );
+        assert!(!hostile.contains("href=\"javascript"), "{hostile}");
+        assert!(!hostile.contains("href=\"http"), "{hostile}");
+        assert!(
+            hostile.matches("href=\"#md-math:").count() <= 2,
+            "{hostile}"
+        );
+        assert!(hostile.contains("(??)"), "{hostile}");
+    }
+
+    #[test]
+    fn split_is_laid_out_as_aligned() {
+        let html = render_html("$$\\begin{split} a &= b \\\\ &= c \\end{split}$$");
+        assert!(html.contains("<mtable"), "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+        assert_eq!(html.matches("<mtr>").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn a_math_fence_is_display_math_and_other_fences_stay_code() {
+        let html = render_html("text\n\n```math\n\\int_0^1 x\\,dx\n```\n\nafter");
+        assert!(html.contains("display=\"block\""), "{html}");
+        assert!(html.contains("<msubsup>"), "{html}");
+        assert!(!html.contains("<pre>"), "{html}");
+        assert!(html.contains("data-line=\"3\""), "{html}");
+        assert!(html.contains("after"), "{html}");
+        let code = render_html("```\n$$x$$\n```\n\n```text\n$y$\n```\n\n`$z$`\n");
+        assert!(!code.contains("<math"), "{code}");
+        assert!(
+            code.contains("$$x$$") && code.contains("$y$") && code.contains("$z$"),
+            "{code}"
+        );
+        // A math fence that does not convert is shown as its source.
+        let broken = render_html("```math\n\\frac{\n```\n");
+        assert!(broken.contains("<code>"), "{broken}");
+    }
+
+    #[test]
+    fn an_unknown_command_does_not_lose_the_equation() {
+        let html = render_html("$\\notacommand{x} + y$");
+        assert!(html.contains("class=\"math-core-unknown-cmd\""), "{html}");
+        assert!(html.contains("<mo>+</mo>"), "{html}");
+        assert!(html.contains("<mi>y</mi>"), "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+    }
+
+    #[test]
+    fn equations_that_fail_are_shown_as_escaped_source() {
+        for tex in [
+            r"\frac{",
+            r"\tag{1} a = b",
+            r"\begin{nothing} x \end{nothing}",
+            "<img src=x onerror=x> \\frac{",
+        ] {
+            // A fence, because `$$…$$` itself ends at the unbalanced brace.
+            let html = render_html(&format!("```math\n{tex}\n```"));
+            assert!(html.contains(&super::math_source(tex)), "{html}");
+            assert!(!html.contains("<math"), "{html}");
+            assert!(!html.contains("<img"), "{html}");
+        }
+    }
+
+    #[test]
+    fn hostile_macros_cannot_smuggle_markup_or_work() {
+        for tex in [
+            r"\def\dup#1{#1#1}\dup{x}",
+            r"\let\alias=x\alias",
+            r"\let\alias=\def\alias\dup#1{#1#1}\dup{x}",
+            r"\sqrt{\def\dup#1{#1#1}\dup{x}}",
+            r"\text{\\def\dup#1{<img src=x onerror=x>}}",
+            r"\newcommand{\a}{<img src=x onerror=x>}\a",
+            "% comment\n\\def\\dup#1{#1#1}\\dup{x}",
+        ] {
+            for delimiter in ["$", "$$"] {
+                let html = render_html(&format!("{delimiter}{tex}{delimiter}"));
+                assert!(!html.contains("<img"), "{tex}: {html}");
+                assert!(!html.contains("onerror=x>"), "{tex}: {html}");
+                assert!(!html.contains("<script"), "{tex}: {html}");
+                assert!(!html.contains("javascript:"), "{tex}: {html}");
+                assert!(
+                    html_names(&html).iter().all(|(_, name, _)| {
+                        let event = name.strip_prefix("on").unwrap_or("");
+                        event.is_empty() || !event.bytes().all(|b| b.is_ascii_lowercase())
+                    }),
+                    "{tex}: {html}"
+                );
+                assert!(
+                    html.match_indices("href=")
+                        .all(|(at, _)| html[at..].starts_with("href=\"#md-math:")),
+                    "{tex}: {html}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn definitions_are_read_before_conversion() {
+        let body = |len: usize| format!(r"\newcommand{{\a}}{{{}}}", "x".repeat(len));
+        let allowed = [
+            r"\newcommand{\vect}[1]{\mathbf{#1}} \vect{u}".to_string(),
+            r"\renewcommand\frac[2]{#2/#1}".into(),
+            r"\providecommand{\x}{y}".into(),
+            r"\def\swap#1#2{#2#1}".into(),
+            r"\def\x {y}".into(),
+            r"\newcommand{\a}[2]{\frac{#1}{#2}} \newcommand{\b}{\a{1}{2}}".into(),
+            r"\\def \text{\%def} x".into(),
+            "% \\let\\a=b\nx".into(),
+            body(super::MATH_BODY_LIMIT),
+        ];
+        for tex in &allowed {
+            assert!(super::math_definitions_are_bounded(tex), "{tex}");
+        }
+        let refused = [
+            r"\newcommand{\a}[1]{\a{#1#1}}\a{x}".to_string(),
+            r"\def\dup#1{#1#1}".into(),
+            r"\def\a#1{##1}".into(),
+            r"\newcommand{\a}[1]{#2}".into(),
+            r"\newcommand{\a}[1]{#0}".into(),
+            r"\newcommand{\a}[0]{x}".into(),
+            r"\def\a#2{#2}".into(),
+            r"\def\a#1#1{#1}".into(),
+            r"\let\a=b".into(),
+            r"\gdef\a{b}".into(),
+            r"\edef\a{b}".into(),
+            r"\xdef\a{b}".into(),
+            r"\global\def\a{b}".into(),
+            r"\futurelet\a\b\c".into(),
+            r"\newenvironment{a}{b}{c}".into(),
+            r"\renewenvironment{a}{b}{c}".into(),
+            r"\DeclareMathOperator{\tr}{tr}".into(),
+            r"\newcommand*{\a}{b}".into(),
+            r"\newcommand\a b".into(),
+            r"\newcommand{\a}[1][x]{#1}".into(),
+            r"\newcommand{\a}{\def\b{c}}".into(),
+            r"\newcommand{\a}{x".into(),
+            r"\newcommand{a}{x}".into(),
+            r"\newcommand{\a}[1]{\}#1#1}".into(),
+            // A comment hides the `}` that seems to close the body.
+            "\\newcommand{\\a}[1]{%}\n#1#1}".into(),
+            body(super::MATH_BODY_LIMIT + 1),
+        ];
+        for tex in &refused {
+            assert!(!super::math_definitions_are_bounded(tex), "{tex}");
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(!html.contains("<math"), "{html}");
+        }
+    }
+
+    #[test]
+    fn hostile_definitions_end_quickly() {
+        let letter = |i: u8| (b'a' + i) as char;
+        let chain = (0..20)
+            .map(|i| {
+                format!(
+                    r"\def\c{}{{\c{}\c{}}}",
+                    letter(i),
+                    letter(i + 1),
+                    letter(i + 1)
+                )
+            })
+            .collect::<String>()
+            + r"\ca";
+        // A body of 256 `{` around `#1`, then nested 100 deep in the next equation.
+        let nest = format!(
+            "$$\\newcommand{{\\nest}}[1]{{{}#1{}}}$$\n\n$${}x{}$$",
+            "{".repeat(256),
+            "}".repeat(256),
+            r"\nest{".repeat(100),
+            "}".repeat(100)
+        );
+        for markdown in [
+            r"$$\newcommand{\a}[1]{\a{#1#1}}\a{x}$$".to_string(),
+            format!("$${chain}$$"),
+            nest,
+        ] {
+            let start = std::time::Instant::now();
+            let html = render_html(&markdown);
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "{:?}",
+                start.elapsed()
+            );
+            // The equation with the definition is shown as its source.
+            let source = html.find("<code>").expect("source shown");
+            assert!(
+                html.find("<math").is_none_or(|math| math > source),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn equation_links_match_their_target_after_sanitizing() {
+        for label in ["eq a", "a<b", "a?b"] {
+            let html = render_html(&format!(
+                "$$\\begin{{equation}} x \\label{{{label}}} \\end{{equation}}$$\n\nsee $\\eqref{{{label}}}$\n"
+            ));
+            let names = html_names(&html);
+            let value = |attribute: &str, prefix: &str| {
+                names
+                    .iter()
+                    .find(|(_, name, value)| name == attribute && value.starts_with(prefix))
+                    .map(|(_, _, value)| value.clone())
+                    .unwrap_or_else(|| panic!("{label}: {html}"))
+            };
+            let id = value("id", "md-math:");
+            let href = value("href", "#md-math:");
+            assert_eq!(href[1..], id, "{label}: {html}");
+        }
+        // The converter takes only ASCII labels; another label leaves the
+        // equation as source rather than a link to nowhere.
+        let html = render_html("$$\\begin{equation} x \\label{é} \\end{equation}$$");
+        assert!(!html.contains("<math"), "{html}");
+    }
+
+    #[test]
+    fn deep_nesting_cannot_crash_the_viewer() {
+        let limit = super::MATH_EXPRESSION_LIMIT;
+        let braces = format!(
+            "{}x{}",
+            "{".repeat(limit / 2 - 1),
+            "}".repeat(limit / 2 - 1)
+        );
+        let fractions = format!(
+            "{}x{}",
+            r"\frac{1}{".repeat(limit / 10),
+            "}".repeat(limit / 10)
+        );
+        let roots = format!(r"{}x", r"\sqrt".repeat(limit / 5));
+        let fences = format!(
+            "{}x{}",
+            r"\left(".repeat(limit / 13),
+            r"\right)".repeat(limit / 13)
+        );
+        for tex in [braces, fractions, roots, fences] {
+            assert!(tex.len() <= limit);
+            let start = std::time::Instant::now();
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(
+                html.contains("<math") || html.contains("<code>"),
+                "{}",
+                &html[..200]
+            );
+        }
     }
 
     #[test]
     fn equation_source_size_is_bounded() {
+        let mut converter = super::math_converter();
         let at_limit = format!(r"\text{{{}}}", "x".repeat(super::MATH_EXPRESSION_LIMIT - 7));
         assert_eq!(at_limit.len(), super::MATH_EXPRESSION_LIMIT);
         let mut budget = super::MathBudget::default();
-        assert!(super::render_math(&at_limit, false, &mut budget).contains("<math"));
+        assert!(
+            super::render_math(&mut converter, &at_limit, false, &mut budget).contains("<math")
+        );
         let over_limit = format!("{at_limit}é");
         assert_eq!(
-            super::render_math(&over_limit, true, &mut budget),
+            super::render_math(&mut converter, &over_limit, true, &mut budget),
             super::math_source(&over_limit)
         );
         // Prose resembling a command name is ordinary math without a backslash.
-        assert!(super::render_math("default", false, &mut budget).contains("<math"));
+        assert!(
+            super::render_math(&mut converter, "default", false, &mut budget).contains("<math")
+        );
     }
 
     #[test]
@@ -4105,76 +6012,79 @@ mod tests {
             .map(|i| if i % 2 == 0 { "$x$\n\n" } else { "$$x$$\n\n" })
             .collect::<String>()
             + "$y$\n\n$$z$$\n\nend";
-        let html = render_markdown(&source);
+        let html = render_html(&source);
         assert_eq!(html.matches("<math").count(), allowed);
         assert!(html.contains("<code>y</code>"), "{html}");
         assert!(html.contains("<code>z</code>"), "{html}");
         assert!(html.contains("end"));
         // A new document gets its own budget.
-        assert!(render_markdown("$y$").contains("<math"));
+        assert!(render_html("$y$").contains("<math"));
     }
 
     #[test]
-    fn equation_output_is_bounded_before_writing() {
-        use std::io::Write;
-        let mut remaining = 3;
-        let mut writer = super::MathWriter {
-            bytes: Vec::new(),
-            remaining: &mut remaining,
-        };
-        assert!(writer.write_all(b"abcd").is_err());
-        assert!(writer.bytes.is_empty());
-        writer.write_all(b"abc").unwrap();
-        assert!(writer.write_all(b"d").is_err());
-        assert_eq!(writer.bytes, b"abc");
-        assert_eq!(remaining, 0);
-
-        let expected = super::render_math("x", false, &mut super::MathBudget::default());
+    fn equation_output_is_bounded() {
+        let mut converter = super::math_converter();
+        let expected = super::render_math(
+            &mut converter,
+            "x",
+            false,
+            &mut super::MathBudget::default(),
+        );
         let mut shared = super::MathBudget {
             source: super::MATH_SOURCE_BUDGET,
             output: expected.len(),
         };
-        assert_eq!(super::render_math("x", false, &mut shared), expected);
+        assert_eq!(
+            super::render_math(&mut converter, "x", false, &mut shared),
+            expected
+        );
         assert_eq!(shared.output, 0);
-        assert_eq!(super::render_math("y", true, &mut shared), "<code>y</code>");
+        assert_eq!(
+            super::render_math(&mut converter, "y", true, &mut shared),
+            "<code>y</code>"
+        );
 
+        // Markup larger than what is left is discarded, and the work counts.
         let mut budget = super::MathBudget {
             source: super::MATH_SOURCE_BUDGET,
             output: 100,
         };
         let tex = "x".repeat(100);
         assert_eq!(
-            super::render_math(&tex, false, &mut budget),
+            super::render_math(&mut converter, &tex, false, &mut budget),
             super::math_source(&tex)
         );
-        assert!(budget.output < 100);
-        // Failed partial markup is discarded, without refunding consumed work.
-        assert_eq!(
-            super::render_math(&tex, true, &mut budget),
-            super::math_source(&tex)
-        );
+        assert_eq!(budget.output, 0);
     }
 
     #[test]
     fn equations_cannot_smuggle_markup() {
-        let html = render_markdown("$\\text{<b onclick=x>hi</b>}$ and $x < 1$");
+        let html = render_html("$\\text{<b onclick=x>hi</b>}$ and $x < 1$");
         // The tag is text, not an element.
         assert!(!html.contains("<b"), "{html}");
+        // The converter turns the space into a no-break space.
         assert!(
-            html.contains("<mtext>&lt;b onclick=x&gt;hi&lt;/b&gt;</mtext>"),
+            html.replace('\u{a0}', "&nbsp;")
+                .contains("<mtext>&lt;b&nbsp;onclick=x&gt;hi&lt;/b&gt;</mtext>"),
             "{html}"
         );
         // A bare `<` in an operator is re-serialized escaped.
         assert!(html.contains("<mo>&lt;</mo>"), "{html}");
         // MathML written straight into the document meets the same allowlist:
-        // the elements stay, a style the renderer would never write does not.
-        let raw = render_markdown("<math><mi style=\"background: url(x)\">x</mi></math>");
+        // the elements stay, a style the converter would never write does not.
+        let raw = render_html("<math><mi style=\"background: url(x)\">x</mi></math>");
         assert!(raw.contains("<math><mi>x</mi></math>"), "{raw}");
+        // An element or class the converter never writes does not pass either.
+        let raw = render_html("<math><semantics><mrow class=\"x\">y</mrow></semantics></math>");
+        assert!(
+            !raw.contains("semantics") && !raw.contains("class=\"x\""),
+            "{raw}"
+        );
     }
 
     #[test]
     fn matrices_and_spaces_survive_the_sanitizer() {
-        let html = render_markdown(
+        let html = render_html(
             "$$\\begin{pmatrix} A & B \\\\ C & D \\end{pmatrix}$$\n\nand $\\text{a b } x$\n",
         );
         assert!(html.contains("<mtable"), "{html}");
@@ -4182,17 +6092,19 @@ mod tests {
         // The renderer's `&nbsp;` is one character by the time it is served,
         // not five that would show as text.
         assert!(!html.contains("&amp;nbsp;"), "{html}");
+        // Every space in the text is kept, as a no-break space.
         assert!(
-            html.contains("<mtext>a b\u{a0}</mtext>") || html.contains("<mtext>a b&nbsp;</mtext>"),
+            html.replace('\u{a0}', "&nbsp;")
+                .contains("<mtext>a&nbsp;b&nbsp;</mtext>"),
             "{html}"
         );
     }
 
     #[test]
     fn table_columns_keep_their_alignment() {
-        let html = render_markdown("| a | b |\n|:--|--:|\n| 1 | 2 |\n");
+        let html = render_html("| a | b |\n|:--|--:|\n| 1 | 2 |\n");
         assert!(html.contains("style=\"text-align: right\""), "{html}");
-        let html = render_markdown("<p style=\"color: red\">x</p>");
+        let html = render_html("<p style=\"color: red\">x</p>");
         assert!(!html.contains("style="), "{html}");
     }
 
@@ -4220,9 +6132,8 @@ mod tests {
 
     #[test]
     fn github_extras_render() {
-        let html = render_markdown(
-            "| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n- [ ] not yet\n\n~~gone~~",
-        );
+        let html =
+            render_html("| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n- [ ] not yet\n\n~~gone~~");
         assert!(html.contains("<table>"));
         assert!(html.contains("checkbox"));
         assert!(html.contains("<del>"));
@@ -4307,7 +6218,7 @@ mod tests {
 
     #[test]
     fn three_paragraphs_carry_line_numbers() {
-        let html = render_markdown("para1\n\npara2\n\npara3");
+        let html = render_html("para1\n\npara2\n\npara3");
         assert!(html.contains(r#"data-line="1""#), "{html}");
         assert!(html.contains(r#"data-line="3""#), "{html}");
         assert!(html.contains(r#"data-line="5""#), "{html}");
@@ -4318,7 +6229,7 @@ mod tests {
 
     #[test]
     fn display_math_and_list_get_line_anchors() {
-        let html = render_markdown("text\n\n$$E = mc^2$$\n\n- item");
+        let html = render_html("text\n\n$$E = mc^2$$\n\n- item");
         assert!(
             html.contains(r#"data-line="3""#),
             "DisplayMath on line 3: {html}"
@@ -4331,8 +6242,8 @@ mod tests {
 
     #[test]
     fn crlf_line_endings_yield_same_line_numbers() {
-        let html_lf = render_markdown("para1\n\npara2\n\npara3");
-        let html_crlf = render_markdown("para1\r\n\r\npara2\r\n\r\npara3");
+        let html_lf = render_html("para1\n\npara2\n\npara3");
+        let html_crlf = render_html("para1\r\n\r\npara2\r\n\r\npara3");
         assert!(html_lf.contains(r#"data-line="1""#));
         assert!(html_lf.contains(r#"data-line="3""#));
         assert!(html_lf.contains(r#"data-line="5""#));
@@ -4343,7 +6254,7 @@ mod tests {
 
     #[test]
     fn literal_data_line_in_source_is_escaped() {
-        let html = render_markdown(r#"para with <span class="src" data-line="99"></span> literal"#);
+        let html = render_html(r#"para with <span class="src" data-line="99"></span> literal"#);
         // The literal span should be escaped to text, so it won't contain a real data-line="99".
         // The paragraph itself should have exactly one data-line="1".
         let count = html.matches(r#"data-line="1""#).count();
@@ -4724,6 +6635,78 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_review_gets_the_document_digest() {
+        let dir = scratch("review_md_digest");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\r\n\u{feff}caf\u{e9}\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+        assert_eq!(
+            super::text_sha256("abc"),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let digest = super::text_sha256(&std::fs::read_to_string(&md).unwrap());
+        assert_eq!(
+            digest,
+            super::file_sha256(std::fs::File::open(&md).unwrap()).unwrap(),
+            "the text digest equals the file digest"
+        );
+
+        let store = write_review(&md.display().to_string(), markdown_review(), &allowed).unwrap();
+        let anchor = store.reviews[0].anchor.as_ref().unwrap();
+        assert_eq!(anchor.document_revision.as_deref(), Some(digest.as_str()));
+
+        let mut review = markdown_review();
+        review.anchor = Some(ReviewAnchor {
+            document_revision: Some("sha256:chosen".into()),
+            ..ReviewAnchor::default()
+        });
+        let store = write_review(&md.display().to_string(), review, &allowed).unwrap();
+        assert_eq!(
+            store.reviews[1]
+                .anchor
+                .as_ref()
+                .unwrap()
+                .document_revision
+                .as_deref(),
+            Some("sha256:chosen"),
+            "a digest the viewer captured at selection time is kept"
+        );
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_review_keeps_its_context_anchor() {
+        let dir = scratch("review_md_anchor");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+
+        let mut review = markdown_review();
+        review.anchor = Some(ReviewAnchor {
+            prefix: Some("text before".into()),
+            suffix: Some("text after".into()),
+            ..ReviewAnchor::default()
+        });
+        write_review(&md.display().to_string(), review.clone(), &allowed).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("collab_review.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["reviews"][0]["anchor"]["prefix"], "text before");
+        assert_eq!(stored["reviews"][0]["anchor"]["suffix"], "text after");
+
+        review.anchor.as_mut().unwrap().suffix = Some("x".repeat(2_001));
+        let err = write_review(&md.display().to_string(), review, &allowed).unwrap_err();
+        assert!(err.contains("suffix"), "{err}");
 
         drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
@@ -5390,6 +7373,63 @@ mod tests {
         .unwrap();
         assert_eq!(applied.reviews[0].status, "applied");
         assert_eq!(applied.reviews[0].build.as_ref().unwrap()["success"], true);
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn patch_review_moves_at_and_validates_it_like_a_new_review() {
+        let dir = scratch("review_patch_at");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
+        let path = md.to_str().unwrap();
+        let initial = write_review(path, markdown_review(), &allowed).unwrap();
+        let old = serde_json::to_value(&initial.reviews[0]).unwrap()["at"].clone();
+        let patch = |at: serde_json::Value, expected: serde_json::Value| {
+            patch_review_record(
+                path,
+                "r1",
+                &serde_json::json!({ "at": at }),
+                &serde_json::json!({ "at": expected }),
+                &allowed,
+                false,
+            )
+        };
+        for (bad, why) in [
+            (
+                serde_json::json!({"line": 9, "end": 4}),
+                "at.end is before at.line",
+            ),
+            (
+                serde_json::json!({"page": 2}),
+                "markdown review needs at.line",
+            ),
+            (
+                serde_json::json!({"line": 0}),
+                "markdown review needs at.line",
+            ),
+            (
+                serde_json::json!({"line": 2, "page": 1}),
+                "must not have at.page",
+            ),
+        ] {
+            let error = patch(bad, old.clone()).unwrap_err();
+            assert!(error.contains(why), "{error}");
+        }
+        let stale = patch(
+            serde_json::json!({"line": 3}),
+            serde_json::json!({"line": 1}),
+        )
+        .unwrap_err();
+        assert!(stale.starts_with("review conflict:"), "{stale}");
+        let moved = patch(serde_json::json!({"line": 30, "end": 30}), old).unwrap();
+        let at = serde_json::to_value(&moved.reviews[0]).unwrap()["at"].clone();
+        assert_eq!(
+            at,
+            serde_json::json!({"line": 30}),
+            "a one-line range keeps no end"
+        );
         drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
     }
