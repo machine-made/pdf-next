@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
+import './check_pdf_stream_limits.mjs';
 import { findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from '../src/review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
@@ -686,6 +687,22 @@ for (const release of ['0.9.0', '0.9.1']) {
 }
 
 // PDF.js must parse in a real worker thread.
+{
+  let onRendered;
+  const statuses = [];
+  const start = app.indexOf("eventBus.on('pagerendered', ({ error }) => {");
+  assert.ok(start >= 0, 'PDF render failures must be shown to the reader.');
+  runInNewContext(app.slice(start, app.indexOf('\n});', start) + 4), {
+    eventBus: { on: (name, callback) => { onRendered = callback; } },
+    setStatus: (message, options) => { statuses.push({ message, options }); },
+  });
+  onRendered({ error: null });
+  assert.equal(statuses.length, 0);
+  onRendered({ error: { message: 'PDF decoded stream byte limit exceeded' } });
+  assert.equal(statuses[0].message, 'Could not render PDF: PDF decoded stream byte limit exceeded');
+  assert.equal(statuses[0].options.error, true);
+  assert.equal(statuses[0].options.sticky, true);
+}
 assert.match(
   app,
   /GlobalWorkerOptions\.workerSrc = '\.\/vendor\/pdfjs\/build\/pdf\.worker\.min\.mjs'/,
