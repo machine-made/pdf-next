@@ -4,7 +4,7 @@ import { bootIsFine, failures, mark } from './smoke.mjs';
 import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
-import { validPageView } from './md-pages.mjs';
+import { paginate, validPageView } from './md-pages.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -145,8 +145,8 @@ const state = {
   imageRotation: 0,
   markdownScale: 1,
   markdownRaw: false,
-  /// The page view chosen for PDF, remembered between launches.
-  pageViews: { pdf: 'single' },
+  /// The page view chosen for each kind, remembered between launches.
+  pageViews: { pdf: 'single', md: 'continuous' },
   statusTimer: 0,
   /// This build and its platform, from Rust; and the newer release a check
   /// found, if any — { version, url } — which turns the button into a download.
@@ -660,6 +660,8 @@ function highlightChangedBlocks(indices, blocks) {
 // A reading column plus its margins. The window a fresh markdown file opens
 // into, before the reader resizes it and the per-file memory takes over.
 const MARKDOWN_WINDOW_WIDTH = 780;
+/// The space between two page boxes; style.css gives the grid the same.
+const PAGE_GAP = 24;
 const REVIEW_PANE_WIDTH = 280;
 const REVIEW_TINTS = 16;
 const REVIEW_CHIP_MS = 500;
@@ -673,6 +675,9 @@ function setRaw(on, { persist = true } = {}) {
   ui.markdownRaw.hidden = !on;
   ui.raw.classList.toggle('on', on);
   ui.raw.setAttribute('aria-pressed', String(on));
+  if (!on) {
+    schedulePaginate();
+  }
   if (!persist) {
     return;
   }
@@ -711,26 +716,40 @@ function setMarkdownScale(scale) {
   ui.markdown.style.zoom = String(scale);
   ui.markdownRaw.style.zoom = String(scale);
   updateZoomControl(String(scale), scale);
+  schedulePaginate();
   scheduleWrap();
 }
 
 // ── Page views ────────────────────────────────────────────────────────────
 
-/// One menu for PDF, remembered. PDF.js lays out the spreads itself.
+/// The article's own block, as opposed to the article or one of its page boxes.
+function isBlockOwner(element) {
+  return Boolean(element) && element !== ui.markdown && !element.classList.contains('md-page');
+}
+
+/// One menu for PDF and Markdown, remembered per kind. PDF.js lays out the
+/// spreads itself; Markdown is cut into A4 page boxes by paginateMarkdown.
 function setPageView(value, { persist = true, apply = true } = {}) {
-  const chosen = validPageView('pdf', value);
-  state.pageViews.pdf = chosen;
+  const key = state.file?.kind === 'pdf' ? 'pdf' : 'md';
+  const chosen = validPageView(key, value);
+  state.pageViews[key] = chosen;
   ui.pageView.value = chosen;
+  document.body.classList.toggle('pages-on', key === 'md' && chosen !== 'continuous');
   if (persist) {
     try {
-      localStorage.setItem('pdf-next.page-view.pdf', chosen);
+      localStorage.setItem(`pdf-next.page-view.${key}`, chosen);
     } catch {
       // Preference only.
     }
   }
-  if (apply) {
+  if (!apply) {
+    return;
+  }
+  if (key === 'pdf') {
     applyPdfSpread();
     scheduleWrap();
+  } else {
+    schedulePaginate();
   }
 }
 
@@ -743,9 +762,123 @@ function applyPdfSpread() {
   }
 }
 
-/// The menu keeps the choice for the open file's kind.
-function syncPageViewMenu() {
-  setPageView(state.pageViews.pdf, { persist: false, apply: false });
+/// The menu shows only what the open kind can do: a PDF has no continuous
+/// A4 flow to switch to, it is one page per sheet already.
+function syncPageViewMenu(kind) {
+  const continuous = ui.pageView.querySelector('option[value="continuous"]');
+  continuous.hidden = continuous.disabled = kind === 'pdf';
+  setPageView(state.pageViews[kind === 'pdf' ? 'pdf' : 'md'], { persist: false, apply: false });
+}
+
+let paginateFrame = 0;
+
+/// One pass per frame, however many things changed in it.
+function schedulePaginate() {
+  const article = ui.markdown;
+  const paged = state.pageViews.md !== 'continuous' || article.querySelector(':scope > .md-page');
+  if (state.file?.kind !== 'markdown' || !paged || paginateFrame) {
+    return;
+  }
+  paginateFrame = window.requestAnimationFrame(() => {
+    paginateFrame = 0;
+    paginateMarkdown();
+    scheduleWrap();
+  });
+}
+
+/// Cut the article into A4 page boxes, or put it back in one column.
+///
+/// The article's nodes are moved, never cloned, so review marks, find marks and
+/// line anchors stay on the nodes they were painted on. A block's trailing
+/// whitespace text travels with it, which keeps the text the marks are matched
+/// in identical in every view. Blocks are laid out once in one box of page
+/// width and measured together, so a pass costs one layout, not one per block.
+/// A paragraph, table, code block or equation taller than a page is not split.
+function paginateMarkdown({ keepPosition = true } = {}) {
+  window.cancelAnimationFrame(paginateFrame);
+  paginateFrame = 0;
+  const article = ui.markdown;
+  const view = state.pageViews.md;
+  const started = performance.now();
+  // Nothing has a size while the raw text is showing; setRaw paginates when it leaves.
+  if (article.hidden || !ui.markdownStage.clientWidth) {
+    return;
+  }
+  const sheets = article.querySelectorAll(':scope > .md-page');
+  if (view === 'continuous' && !sheets.length) {
+    delete article.dataset.pages;
+    return;
+  }
+  const stage = ui.markdownStage;
+  const nodes = sheets.length
+    ? Array.from(sheets, (sheet) => Array.from(sheet.childNodes)).flat()
+    : Array.from(article.childNodes);
+  const elements = nodes.filter((node) => node.nodeType === 1);
+
+  let held = null;
+  if (keepPosition) {
+    const edge = stage.getBoundingClientRect().top;
+    const first = elements.find((element) => element.getBoundingClientRect().bottom > edge);
+    held = first && { element: first, offset: first.getBoundingClientRect().top - edge };
+  }
+
+  if (view === 'continuous') {
+    delete article.dataset.pages;
+    article.replaceChildren(...nodes);
+  } else {
+    article.dataset.pages = view;
+    const box = document.createElement('section');
+    box.className = 'md-page';
+    article.replaceChildren(box);
+    box.append(...nodes);
+    const probe = document.createElement('div');
+    probe.style.cssText =
+      'position:absolute;visibility:hidden;width:1px;height:calc(var(--page-h) - 2 * var(--page-pad))';
+    article.append(probe);
+    // A pixel of slack: a fractional overflow would grow the page by one.
+    const limit = probe.getBoundingClientRect().height - 1;
+    probe.remove();
+    const blocks = elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        keepNext: /^H[1-6]$/.test(element.tagName) || element.matches('span.src'),
+      };
+    });
+    // Each block with the text nodes that follow it; text before the first
+    // block goes with the first.
+    const units = [];
+    let lead = [];
+    for (const node of nodes) {
+      if (node.nodeType === 1) {
+        units.push([...lead, node]);
+        lead = [];
+      } else if (units.length) {
+        units[units.length - 1].push(node);
+      } else {
+        lead.push(node);
+      }
+    }
+    // Detached, the nodes move between boxes without touching a laid-out tree.
+    article.replaceChildren();
+    const pages = paginate(blocks, limit).map(([start, end]) => {
+      const sheet = document.createElement('section');
+      sheet.className = 'md-page';
+      sheet.append(...units.slice(start, end).flat());
+      return sheet;
+    });
+    article.replaceChildren(...(pages.length ? pages : nodes));
+  }
+
+  if (held) {
+    const edge = stage.getBoundingClientRect().top;
+    stage.scrollTop += held.element.getBoundingClientRect().top - edge - held.offset;
+  }
+  state.pagination = {
+    ms: performance.now() - started,
+    pages: article.querySelectorAll(':scope > .md-page').length,
+  };
 }
 
 /// An image arrives as `data-doc`, the canonical path Rust checked, and gets
@@ -774,8 +907,11 @@ async function showMarkdown(file, view, generation, fit) {
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
 
-  // Highlight changed blocks on reload.
+  // The anchors are read where the renderer put them, before any block moves.
   const newBlocks = markdownBlocks(ui.markdown);
+  paginateMarkdown({ keepPosition: false });
+
+  // Highlight changed blocks on reload.
   const isReload =
     state.markdownBlocks &&
     state.markdownBlocks.path === file.path &&
@@ -868,6 +1004,19 @@ function contentSize() {
     // screen.
     const column =
       state.file.kind === 'json' ? ui.markdownRaw : ui.markdown;
+    const sheet = ui.markdown.querySelector('.md-page');
+    if (sheet && column === ui.markdown) {
+      // The window wraps one row of pages, however long the document is. The
+      // row's width comes from the page box, not the column, which is only as
+      // wide as the window it is in.
+      const across = state.pageViews.md === 'two' ? 2 : 1;
+      const edge = getComputedStyle(ui.markdownStage);
+      return [
+        Math.ceil(sheet.offsetWidth * across + PAGE_GAP * (across - 1) +
+          parseFloat(edge.paddingLeft) + parseFloat(edge.paddingRight)),
+        Math.ceil(sheet.offsetHeight + parseFloat(edge.paddingTop) + parseFloat(edge.paddingBottom)),
+      ];
+    }
     return [
       Math.ceil(column.offsetWidth || MARKDOWN_WINDOW_WIDTH),
       Math.ceil(ui.markdownStage.scrollHeight),
@@ -1355,7 +1504,7 @@ async function openFile(
   document.body.classList.toggle('kind-image', file.kind === 'image');
   document.body.classList.toggle('kind-markdown', file.kind === 'markdown');
   document.body.classList.toggle('kind-json', file.kind === 'json');
-  syncPageViewMenu();
+  syncPageViewMenu(file.kind);
   setTitle(file.name);
 
   // Free what the outgoing kind was holding: a decoded bitmap or a rendered
@@ -1461,10 +1610,7 @@ async function applyTarget(target) {
       const anchors = ui.markdown.querySelectorAll('[data-line]');
       for (const anchor of anchors) {
         if (Number(anchor.dataset.line) >= target.line) {
-          from =
-            anchor.parentElement && anchor.parentElement !== ui.markdown
-              ? anchor.parentElement
-              : anchor;
+          from = isBlockOwner(anchor.parentElement) ? anchor.parentElement : anchor;
           break;
         }
       }
@@ -2376,7 +2522,7 @@ function lineNear(node, root) {
     const line = Number(anchor.dataset.line);
     return Number.isFinite(line) && line >= 1 ? line : null;
   }
-  const block = el.closest('#markdown > *');
+  const block = el.closest('#markdown > *:not(.md-page), .md-page > *');
   const inBlock = block?.querySelector('[data-line]');
   if (inBlock) {
     const line = Number(inBlock.dataset.line);
@@ -3605,9 +3751,7 @@ function paintMarkdownByLines(review) {
     if (line < start || line > end) {
       continue;
     }
-    hosts.push(
-      anchor.parentElement && anchor.parentElement !== ui.markdown ? anchor.parentElement : anchor,
-    );
+    hosts.push(isBlockOwner(anchor.parentElement) ? anchor.parentElement : anchor);
   }
   let badgeHost = null;
   let wrapped = false;
@@ -3629,10 +3773,10 @@ function paintMarkdownByLines(review) {
 /// The block that carries a mark's line anchor, where its badge goes.
 function markdownBadgeHost(mark) {
   let host = mark.parentElement;
-  while (host && host !== ui.markdown && !host.querySelector(':scope > [data-line]')) {
+  while (isBlockOwner(host) && !host.querySelector(':scope > [data-line]')) {
     host = host.parentElement;
   }
-  return host && host !== ui.markdown ? host : mark.parentElement;
+  return isBlockOwner(host) ? host : mark.parentElement;
 }
 
 function paintMarkdownMarks() {
@@ -4153,9 +4297,12 @@ ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
 ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
+// A figure that arrives after the cut changes its block's height.
+ui.markdown.addEventListener('load', schedulePaginate, true);
 for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   select.addEventListener('change', () => {
     setMarkdownStyle(select, select.value);
+    schedulePaginate();
     scheduleWrap();
   });
 }
@@ -4787,10 +4934,14 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   setMarkdownStyle(select, saved, { persist: false });
 }
 
-try {
-  state.pageViews.pdf = validPageView('pdf', localStorage.getItem('pdf-next.page-view.pdf'));
-} catch {
-  // Preference only.
+for (const key of ['pdf', 'md']) {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(`pdf-next.page-view.${key}`);
+  } catch {
+    // Preference only.
+  }
+  state.pageViews[key] = validPageView(key, saved);
 }
 
 // Watching is on by default at one second; the control only exists to slow it
@@ -5044,6 +5195,11 @@ async function smokeMarkdownReview() {
     if (!await settles(second, 5_000)) throw new Error(`review on the second occurrence: ${ui.markdown.querySelectorAll('mark.review').length} marks`);
     const review = state.reviews[0];
     if (!review?.anchor?.prefix || review.anchor.documentRevision !== state.markdownDigest) throw new Error('review saved without context or digest');
+    // The reload that follows paints the review into page boxes: small ones,
+    // so this short file spans several.
+    ui.markdown.style.setProperty('--page-h', '40mm');
+    ui.markdown.style.setProperty('--page-pad', '5mm');
+    setPageView('two', { persist: false });
     return `find and review checked, stage=1; digest=${state.markdownDigest}`;
   }
   const digest = state.reviews[0].anchor.documentRevision;
@@ -5058,7 +5214,52 @@ async function smokeMarkdownReview() {
   if (!await counted('1 of 2')) throw new Error(`find after reload: ${ui.findCount.textContent}`);
   if (ui.markdown.querySelectorAll('mark.review').length !== 1) throw new Error('find split the review mark');
   closeFind();
-  return 'review still on the second occurrence after reload, stage=2';
+  const boxes = ui.markdown.querySelectorAll(':scope > .md-page').length;
+  if (boxes < 2 || !ui.markdown.querySelector('.md-page mark.review')) throw new Error(`review not inside the pages: ${boxes} boxes`);
+  setPageView('continuous', { persist: false });
+  if (!await settles(() => !ui.markdown.querySelector('.md-page') && second())) throw new Error('review lost when the pages were removed');
+  return `review still on the second occurrence after reload, in ${boxes} page boxes and in one column, stage=2`;
+}
+
+/// Smoke only. A long Markdown file in A4 boxes: nothing lost or reordered,
+/// the same find hits as in one column, and the time one pagination takes.
+async function smokeMarkdownPages() {
+  if (!await settles(() => ui.markdown.textContent.includes('Page view'))) throw new Error('fixture not shown');
+  const boxes = () => ui.markdown.querySelectorAll(':scope > .md-page');
+  const whole = ui.markdown.textContent;
+  const hits = async () => {
+    closeFind();
+    openFind();
+    ui.findInput.value = 'paragraph';
+    ui.findInput.dispatchEvent(new Event('input'));
+    if (!await settles(() => /^\d+ of \d+\+?$/.test(ui.findCount.textContent))) throw new Error(`no find count: ${ui.findCount.textContent}`);
+    const count = ui.findCount.textContent;
+    closeFind();
+    return count;
+  };
+  const continuous = await hits();
+  setPageView('single', { persist: false });
+  if (!await settles(() => boxes().length >= 2 && state.pagination?.pages === boxes().length)) throw new Error(`single page view: ${boxes().length} boxes`);
+  const { ms, pages } = state.pagination;
+  const a4 = 210 / 25.4 * 96;
+  const first = boxes()[0];
+  if (Math.abs(first.offsetWidth - a4) > 2) throw new Error(`page box ${first.offsetWidth} px wide, not A4`);
+  const tall = [...boxes()].filter((box) => box.children.length > 1 && box.offsetHeight > 297 / 25.4 * 96 + 2);
+  if (tall.length) throw new Error(`${tall.length} pages grew past A4 with more than one block`);
+  if (ui.markdown.textContent !== whole) throw new Error('pagination changed the text');
+  if (await hits() !== continuous) throw new Error(`find in pages: ${ui.findCount.textContent}, in one column: ${continuous}`);
+  setPageView('two', { persist: false });
+  if (!await settles(() => ui.markdown.dataset.pages === 'two' && boxes().length === pages)) throw new Error('two page view');
+  const inRow = () => [...boxes()].filter((box) => box.offsetTop === boxes()[0].offsetTop).length;
+  // A narrow window shows one per row; wrapping the window to the pages widens it.
+  await trimWindowToContent({ recenter: true });
+  await settles(() => inRow() === 2, 3_000);
+  const row = inRow();
+  setPageView('continuous', { persist: false });
+  if (!await settles(() => boxes().length === 0 && ui.markdown.textContent === whole)) throw new Error('continuous view did not restore the article');
+  setPageView('two', { persist: false });
+  if (!await settles(() => boxes().length === pages)) throw new Error('two page view after continuous');
+  return `${pages} pages, one pagination ${Math.round(ms)} ms, ${row} per row, find ${continuous}`;
 }
 
 /// Smoke only. A PDF in two pages: PDF.js even spreads, the cover alone.
@@ -5193,6 +5394,10 @@ async function reportSmoke() {
     if (file.kind === 'markdown' && file.name === 'review-parity.md' && failures.length === 0) {
       const detail = await smokeMarkdownReview();
       await invoke('smoke_report', { ok: true, detail: `${file.name} ${detail}; sourceRevision=${file.revision}` });
+      return;
+    }
+    if (file.kind === 'markdown' && file.name === 'pages.md' && failures.length === 0) {
+      await invoke('smoke_report', { ok: true, detail: `${file.name} ${await smokeMarkdownPages()}` });
       return;
     }
     // Images and markdown have their own containers; a non-empty one is the
