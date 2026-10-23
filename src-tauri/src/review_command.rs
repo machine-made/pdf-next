@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::review_directory::AllowedDocuments;
 use serde_json::{json, Value};
 
-const HELP: &str = "Usage:\n  pdf-next reviews list <PDF>\n  pdf-next reviews update <PDF> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.";
+const HELP: &str = "Usage:\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews list notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.\n\nMarkdown documents (.md, .markdown) use the same commands. A review quotes rendered text and\nnames the source line range in `at`; edit the Markdown file, then record the result.";
 const MAX_PATCH_BYTES: usize = 16_000;
 
 /// Handle `reviews` arguments. `None` leaves normal viewer arguments to the
@@ -72,12 +72,8 @@ fn document_path(arg: &OsString) -> Result<(String, AllowedDocuments), CliError>
     if !metadata.is_file() {
         return Err(runtime("document is not a regular file"));
     }
-    if canonical
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_none_or(|ext| !ext.eq_ignore_ascii_case("pdf"))
-    {
-        return Err(runtime("reviews commands currently require a PDF"));
+    if !matches!(crate::kind_for(&canonical), "pdf" | "markdown") {
+        return Err(runtime("reviews commands require a PDF or Markdown file"));
     }
     let document = canonical
         .to_str()
@@ -90,7 +86,7 @@ fn document_path(arg: &OsString) -> Result<(String, AllowedDocuments), CliError>
 
 fn run_list(args: &[OsString]) -> Result<String, CliError> {
     if args.len() != 1 {
-        return Err(usage("reviews list needs exactly one PDF path"));
+        return Err(usage("reviews list needs exactly one document path"));
     }
     let (document, allowed) = document_path(&args[0])?;
     let store = crate::list_reviews(&document, &allowed).map_err(runtime)?;
@@ -99,7 +95,7 @@ fn run_list(args: &[OsString]) -> Result<String, CliError> {
 
 fn run_update(args: &[OsString]) -> Result<String, CliError> {
     if args.is_empty() {
-        return Err(usage("reviews update needs a PDF path"));
+        return Err(usage("reviews update needs a document path"));
     }
     let (document, allowed) = document_path(&args[0])?;
     let mut id = None;
@@ -288,5 +284,52 @@ mod tests {
             serde_json::from_slice(&fs::read(sidecar).unwrap()).unwrap();
         assert_eq!(persisted["revision"], 9);
         assert_eq!(persisted["reviews"][0]["color"], 3);
+    }
+
+    #[test]
+    fn list_and_update_work_on_a_markdown_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let markdown = directory.path().join("notes.md");
+        let sidecar = directory.path().join("notes_review.json");
+        let patch = directory.path().join("patch.json");
+        fs::write(&markdown, b"# Title\n\nselected text\n").unwrap();
+        fs::write(
+            &sidecar,
+            r#"{"format":3,"revision":2,"nextId":2,"reviews":[{"id":"r1","file":"notes.md","kind":"markdown","at":{"line":3},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
+        )
+        .unwrap();
+        let document = markdown.to_str().unwrap();
+        let listed: serde_json::Value =
+            serde_json::from_str(&run_list(&arguments(&[document])).unwrap()).unwrap();
+        assert_eq!(listed["revision"], 2);
+        assert_eq!(listed["reviews"][0]["kind"], "markdown");
+
+        fs::write(&patch, r#"{"status":"applied","resolution":"reworded"}"#).unwrap();
+        let updated: serde_json::Value = serde_json::from_str(
+            &run_update(&arguments(&[
+                document,
+                "--id",
+                "r1",
+                "--patch",
+                patch.to_str().unwrap(),
+                "--expected-revision",
+                "2",
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["revision"], 3);
+        assert_eq!(updated["reviews"][0]["status"], "applied");
+    }
+
+    #[test]
+    fn other_document_kinds_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let text = directory.path().join("notes.txt");
+        fs::write(&text, b"x").unwrap();
+        let refused = run_list(&arguments(&[text.to_str().unwrap()]));
+        assert!(
+            matches!(refused, Err(CliError::Runtime(message)) if message.contains("PDF or Markdown"))
+        );
     }
 }
