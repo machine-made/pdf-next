@@ -79,7 +79,8 @@ that survives a build deleting and recreating the file mid-compile.
 - **Equations, typeset.** `$…$` and `$$…$$` are TeX, turned into MathML by
   [pulldown-latex](https://github.com/carloskiki/pulldown-latex) in the same Rust pass and set
   in Latin Modern — no JavaScript math engine, nothing fetched, and the MathML meets the same
-  sanitizer as the prose.
+  sanitizer as the prose. Expressions containing macro definitions or aliases, or exceeding
+  rendering limits, are shown as escaped TeX source.
 - **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Zoom reflows the text rather than scaling it.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a Delete or Improve request. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Not available for images.
 - **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
