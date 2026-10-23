@@ -86,5 +86,7 @@ windows = { version = "0.61", features = ["Win32_Foundation"] }
 opt-level = "s"
 lto = true
 codegen-units = 1
+# Unwinding would let `render_math` show an equation whose conversion panics
+# as source, but it made the Linux binary 11 % larger (13.4 MB against 12.0 MB).
 panic = "abort"
 strip = true
