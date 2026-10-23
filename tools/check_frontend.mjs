@@ -192,6 +192,50 @@ function appFunction(name, next, context, source = app) {
   return runInNewContext(`${source.slice(start, end)}\n${name}`, context);
 }
 
+// Markdown highlighting must stay within a small synchronous work budget.
+{
+  const diff = appFunction('changedIndices', '/// Extract ', {});
+  const changed = (before, after) => Array.from(diff(before, after));
+  assert.deepEqual(changed(['a', 'b'], ['a', 'b']), []);
+  assert.deepEqual(changed(['a', 'b'], ['a', 'edited']), [1]);
+  assert.deepEqual(changed(['a', 'b'], ['new', 'a', 'b']), [0]);
+  assert.deepEqual(changed(['a', 'b'], ['b']), []);
+  assert.deepEqual(changed([], ['new']), [0]);
+  assert.deepEqual(changed(['a'], []), []);
+  const before = Array.from({ length: 500 }, (_, i) => `paragraph ${i}`);
+  const after = [...before];
+  after[250] = 'edited';
+  assert.deepEqual(changed(before, after), [250],
+    'Comparisons at the work budget must still identify the changed block.');
+
+  const skip = appFunction('changedIndices', '/// Extract ', {
+    Array() { assert.fail('Over-budget comparisons must return before allocating the LCS table.'); },
+  });
+  for (const [n, m] of [[500, 501], [501, 500], [4000, 63], [63, 4000], [4000, 4000]]) {
+    assert.deepEqual(Array.from(skip({ length: n }, { length: m })), [],
+      `Skip detailed highlighting for ${n} × ${m} blocks.`);
+  }
+
+  const state = { generation: 1, markdownBlocks: { path: 'notes.md', texts: Array(4000).fill('old') } };
+  const stage = { scrollHeight: 1000, scrollTop: 0, scrollLeft: 0 };
+  const texts = Array(4000).fill('new');
+  const show = appFunction('showMarkdown', '/// `_review.json`', {
+    state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
+    releaseDocument: async () => {},
+    invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
+    setRaw() {}, setMarkdownScale() {},
+    markdownBlocks: () => texts.map((text) => ({ text })),
+    changedIndices: diff,
+    highlightChangedBlocks() { assert.fail('An over-budget reload must skip highlighting.'); },
+    MARKDOWN_WINDOW_WIDTH: 780,
+  });
+  await show({ path: 'notes.md' }, { top: 300, left: 5, scale: 1 }, 1, false);
+  assert.deepEqual(Array.from(state.markdownBlocks.texts), texts,
+    'Skipping highlighting must still update the baseline for the next reload.');
+  assert.equal(stage.scrollTop, 300, 'An over-budget reload must restore the scroll position.');
+  assert.equal(stage.scrollLeft, 5);
+}
+
 {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
