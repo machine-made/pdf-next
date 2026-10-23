@@ -20,7 +20,9 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-tempfile = "3"
+tempfile = "3.20"
+# Keep review transactions attached to the directory admitted with the document.
+cap-std = "3.4.5"
 # Markdown is parsed and sanitized on this side of the IPC boundary: the
 # webview only ever sees HTML that ammonia has already scrubbed.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

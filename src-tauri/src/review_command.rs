@@ -1,12 +1,12 @@
 //! Headless review commands. This module is called before the viewer CLI
 //! parser so review automation never creates a window.
 
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use crate::review_directory::AllowedDocuments;
 use serde_json::{json, Value};
 
 const HELP: &str = "Usage:\n  pdf-next reviews list <PDF>\n  pdf-next reviews update <PDF> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.";
@@ -66,7 +66,7 @@ fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 }
 
-fn document_path(arg: &OsString) -> Result<(String, HashSet<PathBuf>), CliError> {
+fn document_path(arg: &OsString) -> Result<(String, AllowedDocuments), CliError> {
     let canonical = fs::canonicalize(Path::new(arg)).map_err(|error| runtime(error.to_string()))?;
     let metadata = fs::metadata(&canonical).map_err(|error| runtime(error.to_string()))?;
     if !metadata.is_file() {
@@ -83,7 +83,8 @@ fn document_path(arg: &OsString) -> Result<(String, HashSet<PathBuf>), CliError>
         .to_str()
         .ok_or_else(|| runtime("document path must be UTF-8"))?
         .to_string();
-    let allowed = HashSet::from([canonical]);
+    let mut allowed = AllowedDocuments::default();
+    allowed.insert(canonical).map_err(runtime)?;
     Ok((document, allowed))
 }
 
