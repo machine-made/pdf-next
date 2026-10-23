@@ -1,0 +1,73 @@
+name: winget
+
+# Opens the pull request that adds a release to microsoft/winget-pkgs.
+# release.yml calls this after it publishes a tag; run it by hand to submit
+# a release again. The pull request goes to a repository this one does not
+# own, so the built-in GITHUB_TOKEN cannot open it: WINGET_TOKEN is a classic
+# personal access token with only the public_repo scope.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      WINGET_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to submit, for example v0.14.5
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: winget pull request
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check for the token
+        id: token
+        env:
+          HAS_TOKEN: ${{ secrets.WINGET_TOKEN != '' }}
+        run: |
+          "present=$env:HAS_TOKEN" >> $env:GITHUB_OUTPUT
+          if ($env:HAS_TOKEN -ne 'true') { Write-Output '::warning::WINGET_TOKEN is not set; skipping winget.' }
+
+      - name: Submit
+        if: steps.token.outputs.present == 'true'
+        env:
+          # wingetcreate reads the token from this variable, so it never
+          # appears on a command line or in the log.
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isDraft,publishedAt | ConvertFrom-Json
+          if ($release.isDraft) { throw "$env:TAG is still a draft; winget would download a file nobody can see." }
+          $version = $env:TAG.TrimStart('v')
+          $date = ([datetime]$release.publishedAt).ToUniversalTime().ToString('yyyy-MM-dd')
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
+
+          # Pinned release of Microsoft's manifest tool, checked against the
+          # digest GitHub lists for it.
+          Invoke-WebRequest https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe -OutFile wingetcreate.exe
+          $hash = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash
+          if ($hash -ne '24042BD37915805615E6CF969AC57C6439124C3FE85823327F5F3FB24BD9FFEA') { throw "wingetcreate.exe has an unexpected SHA-256: $hash" }
+
+          .\wingetcreate.exe update RicardoFrantz.pdf-next `
+            --version $version `
+            --urls "$base/pdf-next_${version}_x64-setup.exe" `
+            --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG" `
+            --release-date $date `
+            --prtitle "New version: RicardoFrantz.pdf-next version $version" `
+            --submit --no-open
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate exited with code $LASTEXITCODE" }
