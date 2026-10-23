@@ -68,6 +68,8 @@ const ui = {
   wrap: el('wrap'),
   raw: el('raw'),
   mdFont: el('mdFont'),
+  mdSize: el('mdSize'),
+  mdWidth: el('mdWidth'),
   ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
@@ -673,18 +675,22 @@ function setRaw(on, { persist = true } = {}) {
   }
 }
 
-/// The typeface of rendered markdown, one of the menu's values. The faces
-/// themselves live in style.css; an unknown saved value falls back to the first.
-function setMarkdownFont(font, { persist = true } = {}) {
-  const fonts = Array.from(ui.mdFont.options, (option) => option.value);
-  const chosen = fonts.includes(font) ? font : fonts[0];
-  ui.mdFont.value = chosen;
-  ui.markdown.dataset.font = chosen;
+/// One of the markdown text menus (font, size, width): the menu's `data-md`
+/// names the attribute on the article that style.css keys on. An unknown saved
+/// value falls back to the option the page marks as selected.
+function setMarkdownStyle(select, value, { persist = true } = {}) {
+  const options = Array.from(select.options);
+  const chosen = options.some((option) => option.value === value)
+    ? value
+    : (options.find((option) => option.defaultSelected) ?? options[0]).value;
+  const style = select.dataset.md;
+  select.value = chosen;
+  ui.markdown.dataset[style] = chosen;
   if (!persist) {
     return;
   }
   try {
-    localStorage.setItem('pdf-next.md-font', chosen);
+    localStorage.setItem(`pdf-next.md-${style}`, chosen);
   } catch {
     // Preference only.
   }
@@ -3848,7 +3854,12 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
-ui.mdFont.addEventListener('change', () => setMarkdownFont(ui.mdFont.value));
+for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
+  select.addEventListener('change', () => {
+    setMarkdownStyle(select, select.value);
+    scheduleWrap();
+  });
+}
 ui.ask.addEventListener('click', () => void askSelection());
 ui.note.addEventListener('click', () => void openNoteBox());
 ui.notes.addEventListener('click', () => toggleReviewPanel());
@@ -4443,10 +4454,14 @@ try {
 } catch {
   setRaw(false, { persist: false });
 }
-try {
-  setMarkdownFont(localStorage.getItem('pdf-next.md-font'), { persist: false });
-} catch {
-  setMarkdownFont(null, { persist: false });
+for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(`pdf-next.md-${select.dataset.md}`);
+  } catch {
+    // Preference only.
+  }
+  setMarkdownStyle(select, saved, { persist: false });
 }
 
 // Watching is on by default at one second; the control only exists to slow it

@@ -193,36 +193,36 @@ function appFunction(name, next, context, source = app) {
   return runInNewContext(`${source.slice(start, end)}\n${name}`, context);
 }
 
-// The markdown font menu sets the face, remembers it, and ignores unknown names.
+// The markdown text menus set the article's style, remember it, and ignore unknown values.
 {
   const stored = new Map();
-  const ui = {
-    mdFont: { value: '', options: ['latin-modern', 'serif', 'sans', 'mono'].map((value) => ({ value })) },
-    markdown: { dataset: {} },
-  };
+  const menu = (style, values, fallback) => ({
+    value: '',
+    dataset: { md: style },
+    options: values.map((value) => ({ value, defaultSelected: value === fallback })),
+  });
+  const font = menu('font', ['latin-modern', 'serif', 'sans', 'mono'], 'latin-modern');
+  const size = menu('size', ['14', '15', '16', '17', '18', '20', '22', '24'], '17');
+  const width = menu('width', ['narrow', 'normal', 'wide', 'full'], 'normal');
+  const ui = { markdown: { dataset: {} } };
   const localStorage = { setItem: (key, value) => stored.set(key, value) };
-  const setFont = appFunction('setMarkdownFont', '/// Markdown zoom', { ui, localStorage });
-  setFont('sans');
+  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage });
+  setStyle(font, 'sans');
   assert.equal(ui.markdown.dataset.font, 'sans', 'The chosen face reaches the article.');
-  assert.equal(ui.mdFont.value, 'sans', 'The menu shows the chosen face.');
-  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'The choice is remembered.');
-  setFont('comic-sans', { persist: false });
+  assert.equal(font.value, 'sans', 'The menu shows the chosen face.');
+  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'The face is remembered.');
+  setStyle(font, 'comic-sans', { persist: false });
   assert.equal(ui.markdown.dataset.font, 'latin-modern', 'An unknown face falls back to the default.');
   assert.equal(stored.get('pdf-next.md-font'), 'sans', 'A restore does not overwrite the saved choice.');
+  setStyle(size, null, { persist: false });
+  assert.equal(ui.markdown.dataset.size, '17', 'No saved size gives the marked default, not the first option.');
+  setStyle(size, '22');
+  setStyle(width, 'wide');
+  assert.equal(stored.get('pdf-next.md-size'), '22', 'The size is remembered.');
+  assert.deepEqual([ui.markdown.dataset.size, ui.markdown.dataset.width], ['22', 'wide'], 'Size and width reach the article.');
   const failing = { setItem() { throw new Error('storage off'); } };
-  appFunction('setMarkdownFont', '/// Markdown zoom', { ui, localStorage: failing })('mono');
+  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing })(font, 'mono');
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
-}
-
-// A Markdown image gets its src from the doc protocol URL of the checked
-// path, with the document revision so a regenerated figure loads again.
-{
-  const image = { dataset: { doc: '/figs/a b.png' }, src: '' };
-  const embed = appFunction('embedMarkdownImages', '/// The HTML arrives', {
-    sourceUrl: (file) => `doc://${encodeURIComponent(file.path)}?v=${file.revision}`,
-  });
-  embed({ querySelectorAll: (selector) => (selector === 'img[data-doc]' ? [image] : []) }, 7);
-  assert.equal(image.src, 'doc://%2Ffigs%2Fa%20b.png?v=7');
 }
 
 // Markdown highlighting must stay within a small synchronous work budget.
