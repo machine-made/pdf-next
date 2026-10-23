@@ -1735,6 +1735,47 @@ assert.notEqual(reviewStateKey('a.pdf', 'r1'), reviewStateKey('b.pdf', 'r1'),
     prefix: '', suffix: 'there',
   }).status, 'located', 'Context still selects one candidate when spaces are ignored.');
 }
+{
+  const prefix = 'p'.repeat(48);
+  const suffix = 's'.repeat(48);
+  const anchor = { prefix: `ignored ${prefix}`, suffix: `${suffix} ignored` };
+  for (const loose of [false, true]) {
+    const space = (text) => loose ? [...text].join(' ') : text;
+    const text = `${space(prefix)} ${space('ab')} ${space(suffix)}`;
+    const start = space(prefix).length + 1;
+    assert.deepEqual(resolveReviewAnchor([{ page: 1, text }], 'ab', anchor),
+      { status: 'located', page: 1, start, end: start + space('ab').length },
+      'All 48 context characters must match across boundary spaces and PDF word splits.');
+    assert.equal(resolveReviewAnchor([{ page: 1, text }], 'ab', { prefix: 'wrong' }).status,
+      'unlocated', 'A unique occurrence with mismatched context must remain unlocated.');
+  }
+}
+{
+  // Count characters processed by replacements instead of asserting wall time.
+  // A page-wide space removal per loose candidate makes this grow quadratically.
+  const source = (await readFile('src/review-label.mjs', 'utf8')).replace(/^export /gm, '');
+  for (const anchor of [{ prefix: 'missing' }, { suffix: 'missing' }]) {
+    const text = 'a b '.repeat(4_000);
+    const work = runInNewContext(`
+      let characters = 0;
+      const replace = String.prototype.replace;
+      String.prototype.replace = function(...args) {
+        characters += this.length;
+        return replace.apply(this, args);
+      };
+      ${source}
+      const result = resolveReviewAnchor([{ page: 1, text }], 'ab', anchor);
+      if (result.status !== 'ambiguous') throw new Error('Repeated unmatched quotes must stay ambiguous.');
+      characters;
+    `, { text, anchor });
+    assert.ok(work < text.length * 64,
+      'Missing prefix and suffix comparisons must process a bounded amount of context per candidate.');
+  }
+  const text = `${'a b '.repeat(4_000)}unique`;
+  assert.deepEqual(resolveReviewAnchor([{ page: 2, text }], 'ab', { suffix: 'unique' }),
+    { status: 'located', page: 2, start: 15_996, end: 15_999 },
+    'Context must still select a unique occurrence at the end of a repetitive page.');
+}
 assert.equal(mapCollapsedIndex('hello', 2), 2);
 assert.equal(mapCollapsedIndex('a  b', 1), 1);
 assert.equal(mapCollapsedIndex('a  b', 2), 3);
