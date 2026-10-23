@@ -1183,6 +1183,154 @@ fn hides_anchor(html: &str) -> bool {
     html.to_ascii_lowercase().contains("data-line")
 }
 
+type OffsetEvent<'a> = (pulldown_cmark::Event<'a>, std::ops::Range<usize>);
+
+/// GitHub's heading ids, so `[see](#results)` finds `## Results`: lower case,
+/// spaces to `-`, other punctuation dropped, and `-1`, `-2` on repeats. The
+/// sanitizer adds the `md-` prefix to the id and to the links that point at it.
+fn name_headings(events: &mut [OffsetEvent<'_>]) {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    for start in 0..events.len() {
+        if !matches!(
+            &events[start].0,
+            Event::Start(Tag::Heading { id: None, .. })
+        ) {
+            continue;
+        }
+        let mut slug = String::new();
+        for (event, _) in &events[start + 1..] {
+            match event {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(text) | Event::Code(text) => {
+                    for c in text.chars().flat_map(char::to_lowercase) {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            slug.push(c);
+                        } else if c == ' ' {
+                            slug.push('-');
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let count = seen.entry(slug.clone()).or_insert(0);
+        if *count > 0 {
+            slug = format!("{slug}-{count}");
+        }
+        *count += 1;
+        if let Event::Start(Tag::Heading { id, .. }) = &mut events[start].0 {
+            *id = Some(slug.into());
+        }
+    }
+}
+
+/// Bare web addresses in prose become links, as on GitHub: `http://`,
+/// `https://` and `www.` runs, never inside code, math or an existing link.
+/// Trailing punctuation and an unmatched `)` stay outside the link.
+fn link_bare_urls(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len());
+    let mut shielded = 0usize;
+    for (event, range) in events {
+        match &event {
+            Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_)) => shielded += 1,
+            Event::End(TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) => {
+                shielded = shielded.saturating_sub(1)
+            }
+            Event::InlineHtml(tag) if tag.to_ascii_lowercase().starts_with("<a") => shielded += 1,
+            Event::InlineHtml(tag) if tag.to_ascii_lowercase().starts_with("</a") => {
+                shielded = shielded.saturating_sub(1)
+            }
+            _ => {}
+        }
+        let Event::Text(text) = &event else {
+            out.push((event, range));
+            continue;
+        };
+        if shielded > 0 {
+            out.push((event, range));
+            continue;
+        }
+        let spans = bare_urls(text);
+        if spans.is_empty() {
+            out.push((event, range));
+            continue;
+        }
+        let mut last = 0;
+        for (from, to) in spans {
+            if from > last {
+                out.push((
+                    Event::Text(text[last..from].to_string().into()),
+                    range.clone(),
+                ));
+            }
+            let shown = &text[from..to];
+            let dest = if shown.starts_with("www.") {
+                format!("https://{shown}")
+            } else {
+                shown.to_string()
+            };
+            out.push((
+                Event::Start(Tag::Link {
+                    link_type: LinkType::Autolink,
+                    dest_url: dest.into(),
+                    title: "".into(),
+                    id: "".into(),
+                }),
+                range.clone(),
+            ));
+            out.push((Event::Text(shown.to_string().into()), range.clone()));
+            out.push((Event::End(TagEnd::Link), range.clone()));
+            last = to;
+        }
+        if last < text.len() {
+            out.push((Event::Text(text[last..].to_string().into()), range));
+        }
+    }
+    out
+}
+
+/// Byte spans of the web addresses in `text`.
+fn bare_urls(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let Some(found) = ["https://", "http://", "www."]
+            .iter()
+            .filter_map(|prefix| rest.find(prefix).map(|i| (i, prefix.len())))
+            .min()
+        else {
+            break;
+        };
+        let from = at + found.0;
+        let after_word = text[..from]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace() || "([{<\"'*_~".contains(c));
+        let mut to = from
+            + text[from..]
+                .find(|c: char| c.is_whitespace() || c == '<')
+                .unwrap_or(text.len() - from);
+        loop {
+            let url = &text[from..to];
+            let opens = url.matches('(').count();
+            let closes = url.matches(')').count();
+            match url.chars().next_back() {
+                Some(c) if ".,:;!?'\"*_~".contains(c) => to -= c.len_utf8(),
+                Some(')') if closes > opens => to -= 1,
+                _ => break,
+            }
+        }
+        if after_word && to > from + found.1 {
+            spans.push((from, to));
+        }
+        at = to.max(from + found.1);
+    }
+    spans
+}
+
 fn render_markdown(source: &str, base: &Path) -> Rendered {
     use pulldown_cmark::{html, Event, Options, Parser, Tag};
     let mut options = Options::empty();
@@ -1198,10 +1346,16 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     // `$…$` and `$$…$$` become MathML in the same stream, and the sanitizer
     // reads them along with everything else.
     let mut rendered = String::with_capacity(source.len() + source.len() / 2);
-    let events_with_offset = Parser::new_ext(source, options).into_offset_iter();
+    // Adjacent text is merged first, so a URL or heading is never split at a `_`.
+    let mut merged: Vec<_> = pulldown_cmark::TextMergeWithOffset::new(
+        Parser::new_ext(source, options).into_offset_iter(),
+    )
+    .collect();
+    name_headings(&mut merged);
+    let events_with_offset = link_bare_urls(merged);
     let mut math_budget = MathBudget::default();
 
-    let events = events_with_offset.flat_map(|(event, range)| {
+    let events = events_with_offset.into_iter().flat_map(|(event, range)| {
         let mut result = vec![];
 
         // Handle Start tags: order depends on tag type.
@@ -4011,6 +4165,49 @@ mod tests {
         render_markdown(source, std::path::Path::new("/nonexistent")).html
     }
 
+    #[test]
+    fn heading_links_find_their_heading() {
+        let html =
+            render_html("# Results\n\n## Results\n\n## Wake `Re` = 100!\n\n[see](#results-1)\n");
+        assert!(html.contains(r#"<h1 id="md-results">"#), "{html}");
+        assert!(html.contains(r#"<h2 id="md-results-1">"#), "{html}");
+        assert!(html.contains(r#"id="md-wake-re--100""#), "{html}");
+        assert!(html.contains(r##"href="#md-results-1""##), "{html}");
+    }
+
+    #[test]
+    fn bare_web_addresses_become_links() {
+        let html = render_html(
+            "See https://example.org/a_b(c). Or (www.example.org), not `https://code.example`.\n\n\
+             ```\nhttps://block.example\n```\n\n[named](https://named.example) and <a href=\"https://raw.example\">https://raw.example</a>\n",
+        );
+        assert!(
+            html.contains(r#"<a href="https://example.org/a_b(c)""#),
+            "{html}"
+        );
+        assert!(html.contains(">https://example.org/a_b(c)</a>."), "{html}");
+        assert!(html.contains(r#"<a href="https://www.example.org" rel="noopener noreferrer">www.example.org</a>)"#), "{html}");
+        assert!(!html.contains(r#"href="https://code.example""#), "{html}");
+        assert!(!html.contains(r#"href="https://block.example""#), "{html}");
+        assert_eq!(
+            html.matches(r#"href="https://named.example""#).count(),
+            1,
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"href="https://raw.example""#).count(),
+            1,
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn address_like_words_stay_text() {
+        let html =
+            render_html("javascript:https://x.example and abchttps://y.example and https://\n");
+        assert!(!html.contains("<a "), "{html}");
+    }
+
     /// A folder with `pics/ok.png`, and a Markdown file `doc/notes.md` beside
     /// a `doc/figs/` folder.
     fn image_tree() -> (tempfile::TempDir, PathBuf) {
@@ -4541,7 +4738,7 @@ mod tests {
             "# Hi\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n\
              [link](javascript:alert(1))\n\n<p onclick=\"alert(1)\">text</p>",
         );
-        assert!(html.contains("<h1>"));
+        assert!(html.contains(r#"<h1 id="md-hi">"#));
         assert!(!html.contains("<script"));
         assert!(!html.contains("<img"));
         assert!(!html.contains("javascript:"));
