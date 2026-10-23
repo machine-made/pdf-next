@@ -6,7 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -412,7 +412,7 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
   const context = {
     state, ui: { markdown: article, markdownRaw: {}, markdownStage: { scrollHeight: 1000 } },
     releaseDocument: async () => {},
-    invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
+    invoke: async () => ({ html: '<p>new</p>', raw: 'new', digest: 'sha256:aa' }),
     embedMarkdownImages() {}, setRaw() {}, setMarkdownScale() {},
     markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
     MARKDOWN_WINDOW_WIDTH: 780,
@@ -428,6 +428,20 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
     apply({ revision: 1, nextId: 2, reviews: structuredClone(reviews) });
     assert.equal(painted, true, `Marks must be painted after ${round}.`);
   }
+  assert.equal(state.markdownDigest, 'sha256:aa', 'The digest of the file as read is kept for new reviews.');
+}
+
+// A review made on another version of the file is flagged while it is open.
+{
+  const review = (status, revision) => ({ status, anchor: revision ? { documentRevision: revision } : {} });
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new'), true);
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:new'), 'sha256:new'), false);
+  assert.equal(madeOnOlderVersion(review('open'), 'sha256:new'), false, 'A review saved without a digest is not flagged.');
+  assert.equal(madeOnOlderVersion(review('applied', 'sha256:old'), 'sha256:new'), false, 'Only open reviews need a second look.');
+  assert.equal(madeOnOlderVersion({ status: 'open' }, 'sha256:new'), false);
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), null), false, 'No digest for the shown file, no flag.');
+  assert.match(app, /state\.file\?\.kind === 'markdown' && madeOnOlderVersion\(review, state\.markdownDigest\)/,
+    'The review panel shows the flag for Markdown.');
 }
 
 {
