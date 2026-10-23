@@ -157,6 +157,10 @@ mark.aim {
   color: inherit;
 }
 
+mark.aim.current {
+  outline: 2px solid var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -1065,6 +1069,7 @@ body:not(.has-file) .file-only {
   display: none;
 }
 
+body:not(.kind-pdf):not(.kind-markdown) .find-only,
 body.kind-image .not-image,
 body:not(.kind-pdf):not(.kind-markdown) .review-only {
   display: none;

@@ -6,7 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from '../src/review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -268,6 +268,72 @@ function appFunction(name, next, context, source = app) {
     'Skipping highlighting must still update the baseline for the next reload.');
   assert.equal(stage.scrollTop, 300, 'An over-budget reload must restore the scroll position.');
   assert.equal(stage.scrollLeft, 5);
+}
+
+// Find in Markdown: hit list, counter, wrap-around, clearing.
+{
+  assert.deepEqual(findAllSpans('the wake of a wake', 'WAKE'), [{ start: 4, end: 8 }, { start: 14, end: 18 }]);
+  assert.deepEqual(findAllSpans('aaaa', 'aa'), [{ start: 0, end: 2 }, { start: 2, end: 4 }], 'Hits do not overlap.');
+  assert.deepEqual(findAllSpans('abc', '  '), [], 'A blank query has no hits.');
+  assert.match(page, /id="findToggle"[^>]*class="find-only"/, 'The find button is not hidden for Markdown.');
+  assert.match(styles, /body:not\(\.kind-pdf\):not\(\.kind-markdown\) \.find-only/);
+
+  const text = 'the wake of a wake in the wake';
+  const ui = {
+    markdown: {}, findInput: { value: 'wake' }, findCount: { textContent: '' },
+  };
+  const state = { file: { kind: 'markdown' }, mdFind: null };
+  let unwrapped = 0;
+  let scrolled = 0;
+  const context = {
+    state, ui, normalizeReviewText, findAllSpans,
+    collectTextParts: () => ({ joined: text, parts: [] }),
+    unwrapMarks() { unwrapped += 1; },
+    wrapSpanParts(root, parts, span, makeWrap) { makeWrap(); },
+    document: { createElement: () => ({
+      isConnected: true, className: '', on: false,
+      classList: { toggle(name, on) { this.owner.on = on; } },
+      scrollIntoView() { scrolled += 1; },
+    }) },
+  };
+  const create = context.document.createElement;
+  context.document.createElement = () => {
+    const mark = create();
+    mark.classList.owner = mark;
+    return mark;
+  };
+  context.showMarkdownFind = appFunction('showMarkdownFind', '/// Move to the next', context);
+  const build = appFunction('buildMarkdownFind', 'function showMarkdownFind', context);
+  context.buildMarkdownFind = build;
+  const step = appFunction('stepMarkdownFind', 'function clearMarkdownFind', context);
+  const clear = appFunction('clearMarkdownFind', 'function runFind', context);
+  build();
+  assert.equal(ui.findCount.textContent, '1 of 3', 'Three hits, the first one current.');
+  assert.deepEqual(Array.from(state.mdFind.hits, ([mark]) => mark.on), [true, false, false]);
+  step(1);
+  step(1);
+  assert.equal(ui.findCount.textContent, '3 of 3');
+  step(1);
+  assert.equal(ui.findCount.textContent, '1 of 3', 'Next wraps from the last hit to the first.');
+  step(-1);
+  assert.equal(ui.findCount.textContent, '3 of 3', 'Previous wraps from the first hit to the last.');
+  assert.equal(scrolled, 4, 'Every move scrolls the hit into view.');
+  ui.findInput.value = 'absent';
+  build();
+  assert.equal(ui.findCount.textContent, 'No match');
+  step(1);
+  assert.equal(ui.findCount.textContent, 'No match', 'Stepping with no hits stays put.');
+  ui.findInput.value = 'wake';
+  build();
+  state.mdFind.hits[0][0].isConnected = false;
+  step(1);
+  assert.equal(state.mdFind.index, 0, 'Hits from a replaced article are rebuilt, not stepped.');
+  const before = unwrapped;
+  clear();
+  assert.equal(state.mdFind, null, 'Closing find forgets the hits.');
+  assert.equal(unwrapped, before + 1, 'Closing find removes the highlights.');
+  clear();
+  assert.equal(unwrapped, before + 1, 'Clearing twice does no work.');
 }
 
 // A reload replaces the article's DOM. Identical reviews must not leave it unmarked.
