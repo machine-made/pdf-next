@@ -56,12 +56,13 @@ export function reattachedReviewAnchor(previous, next, at, quote) {
   return { ...next, original };
 }
 
-function matchesContext(text, start, end, anchor, loose = false) {
+function matchesContext(text, start, end, { prefix, suffix }, loose = false) {
   const squeeze = (value) => (loose ? value.replace(/ /g, '') : value);
-  const prefix = squeeze(normalizeReviewText(anchor?.prefix).slice(-48));
-  const suffix = squeeze(normalizeReviewText(anchor?.suffix).slice(0, 48));
-  return (!prefix || squeeze(text.slice(0, start).trimEnd()).endsWith(prefix)) &&
-    (!suffix || squeeze(text.slice(end).trimStart()).startsWith(suffix));
+  // Normalized text has at most one space between characters. Even a loose
+  // comparison needs only twice the context length, plus a boundary space.
+  const scale = loose ? 2 : 1;
+  return (!prefix || squeeze(text.slice(Math.max(0, start - prefix.length * scale - 1), start).trimEnd()).endsWith(prefix)) &&
+    (!suffix || squeeze(text.slice(end, end + suffix.length * scale + 1).trimStart()).startsWith(suffix));
 }
 
 /// Yield each occurrence of `want` in `text`. The loose form ignores spaces,
@@ -106,16 +107,23 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
     page: Number(item?.page), text: normalizeReviewText(item?.text),
   })).filter((item) => Number.isInteger(item.page) && item.page > 0);
   if (want.length < 2) return { status: 'unlocated' };
-  const count = (loose) => list.reduce((total, item) => total + [...occurrences(item.text, want, loose)].length, 0);
-  const exactCount = count(false);
-  const loose = exactCount === 0;
-  const found = [];
+  const loose = !list.some((item) => item.text.includes(want));
+  const squeeze = (value) => (loose ? value.replace(/ /g, '') : value);
+  const context = {
+    prefix: squeeze(normalizeReviewText(anchor?.prefix).slice(-48)),
+    suffix: squeeze(normalizeReviewText(anchor?.suffix).slice(0, 48)),
+  };
+  let count = 0;
+  let found = null;
   for (const item of list) {
     for (const { start, end } of occurrences(item.text, want, loose)) {
-      if (matchesContext(item.text, start, end, anchor, loose)) found.push({ page: item.page, start, end });
+      count = Math.min(2, count + 1);
+      if (matchesContext(item.text, start, end, context, loose)) {
+        if (found) return { status: 'ambiguous' };
+        found = { page: item.page, start, end };
+      }
     }
   }
-  if (found.length === 1) return { status: 'located', ...found[0] };
-  if (found.length > 1) return { status: 'ambiguous' };
-  return { status: (loose ? count(true) : exactCount) > 1 ? 'ambiguous' : 'unlocated' };
+  if (found) return { status: 'located', ...found };
+  return { status: count > 1 ? 'ambiguous' : 'unlocated' };
 }
