@@ -332,6 +332,10 @@ The review sidecar is a task list for editing the project source. The intended l
    review ID. Leave failed builds open. Mark the task `applied` only after compilation succeeds.
 5. Leave it `applied` until the reader checks the rendered PDF and marks it `resolved`.
 
+The same commands work on a Markdown file: `pdf-next reviews list notes.md`. A Markdown review
+quotes the rendered text and gives the source line range in `at`, so edit the `.md` file at
+those lines. There is no build step, so mark the task `applied` once the edit is saved.
+
 For example, save this object in `patch.json` after checking the current revision:
 
 ```json
