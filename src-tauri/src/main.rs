@@ -1855,9 +1855,23 @@ fn foreign_prefix(joined: &Path, base: &Path) -> bool {
     }
 }
 
+/// A resolved path on a network share or device that the folder of the
+/// document is not on. A link can lead there from a local-looking source.
+fn network_target(canonical: &Path, base: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match canonical.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+                && base.components().next() != Some(Component::Prefix(prefix))
+        }
+        _ => false,
+    }
+}
+
 /// Decide whether an `img src` written in a Markdown file may be shown. The
 /// source is a path, never a URL: anything with a scheme, and anything that
 /// starts like a network share, is refused before the disk is touched. A
+/// local source that resolves to a Windows network share is refused too. A
 /// Windows drive path counts as a path on Windows only.
 fn judge_image(src: &str, base: &Path) -> ImageVerdict {
     let decoded = percent_encoding::percent_decode_str(src).decode_utf8_lossy();
@@ -1878,6 +1892,9 @@ fn judge_image(src: &str, base: &Path) -> ImageVerdict {
             watch: Some(joined),
         };
     };
+    if network_target(&canonical, base) {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
     let Ok(metadata) = std::fs::metadata(&canonical) else {
         return ImageVerdict::Refused {
             reason: "not found",
@@ -4730,6 +4747,53 @@ mod tests {
                 "{source}: {html}"
             );
         }
+    }
+
+    #[test]
+    fn images_are_judged_where_their_links_lead() {
+        let (dir, doc) = image_tree();
+        std::fs::write(dir.path().join("secret.txt"), b"text").unwrap();
+        #[cfg(unix)]
+        let made =
+            std::os::unix::fs::symlink(dir.path().join("secret.txt"), doc.join("figs/text.png"))
+                .and_then(|()| {
+                    std::os::unix::fs::symlink(dir.path().join("pics"), doc.join("figs/dir.png"))
+                });
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(
+            dir.path().join("secret.txt"),
+            doc.join("figs/text.png"),
+        )
+        .and_then(|()| {
+            std::os::windows::fs::symlink_dir(dir.path().join("pics"), doc.join("figs/dir.png"))
+        });
+        // Windows makes symbolic links only with developer mode or admin rights.
+        if made.is_err() {
+            return;
+        }
+        let html = refused("![x](figs/text.png)", &doc);
+        assert!(html.contains("not an image type"), "{html}");
+        let html = refused("![x](figs/dir.png)", &doc);
+        assert!(html.contains("not a regular file"), "{html}");
+    }
+
+    #[test]
+    fn network_targets_are_told_by_their_resolved_prefix() {
+        let local = std::path::Path::new(r"\\?\C:\doc");
+        let share = std::path::Path::new(r"\\?\UNC\server\share\a.png");
+        assert_eq!(super::network_target(share, local), cfg!(windows));
+        assert!(!super::network_target(
+            std::path::Path::new(r"\\?\D:\figs\a.png"),
+            local
+        ));
+        assert!(!super::network_target(
+            share,
+            std::path::Path::new(r"\\?\UNC\server\share\doc")
+        ));
+        assert!(!super::network_target(
+            std::path::Path::new("/srv/a.png"),
+            std::path::Path::new("/home/doc")
+        ));
     }
 
     #[test]

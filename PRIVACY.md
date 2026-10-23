@@ -36,7 +36,11 @@ crash reporting, or analytics.
 **Documents.** PDFs, images and markdown are rendered on your machine. A
 markdown file's images are shown only when they are image files on your own
 disk: the app reads each local image the file refers to, and never loads a
-remote image, so reading a file does not tell any server. `#` links
+remote image address. A local path can still lead to network storage. On
+Windows, an image whose resolved path is on a network share is refused, but
+resolving a link to that share already contacts it. A network file system
+mounted as an ordinary folder, as is usual on Linux and macOS, cannot be told
+apart from a local disk, and its images are read like local ones. `#` links
 scroll, web links open in your own browser, and links to other files open
 them in the viewer only when you click.
 
