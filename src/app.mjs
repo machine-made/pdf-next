@@ -1,7 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import {
@@ -163,6 +163,8 @@ const state = {
   markdownBlocks: null,
   // Find hits in the rendered article: { hits: Element[][], index }, or null.
   mdFind: null,
+  // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
+  markdownDigest: null,
   pendingNote: null,
   pendingNotePdf: null,
   reviews: [],
@@ -730,6 +732,7 @@ async function showMarkdown(file, view, generation, fit) {
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   ui.markdownRaw.textContent = doc.raw;
+  state.markdownDigest = doc.digest;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
 
@@ -2400,7 +2403,7 @@ function markdownAnchorForSelection(range) {
   const before = textAround((edge) => edge.setEnd(range.startContainer, range.startOffset));
   const after = textAround((edge) => edge.setStart(range.endContainer, range.endOffset));
   const { prefix, suffix } = selectionContext(before, after);
-  return prefix || suffix ? { prefix, suffix } : null;
+  return { prefix, suffix, documentRevision: state.markdownDigest };
 }
 
 /// The current selection as a review record, or null. `context` also reads the
@@ -2855,6 +2858,12 @@ function renderReviewList() {
         : 'Unlocated · not highlighted';
       row.append(location);
     }
+    if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest)) {
+      const older = document.createElement('div');
+      older.className = 'review-location';
+      older.textContent = 'Made on an earlier version of this file';
+      row.append(older);
+    }
     if (conflict?.reason === 'changed') {
       const diskValue = document.createElement('div');
       diskValue.className = 'review-conflict-value';
@@ -3229,7 +3238,7 @@ async function reattachReview(review) {
     setStatus(`Select the same quoted text in the ${label} before reattaching`, { error: true });
     return;
   }
-  if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor)) {
+  if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor?.prefix || picked.anchor?.suffix)) {
     setStatus(`The selected text has no ${kind === 'pdf' ? 'PDF position' : 'surrounding text'} to attach to`, { error: true });
     return;
   }

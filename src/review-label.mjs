@@ -160,3 +160,9 @@ export function resolveMarkdownReview(text, review) {
   const lead = text.length - text.trimStart().length;
   return { status: 'located', start: found.start + lead, end: found.end + lead };
 }
+
+/// An open review whose recorded document digest differs from the file now shown.
+export function madeOnOlderVersion(review, digest) {
+  const made = review?.anchor?.documentRevision;
+  return Boolean(digest && made && made !== digest && reviewStatus(review) === 'open');
+}

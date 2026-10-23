@@ -874,6 +874,8 @@ const MARKDOWN_LIMIT: u64 = 10 * 1024 * 1024;
 struct MarkdownDoc {
     html: String,
     raw: String,
+    /// `sha256:` of the file's bytes, as stored in a review's `documentRevision`.
+    digest: String,
 }
 
 /// CommonMark plus the GitHub extras people actually write, sanitized before
@@ -1804,6 +1806,7 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
     }
     Ok(MarkdownDoc {
         html: rendered.html,
+        digest: text_sha256(&raw),
         raw,
     })
 }
@@ -2974,6 +2977,13 @@ fn file_sha256(mut file: std::fs::File) -> Result<String, String> {
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
+/// Same digest as `file_sha256`, for text already read. `read_to_string`
+/// accepts only valid UTF-8, so the string holds exactly the file's bytes.
+fn text_sha256(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
 struct ReviewLock(std::fs::File);
 
 impl ReviewLock {
@@ -3269,11 +3279,10 @@ fn write_review(
 
     let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
-    if review.kind == "pdf"
-        && review
-            .anchor
-            .as_ref()
-            .is_none_or(|anchor| anchor.document_revision.is_none())
+    if review
+        .anchor
+        .as_ref()
+        .is_none_or(|anchor| anchor.document_revision.is_none())
     {
         let digest = file_sha256(doc_path.open().map_err(|error| error.to_string())?)?;
         review
@@ -6140,6 +6149,49 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_review_gets_the_document_digest() {
+        let dir = scratch("review_md_digest");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\r\n\u{feff}caf\u{e9}\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+        assert_eq!(
+            super::text_sha256("abc"),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let digest = super::text_sha256(&std::fs::read_to_string(&md).unwrap());
+        assert_eq!(
+            digest,
+            super::file_sha256(std::fs::File::open(&md).unwrap()).unwrap(),
+            "the text digest equals the file digest"
+        );
+
+        let store = write_review(&md.display().to_string(), markdown_review(), &allowed).unwrap();
+        let anchor = store.reviews[0].anchor.as_ref().unwrap();
+        assert_eq!(anchor.document_revision.as_deref(), Some(digest.as_str()));
+
+        let mut review = markdown_review();
+        review.anchor = Some(ReviewAnchor {
+            document_revision: Some("sha256:chosen".into()),
+            ..ReviewAnchor::default()
+        });
+        let store = write_review(&md.display().to_string(), review, &allowed).unwrap();
+        assert_eq!(
+            store.reviews[1]
+                .anchor
+                .as_ref()
+                .unwrap()
+                .document_revision
+                .as_deref(),
+            Some("sha256:chosen"),
+            "a digest the viewer captured at selection time is kept"
+        );
 
         drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
