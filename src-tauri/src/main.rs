@@ -3234,13 +3234,20 @@ impl ReviewLock {
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("json")
         ));
-        lock_path.open_with(
-            cap_std::fs::OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false),
-        )
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        // macOS answers ENOENT to every writer that loses a race to create
+        // the same name relative to a directory handle, although the file
+        // then exists. One more try opens it; a missing folder still fails.
+        let mut tries = 0;
+        loop {
+            match lock_path.open_with(&options) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && tries < 3 => {
+                    tries += 1;
+                }
+                result => return result,
+            }
+        }
     }
 
     fn wait(file: std::fs::File) -> Result<Self, String> {
