@@ -1183,8 +1183,8 @@ fn render_math(
     };
     // The converter recurses once per nesting level, and a 16 KiB equation can
     // nest thousands deep: more than a worker thread's stack. It converts on a
-    // thread of its own with room for that. A thread that cannot start, or (in
-    // a build that unwinds) a panic there, ends as source for this equation only.
+    // thread of its own with room for that. A thread that cannot start, or a
+    // panic there, ends as source for this equation only.
     let converted = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(MATH_STACK_BYTES)
