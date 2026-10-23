@@ -193,6 +193,27 @@ function appFunction(name, next, context, source = app) {
   return runInNewContext(`${source.slice(start, end)}\n${name}`, context);
 }
 
+// The markdown font menu sets the face, remembers it, and ignores unknown names.
+{
+  const stored = new Map();
+  const ui = {
+    mdFont: { value: '', options: ['latin-modern', 'serif', 'sans', 'mono'].map((value) => ({ value })) },
+    markdown: { dataset: {} },
+  };
+  const localStorage = { setItem: (key, value) => stored.set(key, value) };
+  const setFont = appFunction('setMarkdownFont', '/// Markdown zoom', { ui, localStorage });
+  setFont('sans');
+  assert.equal(ui.markdown.dataset.font, 'sans', 'The chosen face reaches the article.');
+  assert.equal(ui.mdFont.value, 'sans', 'The menu shows the chosen face.');
+  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'The choice is remembered.');
+  setFont('comic-sans', { persist: false });
+  assert.equal(ui.markdown.dataset.font, 'latin-modern', 'An unknown face falls back to the default.');
+  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'A restore does not overwrite the saved choice.');
+  const failing = { setItem() { throw new Error('storage off'); } };
+  appFunction('setMarkdownFont', '/// Markdown zoom', { ui, localStorage: failing })('mono');
+  assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
+}
+
 // Markdown highlighting must stay within a small synchronous work budget.
 {
   const diff = appFunction('changedIndices', '/// Extract ', {});
