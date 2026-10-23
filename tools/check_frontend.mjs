@@ -2085,7 +2085,7 @@ assert.doesNotMatch(app, /append_note/, 'append_note is gone.');
 assert.doesNotMatch(app, /\.notes\.md/, 'The per-stem notes sidecar is gone.');
 assert.match(
   main,
-  /fn open_review_document\([\s\S]*?if !allowed\.contains\(&doc_path\)/,
+  /fn open_review_document\([\s\S]*?let admitted = allowed\.get\(&doc_path\)\.ok_or\("file was never opened"\)\?;/,
   'Review writes must refuse a document that is not in the open set.',
 );
 assert.match(
