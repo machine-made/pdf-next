@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
+import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
+import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -326,7 +328,7 @@ function appFunction(name, next, context, source = app) {
     state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
-    embedMarkdownImages() {},
+    embedMarkdownImages() {}, colourCode() {},
     setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
     markdownBlocks: () => texts.map((text) => ({ text })),
     changedIndices: diff,
@@ -666,7 +668,7 @@ for (const kind of ['markdown', 'pdf']) {
     state, ui: { markdown: article, markdownRaw: {}, markdownStage: { scrollHeight: 1000 } },
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new', digest: 'sha256:aa' }),
-    embedMarkdownImages() {}, setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
+    embedMarkdownImages() {}, colourCode() {}, setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
     markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
     MARKDOWN_WINDOW_WIDTH: 780,
     reviewPaintSignature, reviewIdNum: () => 1, renderReviewList() {},
@@ -2695,6 +2697,7 @@ for (const fixture of [
   'tests/fixtures/large-figure.png',
   'tests/fixtures/notes.md',
   'tests/fixtures/review-parity.md',
+  'tests/fixtures/code.md',
 ]) {
   await access(fixture);
 }
@@ -2710,6 +2713,109 @@ for (const source of [
   assert.equal(source.match(/pdfjsVersion = (\S+)/)?.[1], vendored,
     'Core, worker, and viewer must match the recorded PDF.js version.');
 }
+// Coloured code blocks: the fence tags, the budgets, and text that stays the same.
+{
+  const unescape = (html) => html.replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+  const block = (tag, text) => ({
+    classList: tag ? [`language-${tag}`] : [],
+    textContent: text,
+    html: null,
+    anchors: [{ className: 'src' }],
+    kept: null,
+    querySelectorAll(selector) { assert.equal(selector, '.src'); return this.anchors; },
+    prepend(...nodes) { this.kept = nodes; },
+    set innerHTML(html) { this.html = html; this.textContent = unescape(html); this.kept = null; },
+  });
+  const run = (...codes) => colourCode({ querySelectorAll: (selector) => {
+    assert.equal(selector, 'pre > code', 'Only fenced blocks are coloured, never inline code.');
+    return codes;
+  } });
+  const source = 'def f(x):\n    return "a<b" + str(1) # & done\n';
+
+  const python = block('python', source);
+  const untagged = block(null, source);
+  const unknown = block('ruby', source);
+  const inherited = block('Python', source);
+  run(python, untagged, unknown, inherited);
+  assert.match(python.html, /<span class="hljs-keyword">def<\/span>/, 'A tagged Python block gets hljs spans.');
+  assert.equal(python.textContent, source, 'Colouring must not change the text.');
+  assert.deepEqual(python.kept, python.anchors, 'The line anchor must stay in a coloured block, or review links lose their line.');
+  for (const plain of [untagged, unknown, inherited]) {
+    assert.equal(plain.html, null, 'An untagged, unknown or mis-cased tag stays plain.');
+  }
+
+  const big = block('python', 'x = 1\n'.repeat(BLOCK_LIMIT / 6 + 1));
+  assert.ok(big.textContent.length > BLOCK_LIMIT);
+  const edge = block('python', 'x'.repeat(BLOCK_LIMIT));
+  run(big, edge);
+  assert.equal(big.html, null, 'A block over 64 KiB stays plain.');
+  assert.notEqual(edge.html, null, 'A block of exactly 64 KiB is coloured.');
+
+  const size = BLOCK_LIMIT - 1;
+  const blocks = Array.from({ length: Math.ceil(DOCUMENT_LIMIT / size) + 2 }, () => block('python', 'x = 1\n'.repeat(1).padEnd(size, ' ')));
+  run(...blocks);
+  const coloured = blocks.filter((b) => b.html !== null).length;
+  assert.equal(coloured, Math.ceil(DOCUMENT_LIMIT / size), 'Colouring stops once 512 KiB of code is used.');
+  assert.ok(blocks.slice(coloured).every((b) => b.html === null), 'Blocks after the budget stay plain.');
+
+  const lang = (tag) => `language-${tag}`;
+  const rustTags = [...main.matchAll(/^\s+"language-([\w+-]+)",$/gm)].map((m) => m[1]);
+  assert.deepEqual(rustTags.slice().sort(), Object.keys(TAGS).sort(),
+    'The Rust sanitizer and src/code-colour.mjs must name the same fence tags.');
+  for (const tag of rustTags) {
+    const probe = block(tag, 'x = 1\n');
+    run(probe);
+    assert.notEqual(probe.html, null, `${lang(tag)} must reach a registered grammar.`);
+  }
+  assert.match(app, /^import \{ colourCode \} from '\.\/code-colour\.mjs';$/m);
+  assert.match(app, /embedMarkdownImages\(ui\.markdown, file\.revision\);\n\s+colourCode\(ui\.markdown\);/,
+    'Colour runs on the fresh article, before anything reads its blocks or paginates it.');
+  assert.doesNotMatch(app, /colourCode\(ui\.markdownRaw\)/, 'Raw mode is never coloured.');
+
+  const vendorList = await readFile('src/vendor/highlightjs/VERSION', 'utf8');
+  const hashes = [...vendorList.matchAll(/^ {2}([0-9a-f]{64}) {2}(\S+)$/gm)];
+  assert.equal(hashes.length, 19, 'VERSION lists the licence, the core and 17 grammars.');
+  for (const [, hash, file] of hashes) {
+    const actual = createHash('sha256').update(await readFile(`src/vendor/highlightjs/${file}`)).digest('hex');
+    assert.equal(actual, hash, `${file} must match its VERSION hash.`);
+  }
+}
+
+// Code token colours are defined in every mode and are readable on the code background (WCAG AA).
+{
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const tokens = ['keyword', 'built-in', 'type', 'literal', 'number', 'string', 'comment', 'meta',
+    'title', 'params', 'variable', 'attr', 'symbol', 'section', 'addition', 'deletion'];
+  const backgrounds = [...styles.matchAll(/--md-code-bg: (#[0-9a-f]{6})/g)];
+  assert.equal(backgrounds.length, 4, 'Day, night, sepia and print each set the code background.');
+  const worst = [];
+  for (const { index, 1: bg } of backgrounds) {
+    const open = styles.lastIndexOf('{', index);
+    const rule = styles.slice(open, styles.indexOf('}', index));
+    const colours = Object.fromEntries([...rule.matchAll(/--md-code-([a-z-]+): (#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+    delete colours.bg;
+    assert.deepEqual(Object.keys(colours).sort(), tokens.slice().sort(), `Every mode defines every token (background ${bg}).`);
+    const ratios = Object.entries(colours).map(([name, colour]) => [name, ratio(colour, bg)]);
+    const [name, low] = ratios.reduce((a, b) => (b[1] < a[1] ? b : a));
+    assert.ok(low >= 4.5, `${name} on ${bg} is ${low.toFixed(2)}:1, below 4.5:1.`);
+    worst.push(`${bg} ${low.toFixed(2)}`);
+  }
+  console.log(`Code colour contrast, lowest per background: ${worst.join(', ')}`);
+  for (const token of tokens) {
+    assert.match(styles, new RegExp(`\\.hljs-[\\w-]+[^{]*\\{[^}]*var\\(--md-code-${token}\\)`),
+      `A .hljs rule must use --md-code-${token}.`);
+  }
+}
+
 const viewerCss = await readFile('src/vendor/pdfjs/web/pdf_viewer.css', 'utf8');
 for (const match of viewerCss.matchAll(/url\(["']?(images\/[^)'"\s]+)["']?\)/g)) {
   await access(`src/vendor/pdfjs/web/${match[1]}`);
