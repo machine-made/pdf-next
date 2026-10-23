@@ -1053,7 +1053,7 @@ assert.match(csp, /img-src[^;]*http:\/\/doc\.localhost/, 'CSP must allow doc ima
 assert.match(csp, /connect-src[^;]*http:\/\/doc\.localhost/, 'CSP must allow doc fetches.');
 assert.match(
   main,
-  /register_uri_scheme_protocol\("doc"/,
+  /register_asynchronous_uri_scheme_protocol\("doc"/,
   'The doc protocol must be registered.',
 );
 assert.match(
@@ -1063,9 +1063,27 @@ assert.match(
 );
 assert.match(
   main,
-  /fn serve_document\([\s\S]*?serving\(&state, &canonical\)[\s\S]*?read_image\(&canonical\)[\s\S]*?"Cache-Control", "no-store"/,
-  'Every served document must pass the allowlist, embedded images must be rechecked, and all carry no-store.',
+  /fn serve_document\([\s\S]*?let Some\(served\) = [\s\S]*?serving\(&state, &canonical\)[\s\S]*?\) else \{\s*return deny\(404\);\s*\};[\s\S]*?Served::Embedded => read_image\(&canonical\)[\s\S]*?document_response\(&served/,
+  'A path that serving() refuses must be denied, and embedded images must be rechecked before any response.',
 );
+assert.match(
+  main,
+  /fn document_response\([\s\S]*?"Cache-Control", "no-store"[\s\S]*?"X-Content-Type-Options", "nosniff"[\s\S]*?Served::Embedded[\s\S]*?"Content-Security-Policy"/,
+  'Every served document carries no-store and nosniff, and embedded images a sandbox policy.',
+);
+{
+  const production = main.slice(0, main.indexOf('#[cfg(test)]\nmod tests'));
+  const users = new Set();
+  for (const use of production.matchAll(/\.embedded\b/g)) {
+    const before = production.slice(0, use.index);
+    users.add([...before.matchAll(/^(?:pub )?fn (\w+)/gm)].at(-1)?.[1]);
+  }
+  assert.deepEqual(
+    [...users].sort(),
+    ['read_markdown', 'serving'],
+    'Only serving and read_markdown may touch the embedded image set.',
+  );
+}
 assert.match(
   main,
   /fn adopt\([\s\S]*?state\.allowed\.insert\(canonical\.clone\(\)\)/,
