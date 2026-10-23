@@ -494,6 +494,13 @@ function appFunction(name, next, context, source = app) {
   assert.ok(located.start > article.indexOf('other text.'), 'The second occurrence is the one chosen.');
   const lead = resolveMarkdownReview(`  ${article}`, { quote: 'Repeat this phrase', anchor: second });
   assert.equal(`  ${article}`.slice(lead.start, lead.end), 'repeat this phrase', 'Offsets index the text as given.');
+  assert.deepEqual({ ...resolveMarkdownReview('a  b c', { quote: 'b c' }) }, { status: 'located', start: 3, end: 6 },
+    'Spaces collapsed inside the text do not shift the offsets.');
+  const spread = 'First  Line\n\n  Second\tline  here.';
+  const across = resolveMarkdownReview(spread, { quote: 'line second line' });
+  assert.equal(spread.slice(across.start, across.end), 'Line\n\n  Second\tline', 'A quote across a newline maps back whole.');
+  const page = resolveReviewAnchor([{ page: 2, text: ' One  TWO\nthree ' }], 'two three');
+  assert.deepEqual({ ...page }, { status: 'located', page: 2, start: 6, end: 15 }, 'PDF page offsets index the page text.');
   const vouched = resolveMarkdownReview(` ${article} `, { quote: 'Long.', anchor: { prefix: 'wake is' } }, { normalized: true });
   assert.equal(` ${article} `.slice(vouched.start, vouched.end), 'long.', 'Vouched text is searched as given, offsets and all.');
   assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'repeat this phrase' }) },
@@ -2303,7 +2310,7 @@ assert.notEqual(reviewStateKey('a.pdf', 'r1'), reviewStateKey('b.pdf', 'r1'),
   const pages = [{ page: 1, text: items.join(' ') }];
   const word = resolveReviewAnchor(pages, 'The nonlinear term');
   assert.equal(word.status, 'located', 'A quote across a font change inside a word is located.');
-  assert.equal(normalizeReviewText(pages[0].text).slice(word.start, word.end), 'the non linear term');
+  assert.equal(pages[0].text.slice(word.start, word.end), 'The   non linear term', 'Offsets index the page text.');
   assert.equal(resolveReviewAnchor(pages, 'velocity uτ grows').status, 'located',
     'A quote across inline math pieces is located.');
   assert.equal(resolveReviewAnchor([{ page: 1, text: 'u τ and u τ' }], 'uτ').status, 'ambiguous',
