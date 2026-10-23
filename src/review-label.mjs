@@ -9,6 +9,19 @@ export function normalizeReviewText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/// For each character of `normalizeReviewText(text)`, its index in `text`.
+/// A space stands for the whitespace run before the next word.
+function normalizedIndexMap(text) {
+  const map = [];
+  for (const run of text.matchAll(/\S+/g)) {
+    if (map.length) map.push(run.index - 1);
+    // Lower case can lengthen a word; extra characters map to its last one.
+    const length = run[0].toLowerCase().length;
+    for (let k = 0; k < length; k += 1) map.push(run.index + Math.min(k, run[0].length - 1));
+  }
+  return map;
+}
+
 /// Return the full quote only when it has one exact occurrence.
 export function findNormalizedSpan(joined, needle) {
   const want = normalizeReviewText(needle);
@@ -120,6 +133,7 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
   // matches many quotes in one long text need not rewrite it for each.
   const list = (Array.isArray(pages) ? pages : []).map((item) => ({
     page: Number(item?.page), text: item?.normalized ? item.text : normalizeReviewText(item?.text),
+    source: item?.normalized ? null : String(item?.text || ''),
   })).filter((item) => Number.isInteger(item.page) && item.page > 0);
   if (want.length < 2) return { status: 'unlocated' };
   const loose = !list.some((item) => item.text.includes(want));
@@ -135,11 +149,19 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
       count = Math.min(2, count + 1);
       if (matchesContext(item.text, start, end, context, loose)) {
         if (found) return { status: 'ambiguous' };
-        found = { page: item.page, start, end };
+        found = { item, start, end };
       }
     }
   }
-  if (found) return { status: 'located', ...found };
+  if (found) {
+    const { item, start, end } = found;
+    // Offsets index the text the caller passed. The map is built only for
+    // the page that holds the match.
+    const map = item.source === null ? null : normalizedIndexMap(item.source);
+    return map
+      ? { status: 'located', page: item.page, start: map[start], end: map[end - 1] + 1 }
+      : { status: 'located', page: item.page, start, end };
+  }
   return { status: count > 1 ? 'ambiguous' : 'unlocated' };
 }
 
@@ -160,9 +182,7 @@ export function resolveMarkdownReview(text, review, { normalized = false } = {})
   if (found.status !== 'located') {
     return { status: found.status, legacy: !anchor?.prefix && !anchor?.suffix };
   }
-  // Unless the caller vouched for the text, the match was found in the trimmed text.
-  const lead = normalized ? 0 : text.length - text.trimStart().length;
-  return { status: 'located', start: found.start + lead, end: found.end + lead };
+  return { status: 'located', start: found.start, end: found.end };
 }
 
 /// An open review whose recorded document digest differs from the file now
