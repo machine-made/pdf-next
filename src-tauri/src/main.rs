@@ -918,12 +918,22 @@ fn keep_local_links(url: &str) -> Option<std::borrow::Cow<'_, str>> {
     )))
 }
 
-// Bounds apply before parsing and while writing, independently of the source-file
+// Bounds apply before parsing and after writing, independently of the source-file
 // limit. A minimum charge also caps the number of tiny equations per document.
 const MATH_EXPRESSION_LIMIT: usize = 16 * 1024;
 const MATH_SOURCE_BUDGET: usize = 256 * 1024;
 const MATH_OUTPUT_BUDGET: usize = 4 * 1024 * 1024;
 const MATH_MIN_CHARGE: usize = 256;
+// A macro body can copy its argument and a macro can be called again and
+// again, so a few KiB of source can expand to hundreds of MB before the output
+// budget is checked. The converter's own limit is 1000 expansions, which still
+// allows about 1.6 GB and two seconds from 12 KiB of source (measured on
+// math-core 0.9.0). These two limits keep the work near the output budget.
+const MATH_MAX_EXPANSIONS: u32 = 100;
+const MATH_PARAMETER_LIMIT: usize = 32;
+// Address space reserved for one conversion's recursion; pages are used only
+// as deep as an equation nests.
+const MATH_STACK_BYTES: usize = 512 * 1024 * 1024;
 
 struct MathBudget {
     source: usize,
@@ -939,24 +949,22 @@ impl Default for MathBudget {
     }
 }
 
-struct MathWriter<'a> {
-    bytes: Vec<u8>,
-    remaining: &'a mut usize,
-}
-
-impl std::io::Write for MathWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > *self.remaining {
-            return Err(std::io::Error::other("math output limit exceeded"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        *self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+/// One converter per document. A `\newcommand` stays defined for the equations
+/// after it, equation numbers count across the file, and `\eqref` finds its
+/// `\label`. Labels get their own id prefix so they cannot meet a footnote or
+/// a heading. A command it does not know is shown as red text and the rest of
+/// the equation still renders. No annotation, which would carry the TeX source
+/// through unescaped.
+fn math_converter() -> math_core::LatexToMathML {
+    let config = math_core::MathCoreConfig {
+        global_group: true,
+        ignore_unknown_commands: true,
+        annotation: false,
+        max_expansions: math_core::MaxExpansions(MATH_MAX_EXPANSIONS),
+        id_prefix: "math:".into(),
+        ..Default::default()
+    };
+    math_core::LatexToMathML::new(config, Vec::new()).expect("no custom macros to parse")
 }
 
 fn math_source(tex: &str) -> String {
@@ -967,58 +975,60 @@ fn math_source(tex: &str) -> String {
 }
 
 /// One TeX equation as MathML, for the sanitizer to read like any other
-/// markup. The writer does not escape everything it emits (an operator `<`
-/// goes out bare), so nothing here is trusted on its own: it is cleaned with
-/// the rest of the document against the MathML allowlist below. No annotation,
-/// which would carry the TeX source through unescaped.
-fn render_math(tex: &str, display: bool, budget: &mut MathBudget) -> String {
-    use pulldown_latex::{config::DisplayMode, write_mathml, Parser, RenderConfig, Storage};
+/// markup. Nothing here is trusted on its own: the result is cleaned with the
+/// rest of the document against the MathML allowlist below. A macro that
+/// calls itself stops at the converter's expansion limit; an equation that
+/// fails, or whose markup would overrun the document's output budget, is
+/// shown as its escaped source.
+fn render_math(
+    converter: &mut math_core::LatexToMathML,
+    tex: &str,
+    display: bool,
+    budget: &mut MathBudget,
+) -> String {
+    use math_core::MathDisplay;
     let charge = tex.len().max(MATH_MIN_CHARGE);
     if tex.len() > MATH_EXPRESSION_LIMIT || charge > budget.source || budget.output == 0 {
         return math_source(tex);
     }
     budget.source -= charge;
+    if tex.bytes().filter(|&byte| byte == b'#').count() > MATH_PARAMETER_LIMIT {
+        return math_source(tex);
+    }
 
-    // pulldown-latex 0.8.0 expands macros before checking its allocation limit.
-    // These are all primitives that populate its initially empty MacroContext
-    // (parser/primitives.rs). Its lexer reads literal ASCII command names; it
-    // has no csname/catcode processing. Scan every backslash, even in comments
-    // or escaped text, so reparsing a group cannot hide a definition or alias.
-    // Keep the dependency pinned until this guard is rechecked or fixed upstream.
-    if tex.split('\\').skip(1).any(|tail| {
-        [
-            "def",
-            "let",
-            "futurelet",
-            "newcommand",
-            "renewcommand",
-            "providecommand",
-        ]
-        .iter()
-        .any(|command| tail.starts_with(command))
-    }) {
-        return math_source(tex);
-    }
-    let storage = Storage::new();
-    let parser = Parser::new(tex, &storage);
-    let config = RenderConfig {
-        display_mode: if display {
-            DisplayMode::Block
-        } else {
-            DisplayMode::Inline
-        },
-        ..RenderConfig::default()
+    // The converter has no `split`; `aligned` lays out the same inside an equation.
+    let converted = tex
+        .replace(r"\begin{split}", r"\begin{aligned}")
+        .replace(r"\end{split}", r"\end{aligned}");
+    let mode = if display {
+        MathDisplay::Block
+    } else {
+        MathDisplay::Inline
     };
-    let mut writer = MathWriter {
-        bytes: Vec::new(),
-        remaining: &mut budget.output,
-    };
-    if write_mathml(&mut writer, parser, config).is_err() {
-        // Discard partial markup on a parse or output-limit failure. Bytes
-        // already written still count against the document's shared budget.
+    // The converter recurses once per nesting level, and a 16 KiB equation can
+    // nest thousands deep: more than a worker thread's stack. It converts on a
+    // thread of its own with room for that. A panic there also ends as source.
+    let converted = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(MATH_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                converter.convert_with_global_state(&converted, mode)
+            })
+            .ok()?
+            .join()
+            .ok()
+    });
+    let Some(Ok(result)) = converted else {
         return math_source(tex);
+    };
+    // Markup that is discarded still counts against the document's budget.
+    let fits = result.mathml.len() <= budget.output;
+    budget.output = budget.output.saturating_sub(result.mathml.len());
+    if fits {
+        result.mathml
+    } else {
+        math_source(tex)
     }
-    String::from_utf8(writer.bytes).expect("MathML writer emits UTF-8")
 }
 
 fn html_escape_into(out: &mut String, text: &str) {
@@ -1033,85 +1043,93 @@ fn html_escape_into(out: &mut String, text: &str) {
     }
 }
 
-/// MathML Core: the elements the equation renderer writes, and the
-/// presentation attributes it sets on them. None of them runs anything;
-/// `style` is the only one that could say more than it should, and it is
-/// filtered below.
-const MATHML_TAGS: [&str; 30] = [
-    "math",
-    "semantics",
-    "mrow",
-    "mi",
-    "mn",
-    "mo",
-    "mtext",
-    "mspace",
-    "ms",
-    "msup",
-    "msub",
-    "msubsup",
-    "mfrac",
-    "msqrt",
-    "mroot",
-    "mstyle",
-    "merror",
-    "mpadded",
-    "mphantom",
-    "mover",
-    "munder",
-    "munderover",
-    "mmultiscripts",
-    "mprescripts",
-    "mtable",
-    "mtr",
-    "mtd",
-    "maction",
-    "menclose",
-    "mglyph",
+/// The MathML elements the converter writes and the attributes it sets on
+/// each, found by converting a wide list of equations (see
+/// `mathml_allowlist_matches_the_converter`). `style` is the only attribute
+/// that could say more than it should, and it is filtered below. There is no
+/// `href`: the one link an equation makes, `\eqref`, is an ordinary `<a>` in
+/// an `<mtext>`.
+const MATHML: [(&str, &[&str]); 25] = [
+    ("math", &["display"]),
+    ("menclose", &["notation"]),
+    ("merror", &[]),
+    (
+        "mfrac",
+        &["displaystyle", "linethickness", "scriptlevel", "style"],
+    ),
+    ("mi", &["mathvariant"]),
+    ("mmultiscripts", &[]),
+    ("mn", &[]),
+    (
+        "mo",
+        &[
+            "form",
+            "lspace",
+            "maxsize",
+            "minsize",
+            "movablelimits",
+            "rspace",
+            "stretchy",
+            "symmetric",
+        ],
+    ),
+    ("mover", &["accent"]),
+    ("mpadded", &["height", "style", "voffset", "width"]),
+    ("mphantom", &[]),
+    ("mprescripts", &[]),
+    ("mroot", &[]),
+    ("mrow", &["displaystyle", "scriptlevel", "style"]),
+    ("mspace", &["style", "width"]),
+    ("msqrt", &[]),
+    ("msub", &[]),
+    ("msubsup", &[]),
+    ("msup", &[]),
+    ("mtable", &["displaystyle", "scriptlevel", "style"]),
+    ("mtd", &["id", "style"]),
+    ("mtext", &[]),
+    ("mtr", &[]),
+    ("munder", &["accentunder"]),
+    ("munderover", &[]),
 ];
 
-const MATHML_ATTRIBUTES: [&str; 35] = [
-    "class",
-    "style",
-    "display",
-    "displaystyle",
-    "scriptlevel",
-    "mathvariant",
-    "mathsize",
-    "mathcolor",
-    "mathbackground",
-    "stretchy",
-    "symmetric",
-    "largeop",
-    "movablelimits",
-    "fence",
-    "separator",
-    "form",
-    "lspace",
-    "rspace",
-    "minsize",
-    "maxsize",
-    "accent",
-    "accentunder",
-    "linethickness",
+/// The class names the converter writes, by element: red text for an unknown
+/// command, the strokes of a crossed-out term, and the two `\textsf` and
+/// `\textrm` spans inside text.
+const MATHML_CLASSES: [(&str, &[&str]); 3] = [
+    ("merror", &["math-core-unknown-cmd"]),
+    (
+        "mrow",
+        &[
+            "menclose-updiagonalstrike",
+            "menclose-downdiagonalstrike",
+            "menclose-phasorangle",
+        ],
+    ),
+    (
+        "span",
+        &["math-core-sans-serif-font", "math-core-serif-font"],
+    ),
+];
+
+const MATH_STYLE_PROPERTIES: [&str; 11] = [
+    "border-right",
+    "border-top",
+    "color",
+    "justify-items",
+    "margin-left",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
+    "text-align",
     "width",
-    "height",
-    "depth",
-    "voffset",
-    "lspace",
-    "columnalign",
-    "rowalign",
-    "columnspacing",
-    "rowspacing",
-    "columnlines",
-    "rowlines",
-    "notation",
 ];
 
-/// The only inline styles that pass: a column alignment on a table cell, and
-/// the handful of declarations the equation renderer writes on MathML
-/// elements — each one a known property with a value made of nothing but
-/// letters, digits, spaces and the punctuation a colour or a length needs.
+/// The only inline styles that pass: a column alignment on a table cell, the
+/// small capitals of `\textsc`, and the handful of declarations the converter
+/// writes on MathML elements. Each is a known property with a value made of
+/// nothing but letters, digits, spaces and the punctuation a colour or a
+/// length needs.
 fn keep_known_styles<'a>(
     element: &str,
     attribute: &str,
@@ -1127,7 +1145,11 @@ fn keep_known_styles<'a>(
         )
         .then_some(std::borrow::Cow::Borrowed(value));
     }
-    if !MATHML_TAGS.contains(&element) {
+    if element == "span" {
+        return (value == "font-variant-caps: small-caps")
+            .then_some(std::borrow::Cow::Borrowed(value));
+    }
+    if !MATHML.iter().any(|(tag, _)| *tag == element) {
         return None;
     }
     let every_declaration_known = value.split(';').all(|declaration| {
@@ -1138,10 +1160,7 @@ fn keep_known_styles<'a>(
         let Some((property, rest)) = declaration.split_once(':') else {
             return false;
         };
-        let known = matches!(
-            property.trim(),
-            "color" | "margin-left" | "height" | "border-color" | "width"
-        );
+        let known = MATH_STYLE_PROPERTIES.contains(&property.trim());
         let plain = rest.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '#' | '(' | ')' | '%')
         });
@@ -1191,6 +1210,32 @@ fn hides_anchor(html: &str) -> bool {
 }
 
 type OffsetEvent<'a> = (pulldown_cmark::Event<'a>, std::ops::Range<usize>);
+
+/// GitHub's other way to write display math: a fenced block whose info string
+/// is `math`. It becomes the same event as `$$…$$`; every other fence, and
+/// any `$` inside one, stays code.
+fn math_fences(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len());
+    let mut open: Option<(std::ops::Range<usize>, String)> = None;
+    for (event, range) in events {
+        match (open.as_mut(), event) {
+            (Some((_, tex)), Event::Text(text)) => tex.push_str(&text),
+            (Some(_), Event::End(TagEnd::CodeBlock)) => {
+                let (start, mut tex) = open.take().expect("matched Some above");
+                tex.truncate(tex.trim_end().len());
+                out.push((Event::DisplayMath(tex.into()), start));
+            }
+            (None, Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))))
+                if info.split_whitespace().next() == Some("math") =>
+            {
+                open = Some((range, String::new()));
+            }
+            (_, event) => out.push((event, range)),
+        }
+    }
+    out
+}
 
 /// GitHub's heading ids, so `[see](#results)` finds `## Results`: lower case,
 /// spaces to `-`, other punctuation dropped, and `-1`, `-2` on repeats. The
@@ -1359,8 +1404,9 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     )
     .collect();
     name_headings(&mut merged);
-    let events_with_offset = link_bare_urls(merged);
+    let events_with_offset = link_bare_urls(math_fences(merged));
     let mut math_budget = MathBudget::default();
+    let mut converter = math_converter();
 
     let events = events_with_offset.into_iter().flat_map(|(event, range)| {
         let mut result = vec![];
@@ -1413,14 +1459,16 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
                 title: title.clone(),
                 id: id.clone(),
             }),
-            Event::InlineMath(tex) => Event::Html(render_math(tex, false, &mut math_budget).into()),
+            Event::InlineMath(tex) => {
+                Event::Html(render_math(&mut converter, tex, false, &mut math_budget).into())
+            }
             Event::DisplayMath(tex) => {
                 // Emit line anchor before the rendered math.
                 let line = line_at_offset(&line_offsets, range.start);
                 result.push(Event::Html(
                     format!(r#"<span class="src" data-line="{}"></span>"#, line).into(),
                 ));
-                Event::Html(render_math(tex, true, &mut math_budget).into())
+                Event::Html(render_math(&mut converter, tex, true, &mut math_budget).into())
             }
             other => other.clone(),
         };
@@ -1445,12 +1493,15 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     builder.add_tag_attributes("td", ["style"]);
     // Source line anchors for mapping selections back to markdown.
     builder.add_tags(["span"]);
-    builder.add_tag_attributes("span", ["data-line"]);
+    builder.add_tag_attributes("span", ["data-line", "style"]);
     builder.add_allowed_classes("span", ["src"]);
     // Equations.
-    builder.add_tags(MATHML_TAGS);
-    for tag in MATHML_TAGS {
-        builder.add_tag_attributes(tag, MATHML_ATTRIBUTES);
+    for (tag, attributes) in MATHML {
+        builder.add_tags([tag]);
+        builder.add_tag_attributes(tag, attributes);
+    }
+    for (tag, classes) in MATHML_CLASSES {
+        builder.add_allowed_classes(tag, classes);
     }
     // Every `img src` is judged here and replaced by `img:<n>`, an index into
     // `verdicts`. `replace_images` turns the index into the final markup, so
@@ -5075,6 +5126,138 @@ mod tests {
         assert!(html.contains("class=\"footnote-definition\""), "{html}");
     }
 
+    /// Equations that every document may use: the converter must handle each
+    /// one, and the sanitizer must keep what it writes.
+    const MATH_PROBES: &[&str] = &[
+        r"\begin{align} a &= b \\ c &= d \end{align}",
+        r"\begin{cases} 1 & x>0 \\ 0 & \text{otherwise} \end{cases}",
+        r"\mathbf{u}, \boldsymbol{\omega}, \mathrm{Re}, \mathcal{L}, \mathbb{R}^n, \operatorname{tr}",
+        r"\underbrace{a+b}_{c} \overbrace{d}^{e}",
+        r"\xrightarrow{f} \Rightarrow \iff \mapsto",
+        r"\begin{gather} a \\ b \end{gather}",
+        r"\begin{multline} a \\ b \end{multline}",
+        r"\begin{equation} a = b \label{eq:1} \end{equation}",
+        r"\boxed{x}",
+        r"\color{red}{x}",
+        r"\mathscr{F} \mathfrak{g}",
+        r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}",
+        r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+        r"\left( \frac{a}{b} \right) \bigg[ x \bigg]",
+        r"\langle u, v \rangle \| u \|_2 \lvert x \rvert",
+        r"\dot{x} \ddot{x} \vec{v} x' x'' \hat{x} \bar{x} \overline{x}",
+        r"\partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u} = -\nabla p + \frac{1}{\mathit{Re}}\Delta\mathbf{u}",
+        r"\sqrt{x} \sqrt[3]{y} \binom{n}{k} \sum_{i=0}^{n} \int_a^b \lim_{x\to 0} \prod_i",
+        r"{}^{a}_{b}x x_a^b \phantom{x} \hphantom{y} \vphantom{z}",
+        r"\text{abc } \textbf{b} \textit{i} \textsf{s} \textrm{r} \textsc{c} \quad \qquad \, \; \!",
+        r"\cancel{x} \bcancel{x} \xcancel{x} \phase{45} \not= \displaystyle x",
+        r"\begin{array}{c|cc} a & b & c \\ \hline d & e & f \end{array}",
+        r"\begin{align*} a &= b \end{align*} \begin{aligned} a &= b \end{aligned}",
+        r"\sideset{_a^b}{_c^d}\sum \overset{a}{b} \underset{a}{b} \overleftarrow{x} \widehat{xy} \tfrac12 \dfrac12 \pmod{n}",
+        r"\cfrac12 \raisebox{1em}{x} \mathstrut \mathop{x} \textstyle y \scriptstyle z",
+        r"\genfrac{(}{)}{0pt}{}{a}{b} \Big\| \hspace{1em} \mspace{3mu} \sum\limits_a",
+        r"\begin{subarray}{c} a \end{subarray} \left\{ x \right. \begin{bmatrix} 1 \end{bmatrix}",
+        r"\begin{equation}\begin{aligned} a &= b \\ &= c \end{aligned}\end{equation}",
+    ];
+
+    fn html_names(markup: &str) -> Vec<(String, String, String)> {
+        // (tag, attribute, value) for every tag, `("tag", "", "")` when it has none.
+        let mut found = Vec::new();
+        let mut rest = markup;
+        while let Some(at) = rest.find('<') {
+            rest = &rest[at + 1..];
+            let end = rest.find('>').expect("tag closes");
+            let (inside, after) = (&rest[..end], &rest[end..]);
+            rest = after;
+            if inside.starts_with('/') {
+                continue;
+            }
+            let tag: String = inside
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            found.push((tag.clone(), String::new(), String::new()));
+            let mut attributes = &inside[tag.len()..];
+            while let Some(eq) = attributes.find("=\"") {
+                let name = attributes[..eq].rsplit(' ').next().unwrap().to_string();
+                let value_and_rest = &attributes[eq + 2..];
+                let close = value_and_rest.find('"').expect("value closes");
+                found.push((tag.clone(), name, value_and_rest[..close].to_string()));
+                attributes = &value_and_rest[close + 1..];
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn mathml_allowlist_matches_the_converter() {
+        use std::collections::BTreeSet;
+        let html_tags = ammonia::Builder::default().clone_tags();
+        let mut tags = BTreeSet::new();
+        let mut attributes = BTreeSet::new();
+        let mut classes = BTreeSet::new();
+        let mut properties = BTreeSet::new();
+        let converter = super::math_converter();
+        for tex in MATH_PROBES.iter().copied().chain([r"\notacommand{x}"]) {
+            for mode in [
+                math_core::MathDisplay::Block,
+                math_core::MathDisplay::Inline,
+            ] {
+                let mathml = converter
+                    .convert_with_local_state(tex, mode)
+                    .unwrap_or_else(|error| panic!("{tex}: {error:?}"))
+                    .mathml;
+                for (tag, name, value) in html_names(&mathml) {
+                    if name.is_empty() {
+                        if !html_tags.contains(tag.as_str()) {
+                            tags.insert(tag);
+                        }
+                    } else if name == "class" {
+                        classes.insert((tag, value));
+                    } else if html_tags.contains(tag.as_str()) {
+                        // Text styling writes HTML: `a`, `span`.
+                        if name == "style" {
+                            assert_eq!(value, "font-variant-caps: small-caps");
+                        } else {
+                            assert_eq!((tag.as_str(), name.as_str()), ("a", "href"), "{tex}");
+                        }
+                    } else {
+                        if name == "style" {
+                            for declaration in value.split(';').filter(|d| !d.is_empty()) {
+                                let (property, _) = declaration.split_once(':').unwrap();
+                                properties.insert(property.trim().to_string());
+                            }
+                        }
+                        attributes.insert((tag, name));
+                    }
+                }
+            }
+        }
+        let allowed_tags: BTreeSet<_> = super::MATHML.iter().map(|(t, _)| t.to_string()).collect();
+        assert_eq!(tags, allowed_tags, "the converter writes other elements");
+        let allowed_attributes: BTreeSet<_> = super::MATHML
+            .iter()
+            .flat_map(|(t, names)| names.iter().map(move |n| (t.to_string(), n.to_string())))
+            .collect();
+        assert_eq!(
+            attributes, allowed_attributes,
+            "the converter writes other attributes"
+        );
+        let allowed_classes: BTreeSet<_> = super::MATHML_CLASSES
+            .iter()
+            .flat_map(|(t, names)| names.iter().map(move |n| (t.to_string(), n.to_string())))
+            .collect();
+        assert_eq!(
+            classes, allowed_classes,
+            "the converter writes other classes"
+        );
+        let allowed_properties: BTreeSet<_> = super::MATH_STYLE_PROPERTIES
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        // `margin-left` and the borders belong to constructs outside this list.
+        assert!(properties.is_subset(&allowed_properties), "{properties:?}");
+    }
+
     #[test]
     fn equations_become_mathml() {
         let html = render_html("mass $E = mc^2$ and\n\n$$\\int_0^1 x\\,dx$$\n");
@@ -5082,63 +5265,248 @@ mod tests {
         assert!(html.contains("display=\"block\""), "{html}");
         assert!(html.contains("<msup>"), "{html}");
         assert!(!html.contains("<annotation"), "{html}");
-        // A colour the renderer wrote survives the style filter.
+        // A colour the converter wrote survives the style filter.
         let colour = render_html("$\\color{red}{x}$");
-        assert!(colour.contains("style=\"color: rgb("), "{colour}");
+        assert!(colour.contains("style=\"color:#FF0000;\""), "{colour}");
     }
 
     #[test]
-    fn equation_macros_are_shown_as_escaped_source() {
+    fn probe_equations_render_inline_and_display() {
+        for tex in MATH_PROBES {
+            for markdown in [format!("${tex}$"), format!("$$ {tex} $$")] {
+                let html = render_html(&markdown);
+                assert!(html.contains("<math"), "{markdown}: {html}");
+                assert!(!html.contains("<code>"), "{markdown}: {html}");
+                assert!(!html.contains("<merror"), "{markdown}: {html}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_macro_defined_in_one_equation_serves_the_next() {
+        let html = render_html(
+            "$$\\newcommand{\\Rey}{\\mathit{Re}} \\Rey$$\n\nlater $\\frac{1}{\\Rey}$ and \\def:\n\n$$\\def\\x{y} \\x$$\n",
+        );
+        assert_eq!(html.matches("<math").count(), 3, "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+        assert!(!html.contains("<merror"), "{html}");
+        // Another document starts with nothing defined.
+        let other = render_html("$\\Rey$");
+        assert!(other.contains("math-core-unknown-cmd"), "{other}");
+    }
+
+    #[test]
+    fn runaway_macros_end_as_source_within_the_budget() {
+        let doubling: String = (b'A'..b'Y')
+            .map(|c| {
+                format!(
+                    r"\newcommand{{\m{0}}}{{\m{1}\m{1}}}",
+                    c as char,
+                    (c + 1) as char
+                )
+            })
+            .collect::<String>()
+            + r"\mA";
+        for tex in [r"\newcommand{\a}{\a\a} \a".to_string(), doubling] {
+            let start = std::time::Instant::now();
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(html.contains(&super::math_source(&tex)), "{html}");
+            assert!(!html.contains("<math"), "{html}");
+        }
+        // One long definition used again and again writes more markup than the
+        // document may hold.
+        let tex = format!(
+            r"\newcommand{{\blob}}{{{}}}{}",
+            "x".repeat(12000),
+            r"\blob".repeat(99)
+        );
+        assert!(tex.len() < super::MATH_EXPRESSION_LIMIT);
+        let mut budget = super::MathBudget::default();
+        let start = std::time::Instant::now();
+        let shown = super::render_math(&mut super::math_converter(), &tex, true, &mut budget);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(shown, super::math_source(&tex));
+        assert_eq!(budget.output, 0);
+
+        // Copying an argument thousands of times is refused before conversion;
+        // a macro with a parameter or two is ordinary.
+        let tex = format!(
+            r"\newcommand{{\blob}}[1]{{{}}}\blob{{{}}}",
+            "#1".repeat(4000),
+            "x".repeat(4000)
+        );
+        let mut budget = super::MathBudget::default();
+        let shown = super::render_math(&mut super::math_converter(), &tex, true, &mut budget);
+        assert_eq!(shown, super::math_source(&tex));
+        assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+        let html = render_html(r"$$\newcommand{\vect}[1]{\mathbf{#1}} \vect{u} + \vect{v}$$");
+        assert!(html.contains("<math"), "{html}");
+    }
+
+    #[test]
+    fn equation_numbers_and_references_link_after_sanitizing() {
+        let html = render_html(
+            "$$\\begin{equation} a = b \\label{eq:one} \\end{equation}$$\n\nsee $\\eqref{eq:one}$ and [^1]\n\n[^1]: note\n",
+        );
+        assert!(html.contains("id=\"md-math:eq:one\""), "{html}");
+        assert!(html.contains("href=\"#md-math:eq:one\""), "{html}");
+        assert!(html.contains("<mtext>(1)</mtext>"), "{html}");
+        assert!(html.contains("(1)</a>"), "{html}");
+        // The footnote keeps its own id; the label cannot take it.
+        assert!(html.contains("id=\"md-1\""), "{html}");
+        // A reference to nothing is a visible placeholder, not a live link out.
+        let hostile = render_html(
+            "$\\eqref{javascript:alert(1)}$ $\\eqref{x\" onclick=\"y}$ $\\href{javascript:alert(1)}{x}$ $\\url{javascript:alert(1)}{x}$",
+        );
+        assert!(
+            html_names(&hostile)
+                .iter()
+                .all(|(_, name, _)| !name.starts_with("on")),
+            "{hostile}"
+        );
+        assert!(!hostile.contains("href=\"javascript"), "{hostile}");
+        assert!(!hostile.contains("href=\"http"), "{hostile}");
+        assert!(
+            hostile.matches("href=\"#md-math:").count() <= 2,
+            "{hostile}"
+        );
+        assert!(hostile.contains("(??)"), "{hostile}");
+    }
+
+    #[test]
+    fn split_is_laid_out_as_aligned() {
+        let html = render_html("$$\\begin{split} a &= b \\\\ &= c \\end{split}$$");
+        assert!(html.contains("<mtable"), "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+        assert_eq!(html.matches("<mtr>").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn a_math_fence_is_display_math_and_other_fences_stay_code() {
+        let html = render_html("text\n\n```math\n\\int_0^1 x\\,dx\n```\n\nafter");
+        assert!(html.contains("display=\"block\""), "{html}");
+        assert!(html.contains("<msubsup>"), "{html}");
+        assert!(!html.contains("<pre>"), "{html}");
+        assert!(html.contains("data-line=\"3\""), "{html}");
+        assert!(html.contains("after"), "{html}");
+        let code = render_html("```\n$$x$$\n```\n\n```text\n$y$\n```\n\n`$z$`\n");
+        assert!(!code.contains("<math"), "{code}");
+        assert!(
+            code.contains("$$x$$") && code.contains("$y$") && code.contains("$z$"),
+            "{code}"
+        );
+        // A math fence that does not convert is shown as its source.
+        let broken = render_html("```math\n\\frac{\n```\n");
+        assert!(broken.contains("<code>"), "{broken}");
+    }
+
+    #[test]
+    fn an_unknown_command_does_not_lose_the_equation() {
+        let html = render_html("$\\notacommand{x} + y$");
+        assert!(html.contains("class=\"math-core-unknown-cmd\""), "{html}");
+        assert!(html.contains("<mo>+</mo>"), "{html}");
+        assert!(html.contains("<mi>y</mi>"), "{html}");
+        assert!(!html.contains("<code>"), "{html}");
+    }
+
+    #[test]
+    fn equations_that_fail_are_shown_as_escaped_source() {
+        for tex in [
+            r"\frac{",
+            r"\tag{1} a = b",
+            r"\begin{nothing} x \end{nothing}",
+            "<img src=x onerror=x> \\frac{",
+        ] {
+            // A fence, because `$$…$$` itself ends at the unbalanced brace.
+            let html = render_html(&format!("```math\n{tex}\n```"));
+            assert!(html.contains(&super::math_source(tex)), "{html}");
+            assert!(!html.contains("<math"), "{html}");
+            assert!(!html.contains("<img"), "{html}");
+        }
+    }
+
+    #[test]
+    fn hostile_macros_cannot_smuggle_markup_or_work() {
         for tex in [
             r"\def\dup#1{#1#1}\dup{x}",
-            r"\newcommand{\dup}[1]{#1#1}\dup{x}",
-            r"\renewcommand{\dup}[1]{#1#1}\dup{x}",
-            r"\providecommand{\dup}[1]{#1#1}\dup{x}",
             r"\let\alias=x\alias",
-            r"\futurelet\alias xy\alias",
             r"\let\alias=\def\alias\dup#1{#1#1}\dup{x}",
-            r"\futurelet\alias\def\dup#1{#1#1}\dup{x}",
             r"\sqrt{\def\dup#1{#1#1}\dup{x}}",
             r"\text{\\def\dup#1{<img src=x onerror=x>}}",
+            r"\newcommand{\a}{<img src=x onerror=x>}\a",
             "% comment\n\\def\\dup#1{#1#1}\\dup{x}",
         ] {
             for delimiter in ["$", "$$"] {
                 let html = render_html(&format!("{delimiter}{tex}{delimiter}"));
-                assert!(html.contains(&super::math_source(tex)), "{html}");
-                assert!(!html.contains("<math"), "{html}");
-                assert!(!html.contains("<img"), "{html}");
+                assert!(!html.contains("<img"), "{tex}: {html}");
+                assert!(!html.contains("onerror=x>"), "{tex}: {html}");
             }
         }
+    }
 
-        // A small source can otherwise copy several MB before the parser's
-        // first expansion-budget check. It must never reach that allocation.
-        let tex = format!(
-            r"\def\dup#1{{{}}}\dup{{{}}}",
-            "#1".repeat(2000),
-            "x".repeat(2048)
+    #[test]
+    fn deep_nesting_cannot_crash_the_viewer() {
+        let limit = super::MATH_EXPRESSION_LIMIT;
+        let braces = format!(
+            "{}x{}",
+            "{".repeat(limit / 2 - 1),
+            "}".repeat(limit / 2 - 1)
         );
-        assert!(tex.len() < super::MATH_EXPRESSION_LIMIT);
-        let mut budget = super::MathBudget::default();
-        assert_eq!(
-            super::render_math(&tex, false, &mut budget),
-            super::math_source(&tex)
+        let fractions = format!(
+            "{}x{}",
+            r"\frac{1}{".repeat(limit / 10),
+            "}".repeat(limit / 10)
         );
-        assert_eq!(budget.output, super::MATH_OUTPUT_BUDGET);
+        let roots = format!(r"{}x", r"\sqrt".repeat(limit / 5));
+        let fences = format!(
+            "{}x{}",
+            r"\left(".repeat(limit / 13),
+            r"\right)".repeat(limit / 13)
+        );
+        for tex in [braces, fractions, roots, fences] {
+            assert!(tex.len() <= limit);
+            let start = std::time::Instant::now();
+            let html = render_html(&format!("$${tex}$$"));
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(
+                html.contains("<math") || html.contains("<code>"),
+                "{}",
+                &html[..200]
+            );
+        }
     }
 
     #[test]
     fn equation_source_size_is_bounded() {
+        let mut converter = super::math_converter();
         let at_limit = format!(r"\text{{{}}}", "x".repeat(super::MATH_EXPRESSION_LIMIT - 7));
         assert_eq!(at_limit.len(), super::MATH_EXPRESSION_LIMIT);
         let mut budget = super::MathBudget::default();
-        assert!(super::render_math(&at_limit, false, &mut budget).contains("<math"));
+        assert!(
+            super::render_math(&mut converter, &at_limit, false, &mut budget).contains("<math")
+        );
         let over_limit = format!("{at_limit}é");
         assert_eq!(
-            super::render_math(&over_limit, true, &mut budget),
+            super::render_math(&mut converter, &over_limit, true, &mut budget),
             super::math_source(&over_limit)
         );
         // Prose resembling a command name is ordinary math without a backslash.
-        assert!(super::render_math("default", false, &mut budget).contains("<math"));
+        assert!(
+            super::render_math(&mut converter, "default", false, &mut budget).contains("<math")
+        );
     }
 
     #[test]
@@ -5159,44 +5527,39 @@ mod tests {
     }
 
     #[test]
-    fn equation_output_is_bounded_before_writing() {
-        use std::io::Write;
-        let mut remaining = 3;
-        let mut writer = super::MathWriter {
-            bytes: Vec::new(),
-            remaining: &mut remaining,
-        };
-        assert!(writer.write_all(b"abcd").is_err());
-        assert!(writer.bytes.is_empty());
-        writer.write_all(b"abc").unwrap();
-        assert!(writer.write_all(b"d").is_err());
-        assert_eq!(writer.bytes, b"abc");
-        assert_eq!(remaining, 0);
-
-        let expected = super::render_math("x", false, &mut super::MathBudget::default());
+    fn equation_output_is_bounded() {
+        let mut converter = super::math_converter();
+        let expected = super::render_math(
+            &mut converter,
+            "x",
+            false,
+            &mut super::MathBudget::default(),
+        );
         let mut shared = super::MathBudget {
             source: super::MATH_SOURCE_BUDGET,
             output: expected.len(),
         };
-        assert_eq!(super::render_math("x", false, &mut shared), expected);
+        assert_eq!(
+            super::render_math(&mut converter, "x", false, &mut shared),
+            expected
+        );
         assert_eq!(shared.output, 0);
-        assert_eq!(super::render_math("y", true, &mut shared), "<code>y</code>");
+        assert_eq!(
+            super::render_math(&mut converter, "y", true, &mut shared),
+            "<code>y</code>"
+        );
 
+        // Markup larger than what is left is discarded, and the work counts.
         let mut budget = super::MathBudget {
             source: super::MATH_SOURCE_BUDGET,
             output: 100,
         };
         let tex = "x".repeat(100);
         assert_eq!(
-            super::render_math(&tex, false, &mut budget),
+            super::render_math(&mut converter, &tex, false, &mut budget),
             super::math_source(&tex)
         );
-        assert!(budget.output < 100);
-        // Failed partial markup is discarded, without refunding consumed work.
-        assert_eq!(
-            super::render_math(&tex, true, &mut budget),
-            super::math_source(&tex)
-        );
+        assert_eq!(budget.output, 0);
     }
 
     #[test]
@@ -5204,16 +5567,24 @@ mod tests {
         let html = render_html("$\\text{<b onclick=x>hi</b>}$ and $x < 1$");
         // The tag is text, not an element.
         assert!(!html.contains("<b"), "{html}");
+        // The converter turns the space into a no-break space.
         assert!(
-            html.contains("<mtext>&lt;b onclick=x&gt;hi&lt;/b&gt;</mtext>"),
+            html.replace('\u{a0}', "&nbsp;")
+                .contains("<mtext>&lt;b&nbsp;onclick=x&gt;hi&lt;/b&gt;</mtext>"),
             "{html}"
         );
         // A bare `<` in an operator is re-serialized escaped.
         assert!(html.contains("<mo>&lt;</mo>"), "{html}");
         // MathML written straight into the document meets the same allowlist:
-        // the elements stay, a style the renderer would never write does not.
+        // the elements stay, a style the converter would never write does not.
         let raw = render_html("<math><mi style=\"background: url(x)\">x</mi></math>");
         assert!(raw.contains("<math><mi>x</mi></math>"), "{raw}");
+        // An element or class the converter never writes does not pass either.
+        let raw = render_html("<math><semantics><mrow class=\"x\">y</mrow></semantics></math>");
+        assert!(
+            !raw.contains("semantics") && !raw.contains("class=\"x\""),
+            "{raw}"
+        );
     }
 
     #[test]
@@ -5226,8 +5597,10 @@ mod tests {
         // The renderer's `&nbsp;` is one character by the time it is served,
         // not five that would show as text.
         assert!(!html.contains("&amp;nbsp;"), "{html}");
+        // Every space in the text is kept, as a no-break space.
         assert!(
-            html.contains("<mtext>a b\u{a0}</mtext>") || html.contains("<mtext>a b&nbsp;</mtext>"),
+            html.replace('\u{a0}', "&nbsp;")
+                .contains("<mtext>a&nbsp;b&nbsp;</mtext>"),
             "{html}"
         );
     }

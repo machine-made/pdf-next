@@ -1073,21 +1073,21 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
 /* Latin Modern Roman typeface for markdown body text */
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-regular.woff2');
+  src: url('./vendor/latin-modern/lmroman12-regular.woff2');
   font-weight: 400;
   font-display: swap;
 }
 
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-bold.woff2');
+  src: url('./vendor/latin-modern/lmroman12-bold.woff2');
   font-weight: 700;
   font-display: swap;
 }
 
 @font-face {
   font-family: "Latin Modern Roman";
-  src: url('./vendor/pulldown-latex/font/lmroman12-italic.woff2');
+  src: url('./vendor/latin-modern/lmroman12-italic.woff2');
   font-weight: 400;
   font-style: italic;
   font-display: swap;
@@ -1470,11 +1470,22 @@ body.mode-sepia #markdownStage {
 }
 
 /* ── Markdown: equations, footnotes, task lists ──────────────────────── */
-/* The math font is the vendored Latin Modern (pulldown-latex's stylesheet
-   declares it); a system math font stands in until it loads. */
+/* The math font is New Computer Modern Math, patched by math-core's authors
+   so accents centre and primes sit right in browsers. A system math font
+   stands in until it loads. Text inside an equation uses the body's text face. */
+@font-face {
+  font-family: "New Computer Modern Math";
+  src: url('./vendor/math-core/NewCMMath-Book.woff2');
+  font-display: swap;
+}
+
 #markdown math {
-  font-family: "Latin Modern Math", "STIX Two Math", "Cambria Math", math, serif;
+  font-family: "New Computer Modern Math", "STIX Two Math", "Cambria Math", math, serif;
   font-size: 1.05em;
+}
+
+#markdown math mtext {
+  font-family: "Latin Modern Roman", serif;
 }
 
 /* `display: block` alone would turn MathML layout off; `block math` keeps it.
