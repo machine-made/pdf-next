@@ -286,7 +286,7 @@ function appFunction(name, next, context, source = app) {
   let unwrapped = 0;
   let scrolled = 0;
   const context = {
-    state, ui, normalizeReviewText, findAllSpans,
+    state, ui, normalizeReviewText, findAllSpans, FIND_LIMIT: 1000,
     collectTextParts: () => ({ joined: text, parts: [] }),
     unwrapMarks() { unwrapped += 1; },
     wrapSpanParts(root, parts, span, makeWrap) { makeWrap(); },
@@ -334,6 +334,80 @@ function appFunction(name, next, context, source = app) {
   assert.equal(unwrapped, before + 1, 'Closing find removes the highlights.');
   clear();
   assert.equal(unwrapped, before + 1, 'Clearing twice does no work.');
+
+  // One character matches nearly everything: no search, no marks, no count.
+  ui.findInput.value = 'e';
+  const marked = [];
+  context.wrapSpanParts = (root, parts, span, makeWrap) => { marked.push(span.start); makeWrap(); };
+  build();
+  assert.deepEqual([state.mdFind.hits.length, ui.findCount.textContent, marked.length], [0, '', 0],
+    'A one-character query searches nothing.');
+  // A query with more than 1000 hits marks 1000, in reading order, and says so.
+  context.collectTextParts = () => ({ joined: 'ab '.repeat(1500), parts: [] });
+  ui.findInput.value = 'ab';
+  build();
+  assert.equal(ui.findCount.textContent, '1 of 1000+', 'The count says there are more hits than marked.');
+  assert.equal(state.mdFind.hits.length, 1000);
+  assert.equal(marked.length, 1000);
+  assert.ok(marked.every((start, at) => at === 0 || start < marked[at - 1]),
+    'Hits are wrapped from the last to the first.');
+}
+
+// Unwrapping many marks joins the text once per parent, not once per mark.
+{
+  let joins = 0;
+  const parent = { insertBefore() {}, normalize() { joins += 1; } };
+  const marks = Array.from({ length: 50 }, () => ({ parentNode: parent, firstChild: null, remove() {} }));
+  const other = { insertBefore() {}, normalize() { joins += 100; } };
+  marks.push({ parentNode: other, firstChild: null, remove() {} });
+  appFunction('unwrapMarks', '/// A target is an instruction', { })({ querySelectorAll: () => marks }, 'mark');
+  assert.equal(joins, 101, 'Each parent is normalized exactly once.');
+}
+
+// Wrapping a span looks only at the text nodes it covers.
+{
+  const wrapped = [];
+  let looked = 0;
+  const parts = Array.from({ length: 20000 }, (_, at) => ({
+    start: at * 5, end: at * 5 + 4,
+    node: {
+      get parentNode() { looked += 1; return { insertBefore() {} }; },
+      textContent: 'abcd', splitText() { assert.fail('Whole nodes need no split.'); },
+      at,
+    },
+  }));
+  const wrap = appFunction('wrapSpanParts', 'function wrapPdfQuote', {
+    offsetsInPart: (part) => [0, 4],
+  });
+  const first = wrap({ contains: () => true }, parts, { start: 50_001, end: 50_012 }, () => ({
+    appendChild(node) { wrapped.push(node.at); },
+  }));
+  assert.deepEqual(wrapped, [10000, 10001, 10002], 'The covered nodes are wrapped, and only those.');
+  assert.ok(first, 'The first wrapper is returned.');
+  assert.ok(looked <= 12, `Scanning is bounded by the span, not by the document (${looked} nodes read).`);
+}
+
+// Text for matching: badges are not text, inline markup does not add spaces, blocks do.
+{
+  const node = (text, parent) => ({ textContent: text, parentElement: parent });
+  const element = ({ block = null, badge = false } = {}) => ({
+    closest: (selector) => (selector.includes('review-nos') ? (badge ? {} : null) : block),
+  });
+  const p1 = element({ block: 'p1' });
+  const bold = element({ block: 'p1' });
+  const p2 = element({ block: 'p2' });
+  const badges = element({ badge: true, block: 'p2' });
+  const nodes = [node('Wa', p1), node('KE', bold), node(' is ', p1), node('long', bold), node(' ', p1),
+    node('and', p1), node('r1', badges), node('Next', p2)];
+  const collect = (inline) => appFunction('collectTextParts', 'function offsetsInPart', {
+    BLOCK_ELEMENTS: 'p',
+    NodeFilter: { SHOW_TEXT: 4 },
+    document: { createTreeWalker: () => { let at = 0; return { nextNode: () => nodes[at++] ?? null }; } },
+  })({}, inline);
+  assert.equal(collect(true).joined, 'wake is long and next',
+    'Inline markup runs together, a space stays where the source has one, and a block ends with a space.');
+  assert.equal(collect(false).joined, 'wa ke is long and next', 'PDF text spans are still separated.');
+  assert.equal(collect(true).parts.length, 6, 'Whitespace and badges make no parts.');
 }
 
 // Markdown reviews are located by the text around the quote.
@@ -348,6 +422,8 @@ function appFunction(name, next, context, source = app) {
   assert.ok(located.start > article.indexOf('other text.'), 'The second occurrence is the one chosen.');
   const lead = resolveMarkdownReview(`  ${article}`, { quote: 'Repeat this phrase', anchor: second });
   assert.equal(`  ${article}`.slice(lead.start, lead.end), 'repeat this phrase', 'Offsets index the text as given.');
+  const vouched = resolveMarkdownReview(` ${article} `, { quote: 'Long.', anchor: { prefix: 'wake is' } }, { normalized: true });
+  assert.equal(` ${article} `.slice(vouched.start, vouched.end), 'long.', 'Vouched text is searched as given, offsets and all.');
   assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'repeat this phrase' }) },
     { status: 'ambiguous', legacy: true }, 'Repeated text without context is ambiguous, and falls back to its line range.');
   assert.equal(resolveMarkdownReview(article, { quote: 'repeat this phrase', anchor: { prefix: 'nowhere', suffix: '' } }).status,
@@ -369,11 +445,12 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
 // What the Markdown paint does with each kind of review.
 {
   const calls = [];
+  let reads = 0;
   const state = { file: { path: 'a.md' }, mdFind: null, reviewLocations: new Map(), reviews: [] };
   const context = {
     state, ui: { markdown: { querySelectorAll: () => [] } },
     unwrapMarks() {}, unwrapReviewMarks() {}, renderReviewList() {}, buildMarkdownFind() {},
-    collectTextParts: () => ({ joined: 'a repeat b repeat c', parts: [] }),
+    collectTextParts: () => { reads += 1; return { joined: 'a repeat b repeat c', parts: [] }; },
     resolveMarkdownReview, reviewAction, reviewStatus,
     reviewStateKey: (path, id) => `${path}\u0000${id}`,
     wrapSpanParts: (root, parts, span) => { calls.push(['span', span.start]); return { parentElement: null }; },
@@ -390,13 +467,24 @@ assert.doesNotMatch(app, /!review\._draftOnly && state\.file\?\.kind === 'pdf'/,
     { id: 'r3', quote: 'repeat', at, anchor: { prefix: 'zzz' } },
     { id: 'r4', quote: 'missing', at, action: 'delete', status: 'applied', anchor: { prefix: 'a' } },
     { id: 'r5', quote: 'repeat', at: {}, anchor: { prefix: 'b' } },
+    { id: 'r6', quote: 'repeat', at, anchor: { prefix: 'a', suffix: 'b' } },
+    { id: 'r7', quote: 'gone', at },
   ];
   paint();
-  assert.deepEqual(calls.map((call) => call.join(':')), ['span:11', 'lines:r2'],
-    'Context locates one review, a context-free repeat uses its lines, the others paint nothing.');
+  assert.deepEqual(calls.map((call) => call.join(':')), ['span:11', 'span:2', 'lines:r2', 'lines:r7'],
+    'Located reviews are wrapped from the last offset to the first, then the context-free ones by their lines.');
+  assert.equal(reads, 1, 'The article text is read once for all reviews that do not overlap.');
   const status = (id) => state.reviewLocations.get(`a.md\u0000${id}`);
-  assert.deepEqual([status('r1'), status('r2'), status('r3'), status('r4'), status('r5')],
-    ['located', undefined, 'ambiguous', 'preserved', undefined]);
+  assert.deepEqual([status('r1'), status('r2'), status('r3'), status('r4'), status('r5'), status('r6'), status('r7')],
+    ['located', undefined, 'ambiguous', 'preserved', undefined, 'located', undefined]);
+  calls.length = 0;
+  reads = 0;
+  state.reviews = [
+    { id: 'o1', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+    { id: 'o2', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+  ];
+  paint();
+  assert.deepEqual([calls.length, reads], [2, 2], 'Reviews on the same text are wrapped from a fresh read.');
 }
 
 // A reload replaces the article's DOM. Identical reviews must not leave it unmarked.
@@ -2284,6 +2372,32 @@ assert.equal(mapCollapsedIndex('a  b', 2), 3);
   assert.equal(apply({ revision: 2, reviews: [{ id: 'r1' }] }, { authoritative: true }), true,
     'An authoritative disk read can represent a reset/imported revision counter.');
   assert.equal(state.reviewRevision, 2);
+}
+// A Markdown paint draws the panel itself, so the panel is not drawn twice.
+for (const [kind, signature, panels, paints] of [
+  ['markdown', 'new', 0, 1], ['markdown', 'same', 1, 0], ['pdf', 'new', 1, 1],
+]) {
+  const state = { file: { path: 'a', kind }, reviewDocumentPath: 'a', reviewRevision: 0, reviews: [] };
+  let sigs = 0;
+  let panelsDrawn = 0;
+  let painted = 0;
+  const apply = appFunction('applyReviewStore', 'async function loadReviews(', {
+    state, reviewPaintSignature: () => (signature === 'same' ? 's' : String(sigs++)),
+    reviewIdNum: () => 1, loadReviews() {},
+    renderReviewList() { panelsDrawn += 1; }, paintReviewMarks() { painted += 1; },
+  });
+  apply({ revision: 1, reviews: [{ id: 'r1' }] });
+  assert.deepEqual([panelsDrawn, painted], [panels, paints],
+    `${kind} store with ${signature} paint: panel drawn ${panels}, paints ${paints}.`);
+}
+// A target aimed at Markdown leaves find marks alone, so the counter stays true.
+{
+  const selectors = [];
+  await appFunction('applyTarget', '/// Replace each element', {
+    state: { file: { kind: 'markdown' } }, ui: { markdown: {} },
+    setRaw() {}, unwrapMarks: (root, selector) => selectors.push(selector),
+  })({ line: null, search: null, page: null });
+  assert.deepEqual(selectors, ['mark.aim:not(.find)']);
 }
 assert.match(page, /id="reviewMenu"/, 'Right-click on a selection adds a review.');
 assert.match(

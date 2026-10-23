@@ -1413,7 +1413,8 @@ async function applyTarget(target) {
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
     setRaw(false, { persist: false });
-    unwrapMarks(ui.markdown, 'mark.aim');
+    // Find marks stay: state.mdFind still points at them.
+    unwrapMarks(ui.markdown, 'mark.aim:not(.find)');
     let from = null;
     if (target.line) {
       const anchors = ui.markdown.querySelectorAll('[data-line]');
@@ -1496,8 +1497,10 @@ async function applyTarget(target) {
   updatePageControls();
 }
 
-/// Replace each element matching `selector` under `root` by its children.
+/// Replace each element matching `selector` under `root` by its children,
+/// then join the text that is left, once per parent.
 function unwrapMarks(root, selector) {
+  const parents = new Set();
   for (const mark of root.querySelectorAll(selector)) {
     const parent = mark.parentNode;
     if (!parent) {
@@ -1507,6 +1510,9 @@ function unwrapMarks(root, selector) {
       parent.insertBefore(mark.firstChild, mark);
     }
     mark.remove();
+    parents.add(parent);
+  }
+  for (const parent of parents) {
     parent.normalize();
   }
 }
@@ -1919,7 +1925,12 @@ function openFind() {
   ui.findInput.select();
 }
 
+/// Markdown find marks the page, so typing waits for a pause first.
+let findTimer = 0;
+
 function closeFind() {
+  window.clearTimeout(findTimer);
+  findTimer = 0;
   ui.find.hidden = true;
   ui.findCount.textContent = '';
   clearMarkdownFind();
@@ -1927,35 +1938,45 @@ function closeFind() {
   ui.container.focus();
 }
 
+/// Most hits that are marked; the count then reads "1000+".
+const FIND_LIMIT = 1000;
+
 /// Find in the rendered article. Each hit is one `mark.aim.find`, or several
 /// when it crosses inline markup. `state.mdFind` holds them in reading order.
+/// One character matches nearly everything, so a search starts at two.
 function buildMarkdownFind(keepIndex = false) {
   const index = keepIndex ? (state.mdFind?.index ?? 0) : 0;
   unwrapMarks(ui.markdown, 'mark.aim.find');
   const want = normalizeReviewText(ui.findInput.value);
   const hits = [];
-  if (want) {
-    const { joined, parts } = collectTextParts(ui.markdown);
-    for (const span of findAllSpans(joined, want).reverse()) {
+  let capped = false;
+  if (want.length >= 2) {
+    const { joined, parts } = collectTextParts(ui.markdown, true);
+    const spans = findAllSpans(joined, want, FIND_LIMIT + 1);
+    capped = spans.length > FIND_LIMIT;
+    spans.length = Math.min(spans.length, FIND_LIMIT);
+    // Last to first, so that wrapping one hit leaves the offsets of the rest valid.
+    for (let at = spans.length - 1; at >= 0; at -= 1) {
       const marks = [];
-      wrapSpanParts(ui.markdown, parts, span, () => {
+      wrapSpanParts(ui.markdown, parts, spans[at], () => {
         const mark = document.createElement('mark');
         mark.className = 'aim find';
         marks.push(mark);
         return mark;
       });
-      hits.unshift(marks);
+      hits.push(marks);
     }
+    hits.reverse();
   }
-  state.mdFind = { hits, index: Math.min(index, Math.max(0, hits.length - 1)) };
+  state.mdFind = { hits, capped, index: Math.min(index, Math.max(0, hits.length - 1)) };
   showMarkdownFind(false);
 }
 
 function showMarkdownFind(scroll) {
-  const { hits, index } = state.mdFind;
+  const { hits, index, capped } = state.mdFind;
   ui.findCount.textContent = hits.length
-    ? `${index + 1} of ${hits.length}`
-    : (ui.findInput.value.trim() ? 'No match' : '');
+    ? `${index + 1} of ${hits.length}${capped ? '+' : ''}`
+    : (normalizeReviewText(ui.findInput.value).length >= 2 ? 'No match' : '');
   hits.forEach((marks, at) => marks.forEach((mark) => mark.classList.toggle('current', at === index)));
   if (scroll) {
     hits[index]?.[0].scrollIntoView({ block: 'center' });
@@ -2398,7 +2419,7 @@ function markdownAnchorForSelection(range) {
     const copy = edge.cloneContents();
     unwrapMarks(copy, 'mark.aim');
     unwrapReviewMarks(copy);
-    return collectTextParts(copy).joined;
+    return collectTextParts(copy, true).joined;
   };
   const before = textAround((edge) => edge.setEnd(range.startContainer, range.startOffset));
   const after = textAround((edge) => edge.setStart(range.endContainer, range.endOffset));
@@ -2701,13 +2722,17 @@ function applyReviewStore(store, { authoritative = false } = {}) {
   }
   const samePaint = state.reviewDocumentPath === state.file?.path &&
     reviewPaintSignature(reviews) === reviewPaintSignature(state.reviews);
+  // A Markdown paint draws the panel itself, with where it found each review.
+  const paintDrawsPanel = !samePaint && state.file?.kind === 'markdown';
   state.reviews = reviews;
   state.nextId = Number.isSafeInteger(Number(store?.nextId)) && Number(store.nextId) > 0
     ? Number(store.nextId)
     : Math.max(1, ...reviews.map((review) => reviewIdNum(review.id) + 1));
   state.reviewRevision = Number.isSafeInteger(revision) ? revision : 0;
   state.reviewDocumentPath = state.file?.path || null;
-  renderReviewList();
+  if (!paintDrawsPanel) {
+    renderReviewList();
+  }
   if (!samePaint) {
     paintReviewMarks();
   }
@@ -3359,14 +3384,7 @@ function unwrapReviewMarks(root) {
   }
   // `review-q` — not `span`. PDF.js makes every textLayer span
   // `position:absolute`; a nested span's wash then covers the whole line.
-  for (const mark of [...root.querySelectorAll('mark.review, review-q')]) {
-    const parent = mark.parentNode;
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark);
-    }
-    mark.remove();
-    parent?.normalize();
-  }
+  unwrapMarks(root, 'mark.review, review-q');
   for (const el of [...root.querySelectorAll('.review-block, span.review, [data-review-tint]')]) {
     if (el.classList.contains('review-no') || el.classList.contains('review-nos')) {
       el.remove();
@@ -3376,22 +3394,51 @@ function unwrapReviewMarks(root) {
   }
 }
 
-function collectTextParts(root) {
+const BLOCK_ELEMENTS = 'p,li,h1,h2,h3,h4,h5,h6,td,th,tr,table,ul,ol,dt,dd,blockquote,pre,div,hr,figcaption,summary';
+
+/// The text of `root` in reading order, lower-cased and with runs of white
+/// space as one space, plus where each text node sits in it. Badges are not
+/// text of the document. PDF.js splits a line into spans, so between two nodes
+/// a space is added; with `inline` (Markdown) nodes inside one block run
+/// together, as `wa**ke**` reads, and a space goes only where the source has
+/// one or a block ends.
+function collectTextParts(root, inline = false) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const parts = [];
   let joined = '';
   let node;
+  let owner = null;
+  let badge = false;
+  let block = null;
+  let lastBlock = null;
+  let spaced = false;
+  // `joined.endsWith` would flatten a string of megabytes at every node.
+  let endsSpace = false;
   while ((node = walker.nextNode())) {
-    const piece = node.textContent.replace(/\s+/g, ' ').toLowerCase();
-    if (!piece.trim()) {
+    const parent = node.parentElement;
+    if (parent !== owner) {
+      owner = parent;
+      badge = Boolean(parent?.closest('.review-nos'));
+      block = inline ? (parent?.closest(BLOCK_ELEMENTS) ?? null) : null;
+    }
+    if (badge) {
       continue;
     }
-    if (joined && !joined.endsWith(' ') && !piece.startsWith(' ')) {
-      joined += ' ';
+    const piece = node.textContent.replace(/\s+/g, ' ').toLowerCase();
+    if (!piece.trim()) {
+      spaced = inline;
+      continue;
     }
-    const used = piece.startsWith(' ') && joined.endsWith(' ') ? piece.trimStart() : piece;
+    if (joined && !endsSpace && !piece.startsWith(' ') && (!inline || spaced || block !== lastBlock)) {
+      joined += ' ';
+      endsSpace = true;
+    }
+    spaced = false;
+    lastBlock = block;
+    const used = piece.startsWith(' ') && endsSpace ? piece.trimStart() : piece;
     const start = joined.length;
     joined += used;
+    endsSpace = used.endsWith(' ');
     parts.push({
       node,
       start,
@@ -3422,7 +3469,7 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
   if (!root || needle.length < 2) {
     return null;
   }
-  const { joined, parts } = collectTextParts(root);
+  const { joined, parts } = collectTextParts(root, asMark);
   const found = match || findNormalizedSpan(joined, needle);
   if (!found) {
     return null;
@@ -3442,10 +3489,19 @@ function wrapQuoteFragments(root, quote, id, { asMark = false, match = null } = 
 /// Wrapping later spans first keeps the offsets of earlier ones valid.
 function wrapSpanParts(root, parts, found, makeWrap) {
   let first = null;
-  for (const part of parts) {
-    if (part.end <= found.start || part.start >= found.end) {
-      continue;
+  // `parts` is in reading order: find the first one that ends after the span
+  // starts, and stop at the first that starts after it ends.
+  let low = 0;
+  for (let high = parts.length; low < high;) {
+    const middle = (low + high) >> 1;
+    if (parts[middle].end > found.start) {
+      high = middle;
+    } else {
+      low = middle + 1;
     }
+  }
+  for (let at = low; at < parts.length && parts[at].start < found.end; at += 1) {
+    const part = parts[at];
     const node = part.node;
     if (!node.parentNode || !root.contains(node)) {
       continue;
@@ -3530,23 +3586,25 @@ function markdownBadgeHost(mark) {
 function paintMarkdownMarks() {
   // A find mark inside a word would split the text a review quote is matched in.
   const finding = state.mdFind;
-  unwrapMarks(ui.markdown, 'mark.aim.find');
+  unwrapMarks(ui.markdown, 'mark.aim');
   unwrapReviewMarks(ui.markdown);
+  // Every review is matched against the text as it is now, before any mark
+  // splits it, then wrapped from the last offset to the first.
+  const text = collectTextParts(ui.markdown, true);
+  const joined = text.joined;
+  let parts = text.parts;
   const locations = new Map();
-  const badges = [];
+  const located = [];
+  const byLines = new Map();
   for (const review of state.reviews) {
     if (!review.at?.line) {
       continue;
     }
-    // Read afresh: every mark and badge placed so far changes the text nodes.
-    const { joined, parts } = collectTextParts(ui.markdown);
-    const found = resolveMarkdownReview(joined, review);
-    let badgeHost = null;
+    const found = resolveMarkdownReview(joined, review, { normalized: true });
     if (found.status === 'located') {
-      const first = wrapSpanParts(ui.markdown, parts, found, () => markdownReviewMark(review.id));
-      badgeHost = first && markdownBadgeHost(first);
+      located.push({ review, found });
     } else if (found.legacy) {
-      badgeHost = paintMarkdownByLines(review);
+      byLines.set(review, null);
     }
     if (!found.legacy) {
       const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
@@ -3555,13 +3613,26 @@ function paintMarkdownMarks() {
         found.status === 'located' ? 'located' : gone ? 'preserved' : found.status,
       );
     }
-    if (badgeHost) {
-      badges.push([badgeHost, review]);
+  }
+  const hosts = new Map();
+  let lowest = Infinity;
+  for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
+    if (item.found.end > lowest) {
+      // Overlaps one already wrapped: the text nodes have been split since.
+      ({ parts } = collectTextParts(ui.markdown, true));
     }
+    lowest = item.found.start;
+    const first = wrapSpanParts(ui.markdown, parts, item.found, () => markdownReviewMark(item.review.id));
+    hosts.set(item.review, first && markdownBadgeHost(first));
+  }
+  for (const review of byLines.keys()) {
+    hosts.set(review, paintMarkdownByLines(review));
   }
   // After all the matching: a badge is text too.
-  for (const [host, review] of badges) {
-    placeMarkdownBadge(host, review);
+  for (const review of state.reviews) {
+    if (hosts.get(review)) {
+      placeMarkdownBadge(hosts.get(review), review);
+    }
   }
   state.reviewLocations = locations;
   renderReviewList();
@@ -4226,10 +4297,27 @@ ui.findClose.addEventListener('click', closeFind);
 ui.findNext.addEventListener('click', () => runFind('again', true, false));
 ui.findPrev.addEventListener('click', () => runFind('again', true, true));
 
-ui.findInput.addEventListener('input', () => runFind(''));
+ui.findInput.addEventListener('input', () => {
+  window.clearTimeout(findTimer);
+  if (state.file?.kind === 'markdown') {
+    findTimer = window.setTimeout(() => {
+      findTimer = 0;
+      runFind('');
+    }, 150);
+  } else {
+    runFind('');
+  }
+});
 ui.findInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
+    if (findTimer) {
+      // Enter on a query that has not been searched yet searches it.
+      window.clearTimeout(findTimer);
+      findTimer = 0;
+      runFind('');
+      return;
+    }
     runFind('again', true, event.shiftKey);
   } else if (event.key === 'Escape') {
     event.preventDefault();

@@ -24,11 +24,13 @@ export function findNormalizedSpan(joined, needle) {
 }
 
 /// Every non-overlapping occurrence of `want` in `hay`, which the caller has
-/// already normalized, so that offsets index the caller's own text.
-export function findAllSpans(hay, want) {
+/// already normalized, so that offsets index the caller's own text. At most
+/// `limit` of them.
+export function findAllSpans(hay, want, limit = Infinity) {
   const spans = [];
   const needle = normalizeReviewText(want);
-  for (let at = needle ? hay.indexOf(needle) : -1; at >= 0; at = hay.indexOf(needle, at + needle.length)) {
+  for (let at = needle ? hay.indexOf(needle) : -1; at >= 0 && spans.length < limit;
+    at = hay.indexOf(needle, at + needle.length)) {
     spans.push({ start: at, end: at + needle.length });
   }
   return spans;
@@ -114,8 +116,10 @@ function* occurrences(text, want, loose) {
 /// spaces is used only when the quote has no exact occurrence.
 export function resolveReviewAnchor(pages, quote, anchor = {}) {
   const want = normalizeReviewText(quote);
+  // `normalized` text is already lower-cased with single spaces: a caller that
+  // matches many quotes in one long text need not rewrite it for each.
   const list = (Array.isArray(pages) ? pages : []).map((item) => ({
-    page: Number(item?.page), text: normalizeReviewText(item?.text),
+    page: Number(item?.page), text: item?.normalized ? item.text : normalizeReviewText(item?.text),
   })).filter((item) => Number.isInteger(item.page) && item.page > 0);
   if (want.length < 2) return { status: 'unlocated' };
   const loose = !list.some((item) => item.text.includes(want));
@@ -150,14 +154,14 @@ export function selectionContext(before, after) {
 /// Locate a Markdown review in the article's text. Offsets index `text`. A
 /// review saved without context cannot be told apart from a repeat of its
 /// quote, so `legacy` asks the caller to use the line range instead.
-export function resolveMarkdownReview(text, review) {
+export function resolveMarkdownReview(text, review, { normalized = false } = {}) {
   const anchor = review?.anchor;
-  const found = resolveReviewAnchor([{ page: 1, text }], review?.quote, anchor);
+  const found = resolveReviewAnchor([{ page: 1, text, normalized }], review?.quote, anchor);
   if (found.status !== 'located') {
     return { status: found.status, legacy: !anchor?.prefix && !anchor?.suffix };
   }
-  // The match was found in the trimmed text.
-  const lead = text.length - text.trimStart().length;
+  // Unless the caller vouched for the text, the match was found in the trimmed text.
+  const lead = normalized ? 0 : text.length - text.trimStart().length;
   return { status: 'located', start: found.start + lead, end: found.end + lead };
 }
 
