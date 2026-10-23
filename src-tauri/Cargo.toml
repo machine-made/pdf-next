@@ -1,12 +1,12 @@
 [package]
 name = "pdf-next"
-version = "0.14.5"
+version = "0.15.0"
 description = "Tiny, fast PDF, image and markdown viewer that reloads when the file changes"
 authors = ["Ricardo Frantz"]
 license = "MIT"
 repository = "https://github.com/ricardofrantz/pdf-next"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.96"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -31,8 +31,9 @@ percent-encoding = "2"
 # Hands a release download URL to the default browser — the one URL the
 # frontend may ask to open, and it is checked in Rust first.
 open = "5"
-# The macro guard in render_math is checked against this exact parser version.
-pulldown-latex = "=0.8.0"
+# TeX to MathML Core. Pinned: the allowlist in main.rs lists the tags and
+# attributes this version writes, and a test fails if an upgrade adds one.
+math-core = { version = "=0.9.0", default-features = false }
 # Pure-Rust PDF shrink (no Ghostscript). Writes `{stem}_reduced.pdf`.
 picamatl = "0.4"
 # Use the same parser as picamatl to bound load-time stream decompression.
@@ -85,5 +86,8 @@ windows = { version = "0.61", features = ["Win32_Foundation"] }
 opt-level = "s"
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwinding lets `render_math` show an equation whose conversion panics as
+# source instead of closing the window on a hostile file. It costs 1.4 MB on
+# Linux (13.4 MB against 12.0 MB).
+panic = "unwind"
 strip = true

@@ -9,6 +9,19 @@ export function normalizeReviewText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/// For each character of `normalizeReviewText(text)`, its index in `text`.
+/// A space stands for the whitespace run before the next word.
+function normalizedIndexMap(text) {
+  const map = [];
+  for (const run of text.matchAll(/\S+/g)) {
+    if (map.length) map.push(run.index - 1);
+    // Lower case can lengthen a word; extra characters map to its last one.
+    const length = run[0].toLowerCase().length;
+    for (let k = 0; k < length; k += 1) map.push(run.index + Math.min(k, run[0].length - 1));
+  }
+  return map;
+}
+
 /// Return the full quote only when it has one exact occurrence.
 export function findNormalizedSpan(joined, needle) {
   const want = normalizeReviewText(needle);
@@ -21,6 +34,19 @@ export function findNormalizedSpan(joined, needle) {
     return null;
   }
   return { start, end: start + want.length };
+}
+
+/// Every non-overlapping occurrence of `want` in `hay`, which the caller has
+/// already normalized, so that offsets index the caller's own text. At most
+/// `limit` of them.
+export function findAllSpans(hay, want, limit = Infinity) {
+  const spans = [];
+  const needle = normalizeReviewText(want);
+  for (let at = needle ? hay.indexOf(needle) : -1; at >= 0 && spans.length < limit;
+    at = hay.indexOf(needle, at + needle.length)) {
+    spans.push({ start: at, end: at + needle.length });
+  }
+  return spans;
 }
 
 export function reviewLabel(review, reviews) {
@@ -103,8 +129,11 @@ function* occurrences(text, want, loose) {
 /// spaces is used only when the quote has no exact occurrence.
 export function resolveReviewAnchor(pages, quote, anchor = {}) {
   const want = normalizeReviewText(quote);
+  // `normalized` text is already lower-cased with single spaces: a caller that
+  // matches many quotes in one long text need not rewrite it for each.
   const list = (Array.isArray(pages) ? pages : []).map((item) => ({
-    page: Number(item?.page), text: normalizeReviewText(item?.text),
+    page: Number(item?.page), text: item?.normalized ? item.text : normalizeReviewText(item?.text),
+    source: item?.normalized ? null : String(item?.text || ''),
   })).filter((item) => Number.isInteger(item.page) && item.page > 0);
   if (want.length < 2) return { status: 'unlocated' };
   const loose = !list.some((item) => item.text.includes(want));
@@ -120,10 +149,47 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
       count = Math.min(2, count + 1);
       if (matchesContext(item.text, start, end, context, loose)) {
         if (found) return { status: 'ambiguous' };
-        found = { page: item.page, start, end };
+        found = { item, start, end };
       }
     }
   }
-  if (found) return { status: 'located', ...found };
+  if (found) {
+    const { item, start, end } = found;
+    // Offsets index the text the caller passed. The map is built only for
+    // the page that holds the match.
+    const map = item.source === null ? null : normalizedIndexMap(item.source);
+    return map
+      ? { status: 'located', page: item.page, start: map[start], end: map[end - 1] + 1 }
+      : { status: 'located', page: item.page, start, end };
+  }
   return { status: count > 1 ? 'ambiguous' : 'unlocated' };
+}
+
+/// Context for a selection: the normalized text just before and after it.
+export function selectionContext(before, after) {
+  return {
+    prefix: normalizeReviewText(before).slice(-48),
+    suffix: normalizeReviewText(after).slice(0, 48),
+  };
+}
+
+/// Locate a Markdown review in the article's text. Offsets index `text`. A
+/// review saved without context cannot be told apart from a repeat of its
+/// quote, so `legacy` asks the caller to use the line range instead.
+export function resolveMarkdownReview(text, review, { normalized = false } = {}) {
+  const anchor = review?.anchor;
+  const found = resolveReviewAnchor([{ page: 1, text, normalized }], review?.quote, anchor);
+  if (found.status !== 'located') {
+    return { status: found.status, legacy: !anchor?.prefix && !anchor?.suffix };
+  }
+  return { status: 'located', start: found.start, end: found.end };
+}
+
+/// An open review whose recorded document digest differs from the file now
+/// shown, and that the shown text does not locate: a located review is right
+/// for this text whichever version it was made on.
+export function madeOnOlderVersion(review, digest, locationStatus) {
+  const made = review?.anchor?.documentRevision;
+  return Boolean(digest && made && made !== digest && reviewStatus(review) === 'open' &&
+    locationStatus !== 'located');
 }

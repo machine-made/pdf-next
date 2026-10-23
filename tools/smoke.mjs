@@ -219,7 +219,9 @@ function awaitFinalRender(
 function open(binary, file, seconds, { sourceChecks = true } = {}) {
   return new Promise((resolvePromise) => {
     const checkPdf = sourceChecks && /\.pdf$/i.test(file);
-    const checkFile = checkPdf || (sourceChecks && /\.png$/i.test(file));
+    // The page drives find and a review itself; the file is edited from here.
+    const checkMarkdown = sourceChecks && basename(file) === 'review-parity.md';
+    const checkFile = checkPdf || checkMarkdown || (sourceChecks && /\.png$/i.test(file));
     const child = spawn(binary, [file, '--no-focus'], {
       env: {
         ...process.env,
@@ -254,7 +256,26 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
           const pause = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
           const stressReload = stem.toLowerCase() === 'dense-page';
           const fixtureReviews = stressReload ? denseReviews(file) : [];
-          if (stressReload) {
+          if (checkMarkdown) {
+            const initialSourceRevision = Number(output.match(/sourceRevision=(\d+)/)?.[1]);
+            expectedBytes = Buffer.concat([bytes, Buffer.from('\nAppended after the review.\n', 'utf8')]);
+            const replacement = `${file}.replacement`;
+            writeFileSync(replacement, expectedBytes);
+            renameSync(replacement, file);
+            const deadline = Date.now() + Math.min(seconds * 1000, 20_000);
+            const second = () => output.split('\n').find((line) =>
+              line.startsWith('smoke: ready ') && line.includes('stage=2') &&
+              Number(line.match(/sourceRevision=(\d+)/)?.[1]) > initialSourceRevision);
+            while (!second()) {
+              if (/^smoke: fail\b/m.test(output) || Date.now() >= deadline) {
+                throw new Error(`no report after the file changed: ${output.split('\n').filter((line) => line.startsWith('smoke:')).join(' | ')}`);
+              }
+              await pause(100);
+            }
+            checked = true;
+            output = output.replace(/^smoke: ready (.+)$/m,
+              `smoke: ok $1; edited and reloaded: ${second().replace('smoke: ready ', '')}`);
+          } else if (stressReload) {
             const initial = output.match(/sourceRevision=(\d+)/);
             const initialSourceRevision = Number(initial?.[1]);
             if (!Number.isSafeInteger(initialSourceRevision)) {
@@ -407,9 +428,12 @@ let failed = 0;
 mkdirSync(join(root, 'scratch'), { recursive: true });
 const copies = mkdtempSync(join(root, 'scratch', 'smoke-fixtures-'));
 try {
+  // A Markdown fixture refers to its neighbours, so all of them are in place first.
+  for (const file of files) {
+    copyFileSync(file, join(copies, basename(file)));
+  }
   for (const file of files) {
     const opened = join(copies, basename(file));
-    copyFileSync(file, opened);
     if (basename(opened).toLowerCase() === 'dense-page.pdf') {
       const reviews = denseReviews(opened);
       writeFileSync(join(copies, 'dense-page_review.json'), reviewStore(opened, 1, reviews));

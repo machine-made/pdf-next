@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pdf-next</title>
     <link rel="stylesheet" href="./vendor/pdfjs/web/pdf_viewer.css" />
-    <link rel="stylesheet" href="./vendor/pulldown-latex/styles.css" />
+    <link rel="stylesheet" href="./vendor/math-core/mathmlfixes.css" />
     <link rel="stylesheet" href="./style.css" />
     <!-- Filled before a print with the @page rule that gives the paper the
          shape of the PDF's own pages. Empty otherwise, which leaves markdown
@@ -170,12 +170,39 @@
       </div>
       <div class="spacer"></div>
       <div class="group">
-        <button id="findToggle" type="button" class="pdf-only" title="Find (Ctrl+F)" aria-label="Find in document">
+        <button id="findToggle" type="button" class="find-only" title="Find (Ctrl+F)" aria-label="Find in document">
           <svg class="icon"><use href="#i-find"/></svg>
         </button>
+        <select id="pageView" class="page-view-only" title="Page view" aria-label="Page view">
+          <option value="continuous">Continuous</option>
+          <option value="single">Single page</option>
+          <option value="two">Two pages</option>
+        </select>
         <button id="raw" type="button" class="md-only" title="Show the raw markdown (Ctrl+U)" aria-label="Show the raw markdown" aria-pressed="false">
           <svg class="icon"><use href="#i-raw"/></svg>
         </button>
+        <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
+          <option value="latin-modern" selected>Latin Modern</option>
+          <option value="serif">Serif</option>
+          <option value="sans">Sans</option>
+          <option value="mono">Mono</option>
+        </select>
+        <select id="mdSize" class="md-only" data-md="size" title="Markdown text size" aria-label="Markdown text size">
+          <option value="14">14 px</option>
+          <option value="15">15 px</option>
+          <option value="16">16 px</option>
+          <option value="17" selected>17 px</option>
+          <option value="18">18 px</option>
+          <option value="20">20 px</option>
+          <option value="22">22 px</option>
+          <option value="24">24 px</option>
+        </select>
+        <select id="mdWidth" class="md-only" data-md="width" title="Markdown column width" aria-label="Markdown column width">
+          <option value="narrow">Narrow</option>
+          <option value="normal" selected>Normal</option>
+          <option value="wide">Wide</option>
+          <option value="full">Full</option>
+        </select>
         <button id="ask" type="button" class="review-only" title="Copy the selection as a review quote (Ctrl+Shift+A)" aria-label="Copy selection for a session">
           <svg class="icon"><use href="#i-ask"/></svg>
         </button>

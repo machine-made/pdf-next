@@ -6,7 +6,10 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
+import { paginate, validPageView } from '../src/md-pages.mjs';
+import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
+import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -193,6 +196,107 @@ function appFunction(name, next, context, source = app) {
   return runInNewContext(`${source.slice(start, end)}\n${name}`, context);
 }
 
+// The markdown text menus set the article's style, remember it, and ignore unknown values.
+{
+  const stored = new Map();
+  const menu = (style, values, fallback) => ({
+    value: '',
+    dataset: { md: style },
+    options: values.map((value) => ({ value, defaultSelected: value === fallback })),
+  });
+  const font = menu('font', ['latin-modern', 'serif', 'sans', 'mono'], 'latin-modern');
+  const size = menu('size', ['14', '15', '16', '17', '18', '20', '22', '24'], '17');
+  const width = menu('width', ['narrow', 'normal', 'wide', 'full'], 'normal');
+  const ui = { markdown: { dataset: {} } };
+  const localStorage = { setItem: (key, value) => stored.set(key, value) };
+  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage });
+  setStyle(font, 'sans');
+  assert.equal(ui.markdown.dataset.font, 'sans', 'The chosen face reaches the article.');
+  assert.equal(font.value, 'sans', 'The menu shows the chosen face.');
+  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'The face is remembered.');
+  setStyle(font, 'comic-sans', { persist: false });
+  assert.equal(ui.markdown.dataset.font, 'latin-modern', 'An unknown face falls back to the default.');
+  assert.equal(stored.get('pdf-next.md-font'), 'sans', 'A restore does not overwrite the saved choice.');
+  setStyle(size, null, { persist: false });
+  assert.equal(ui.markdown.dataset.size, '17', 'No saved size gives the marked default, not the first option.');
+  setStyle(size, '22');
+  setStyle(width, 'wide');
+  assert.equal(stored.get('pdf-next.md-size'), '22', 'The size is remembered.');
+  assert.deepEqual([ui.markdown.dataset.size, ui.markdown.dataset.width], ['22', 'wide'], 'Size and width reach the article.');
+  const failing = { setItem() { throw new Error('storage off'); } };
+  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing })(font, 'mono');
+  assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
+}
+
+// Page view: where a page ends, and the menu that picks the view per kind.
+{
+  const block = (top, height, keepNext = false) => ({ top, bottom: top + height, keepNext });
+  const flow = (heights, keep = []) => {
+    let top = 0;
+    return heights.map((height, i) => {
+      const item = block(top, height, keep.includes(i));
+      top += height + 10;
+      return item;
+    });
+  };
+  assert.deepEqual(paginate([], 100), [], 'An empty article has no pages.');
+  assert.deepEqual(paginate(flow([40, 40]), 100), [[0, 2]], 'Blocks that fit share a page.');
+  assert.deepEqual(paginate(flow([40, 40, 40]), 100), [[0, 2], [2, 3]], 'The block that would overflow starts the next page.');
+  assert.deepEqual(paginate(flow([40, 50, 40]), 100), [[0, 2], [2, 3]], 'A page may be filled exactly.');
+  assert.deepEqual(paginate(flow([40, 40, 20, 40], [2]), 100), [[0, 2], [2, 4]],
+    'A heading at the foot of a page moves with the block after it.');
+  assert.deepEqual(paginate(flow([40, 20, 20, 40], [1, 2]), 100), [[0, 1], [1, 4]],
+    'A run of headings moves as one with its block.');
+  assert.deepEqual(paginate(flow([20, 20, 90], [0, 1]), 100), [[0, 2], [2, 3]],
+    'When the headings fill the page alone, the page ends on the last of them.');
+  assert.deepEqual(paginate(flow([30, 250, 30]), 100), [[0, 1], [1, 2], [2, 3]],
+    'A block taller than a page stands alone on its own page.');
+  assert.deepEqual(paginate(flow([250]), 100), [[0, 1]]);
+  assert.deepEqual(paginate(flow([250, 30]), 100), [[0, 1], [1, 2]]);
+
+  assert.equal(validPageView('md', 'two'), 'two');
+  assert.equal(validPageView('md', undefined), 'continuous', 'Markdown opens continuous.');
+  assert.equal(validPageView('pdf', null), 'single', 'A PDF opens as it always has.');
+  assert.equal(validPageView('pdf', 'continuous'), 'single', 'A PDF has no continuous view.');
+  assert.equal(validPageView('md', 'sideways'), 'continuous', 'An unknown value falls back.');
+
+  const stored = new Map();
+  const classes = new Set();
+  const ui = { pageView: { value: '' } };
+  const state = { file: { kind: 'markdown' }, pageViews: { pdf: 'single', md: 'continuous' } };
+  let paginated = 0;
+  const context = {
+    state, ui, validPageView,
+    localStorage: { setItem: (key, value) => stored.set(key, value) },
+    document: { body: { classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) } } },
+    schedulePaginate: () => { paginated += 1; },
+    applyPdfSpread() {}, scheduleWrap() {},
+  };
+  const setView = appFunction('setPageView', '/// Pages in pairs', context);
+  setView('two');
+  assert.equal(state.pageViews.md, 'two');
+  assert.equal(ui.pageView.value, 'two', 'The menu shows the chosen view.');
+  assert.equal(stored.get('pdf-next.page-view.md'), 'two', 'The view is remembered for Markdown.');
+  assert.equal(classes.has('pages-on'), true, 'A page view hides the width menu.');
+  assert.equal(paginated, 1, 'Choosing a view repaginates.');
+  setView('continuous', { persist: false, apply: false });
+  assert.equal(stored.get('pdf-next.page-view.md'), 'two', 'A restore does not overwrite the saved choice.');
+  assert.equal(classes.has('pages-on'), false);
+  assert.equal(paginated, 1, 'A restore without apply leaves the article alone.');
+  state.file = { kind: 'pdf' };
+  setView('two');
+  assert.equal(stored.get('pdf-next.page-view.pdf'), 'two', 'The PDF view is remembered apart from Markdown.');
+  assert.equal(state.pageViews.md, 'continuous');
+  setView('continuous');
+  assert.equal(state.pageViews.pdf, 'single', 'A PDF rejects the continuous view.');
+  assert.match(page, /id="pageView"[^>]*class="page-view-only"/, 'The menu is in the toolbar.');
+  assert.match(page, /<option value="continuous">[^]*<option value="single">[^]*<option value="two">/);
+  assert.match(styles, /body:not\(\.kind-pdf\):not\(\.kind-markdown\) \.page-view-only/,
+    'The menu shows for PDF and Markdown only.');
+  assert.match(app, /SpreadMode\.EVEN/, 'Two pages in a PDF is PDF.js even spreads.');
+  assert.match(styles, /\.md-page \{[^}]*break-after: page/, 'A page box prints on its own sheet.');
+}
+
 // Markdown highlighting must stay within a small synchronous work budget.
 {
   const diff = appFunction('changedIndices', '/// Extract ', {});
@@ -224,7 +328,8 @@ function appFunction(name, next, context, source = app) {
     state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
-    setRaw() {}, setMarkdownScale() {},
+    embedMarkdownImages() {}, colourCode() {},
+    setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
     markdownBlocks: () => texts.map((text) => ({ text })),
     changedIndices: diff,
     highlightChangedBlocks() { assert.fail('An over-budget reload must skip highlighting.'); },
@@ -235,6 +340,387 @@ function appFunction(name, next, context, source = app) {
     'Skipping highlighting must still update the baseline for the next reload.');
   assert.equal(stage.scrollTop, 300, 'An over-budget reload must restore the scroll position.');
   assert.equal(stage.scrollLeft, 5);
+}
+
+// Find in Markdown: hit list, counter, wrap-around, clearing.
+{
+  assert.deepEqual(findAllSpans('the wake of a wake', 'WAKE'), [{ start: 4, end: 8 }, { start: 14, end: 18 }]);
+  assert.deepEqual(findAllSpans('aaaa', 'aa'), [{ start: 0, end: 2 }, { start: 2, end: 4 }], 'Hits do not overlap.');
+  assert.deepEqual(findAllSpans('abc', '  '), [], 'A blank query has no hits.');
+  assert.match(page, /id="findToggle"[^>]*class="find-only"/, 'The find button is not hidden for Markdown.');
+  assert.match(styles, /body:not\(\.kind-pdf\):not\(\.kind-markdown\) \.find-only/);
+
+  const text = 'the wake of a wake in the wake';
+  const ui = {
+    markdown: {}, findInput: { value: 'wake' }, findCount: { textContent: '' },
+  };
+  const state = { file: { kind: 'markdown' }, mdFind: null };
+  let unwrapped = 0;
+  let scrolled = 0;
+  const context = {
+    state, ui, normalizeReviewText, findAllSpans, FIND_LIMIT: 1000,
+    collectTextParts: () => ({ joined: text, parts: [] }),
+    unwrapMarks() { unwrapped += 1; },
+    wrapSpanParts(root, parts, span, makeWrap) { makeWrap(); },
+    document: { createElement: () => ({
+      isConnected: true, className: '', on: false,
+      classList: { toggle(name, on) { this.owner.on = on; } },
+      scrollIntoView() { scrolled += 1; },
+    }) },
+  };
+  const create = context.document.createElement;
+  context.document.createElement = () => {
+    const mark = create();
+    mark.classList.owner = mark;
+    return mark;
+  };
+  context.showMarkdownFind = appFunction('showMarkdownFind', '/// Move to the next', context);
+  const build = appFunction('buildMarkdownFind', 'function showMarkdownFind', context);
+  context.buildMarkdownFind = build;
+  const step = appFunction('stepMarkdownFind', 'function clearMarkdownFind', context);
+  const clear = appFunction('clearMarkdownFind', 'function runFind', context);
+  build();
+  assert.equal(ui.findCount.textContent, '1 of 3', 'Three hits, the first one current.');
+  assert.deepEqual(Array.from(state.mdFind.hits, ([mark]) => mark.on), [true, false, false]);
+  step(1);
+  step(1);
+  assert.equal(ui.findCount.textContent, '3 of 3');
+  step(1);
+  assert.equal(ui.findCount.textContent, '1 of 3', 'Next wraps from the last hit to the first.');
+  step(-1);
+  assert.equal(ui.findCount.textContent, '3 of 3', 'Previous wraps from the first hit to the last.');
+  assert.equal(scrolled, 4, 'Every move scrolls the hit into view.');
+  ui.findInput.value = 'absent';
+  build();
+  assert.equal(ui.findCount.textContent, 'No match');
+  step(1);
+  assert.equal(ui.findCount.textContent, 'No match', 'Stepping with no hits stays put.');
+  ui.findInput.value = 'wake';
+  build();
+  state.mdFind.hits[0][0].isConnected = false;
+  step(1);
+  assert.equal(state.mdFind.index, 0, 'Hits from a replaced article are rebuilt, not stepped.');
+  const before = unwrapped;
+  clear();
+  assert.equal(state.mdFind, null, 'Closing find forgets the hits.');
+  assert.equal(unwrapped, before + 1, 'Closing find removes the highlights.');
+  clear();
+  assert.equal(unwrapped, before + 1, 'Clearing twice does no work.');
+
+  // One character matches nearly everything: no search, no marks, no count.
+  ui.findInput.value = 'e';
+  const marked = [];
+  context.wrapSpanParts = (root, parts, span, makeWrap) => { marked.push(span.start); makeWrap(); };
+  build();
+  assert.deepEqual([state.mdFind.hits.length, ui.findCount.textContent, marked.length], [0, '', 0],
+    'A one-character query searches nothing.');
+  // A query with more than 1000 hits marks 1000, in reading order, and says so.
+  context.collectTextParts = () => ({ joined: 'ab '.repeat(1500), parts: [] });
+  ui.findInput.value = 'ab';
+  build();
+  assert.equal(ui.findCount.textContent, '1 of 1000+', 'The count says there are more hits than marked.');
+  assert.equal(state.mdFind.hits.length, 1000);
+  assert.equal(marked.length, 1000);
+  assert.ok(marked.every((start, at) => at === 0 || start < marked[at - 1]),
+    'Hits are wrapped from the last to the first.');
+}
+
+// Unwrapping many marks joins the text once per parent, not once per mark.
+{
+  let joins = 0;
+  const parent = { insertBefore() {}, normalize() { joins += 1; } };
+  const marks = Array.from({ length: 50 }, () => ({ parentNode: parent, firstChild: null, remove() {} }));
+  const other = { insertBefore() {}, normalize() { joins += 100; } };
+  marks.push({ parentNode: other, firstChild: null, remove() {} });
+  appFunction('unwrapMarks', '/// A target is an instruction', { })({ querySelectorAll: () => marks }, 'mark');
+  assert.equal(joins, 101, 'Each parent is normalized exactly once.');
+}
+
+// Wrapping a span looks only at the text nodes it covers.
+{
+  const wrapped = [];
+  let looked = 0;
+  const parts = Array.from({ length: 20000 }, (_, at) => ({
+    start: at * 5, end: at * 5 + 4,
+    node: {
+      get parentNode() { looked += 1; return { insertBefore() {} }; },
+      textContent: 'abcd', splitText() { assert.fail('Whole nodes need no split.'); },
+      at,
+    },
+  }));
+  const wrap = appFunction('wrapSpanParts', 'function wrapPdfQuote', {
+    offsetsInPart: (part) => [0, 4],
+  });
+  const first = wrap({ contains: () => true }, parts, { start: 50_001, end: 50_012 }, () => ({
+    appendChild(node) { wrapped.push(node.at); },
+  }));
+  assert.deepEqual(wrapped, [10000, 10001, 10002], 'The covered nodes are wrapped, and only those.');
+  assert.ok(first, 'The first wrapper is returned.');
+  assert.ok(looked <= 12, `Scanning is bounded by the span, not by the document (${looked} nodes read).`);
+}
+
+// Text for matching: badges are not text, inline markup does not add spaces, blocks do.
+{
+  const node = (text, parent) => ({ textContent: text, parentElement: parent });
+  const element = ({ block = null, badge = false } = {}) => ({
+    closest: (selector) => (selector.includes('review-nos') ? (badge ? {} : null) : block),
+  });
+  const p1 = element({ block: 'p1' });
+  const bold = element({ block: 'p1' });
+  const p2 = element({ block: 'p2' });
+  const badges = element({ badge: true, block: 'p2' });
+  const nodes = [node('Wa', p1), node('KE', bold), node(' is ', p1), node('long', bold), node(' ', p1),
+    node('and', p1), node('r1', badges), node('Next', p2)];
+  const collect = (inline) => appFunction('collectTextParts', 'function offsetsInPart', {
+    BLOCK_ELEMENTS: 'p',
+    NodeFilter: { SHOW_TEXT: 4 },
+    document: { createTreeWalker: () => { let at = 0; return { nextNode: () => nodes[at++] ?? null }; } },
+  })({}, inline);
+  assert.equal(collect(true).joined, 'wake is long and next',
+    'Inline markup runs together, a space stays where the source has one, and a block ends with a space.');
+  assert.equal(collect(false).joined, 'wa ke is long and next', 'PDF text spans are still separated.');
+  assert.equal(collect(true).parts.length, 6, 'Whitespace and badges make no parts.');
+}
+
+// Markdown reviews are located by the text around the quote.
+{
+  const article = 'the wake is long. repeat this phrase here. other text. repeat this phrase there. last wake.';
+  const second = selectionContext('the wake is long. repeat this phrase here. other text. ', ' there. last wake.');
+  assert.deepEqual(second, { prefix: 'ke is long. repeat this phrase here. other text.', suffix: 'there. last wake.' },
+    'Context keeps at most 48 characters on each side, normalized.');
+  const located = resolveMarkdownReview(article, { quote: 'Repeat this phrase', anchor: second });
+  assert.equal(located.status, 'located', 'Repeated text is located by its context.');
+  assert.equal(article.slice(located.start, located.end), 'repeat this phrase');
+  assert.ok(located.start > article.indexOf('other text.'), 'The second occurrence is the one chosen.');
+  const lead = resolveMarkdownReview(`  ${article}`, { quote: 'Repeat this phrase', anchor: second });
+  assert.equal(`  ${article}`.slice(lead.start, lead.end), 'repeat this phrase', 'Offsets index the text as given.');
+  assert.deepEqual({ ...resolveMarkdownReview('a  b c', { quote: 'b c' }) }, { status: 'located', start: 3, end: 6 },
+    'Spaces collapsed inside the text do not shift the offsets.');
+  const spread = 'First  Line\n\n  Second\tline  here.';
+  const across = resolveMarkdownReview(spread, { quote: 'line second line' });
+  assert.equal(spread.slice(across.start, across.end), 'Line\n\n  Second\tline', 'A quote across a newline maps back whole.');
+  const page = resolveReviewAnchor([{ page: 2, text: ' One  TWO\nthree ' }], 'two three');
+  assert.deepEqual({ ...page }, { status: 'located', page: 2, start: 6, end: 15 }, 'PDF page offsets index the page text.');
+  const vouched = resolveMarkdownReview(` ${article} `, { quote: 'Long.', anchor: { prefix: 'wake is' } }, { normalized: true });
+  assert.equal(` ${article} `.slice(vouched.start, vouched.end), 'long.', 'Vouched text is searched as given, offsets and all.');
+  assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'repeat this phrase' }) },
+    { status: 'ambiguous', legacy: true }, 'Repeated text without context is ambiguous, and falls back to its line range.');
+  assert.equal(resolveMarkdownReview(article, { quote: 'repeat this phrase', anchor: { prefix: 'nowhere', suffix: '' } }).status,
+    'ambiguous', 'Context that matches nothing does not pick a candidate.');
+  assert.deepEqual({ ...resolveMarkdownReview(article, { quote: 'gone words', anchor: { prefix: 'x', suffix: '' } }) },
+    { status: 'unlocated', legacy: false });
+  assert.equal(resolveMarkdownReview(article, { quote: 'long' }).status, 'located',
+    'An old review with a unique quote is located without context.');
+  const moved = reattachedReviewAnchor({ prefix: 'old', suffix: 'old' }, { prefix: 'new', suffix: 'new' }, { line: 3 }, 'quote');
+  assert.deepEqual([moved.prefix, moved.suffix], ['new', 'new'], 'Reattaching moves the context.');
+  assert.deepEqual(moved.original, { anchor: { prefix: 'old', suffix: 'old' }, at: { line: 3 }, quote: 'quote' });
+}
+
+// Reattach moves the context, and for Markdown the lines as well; PDF keeps its page.
+for (const kind of ['markdown', 'pdf']) {
+  const patches = [];
+  const state = { file: { path: 'a', kind }, generation: 1, markdownDigest: 'sha256:now' };
+  const picked = kind === 'pdf'
+    ? { kind, quote: 'the quote', at: { page: 4 }, anchor: { position: { page: 4, x: 1, y: 2 } } }
+    : { kind, quote: 'The Quote', at: { line: 9, end: 11 }, anchor: { prefix: 'p', suffix: 's', documentRevision: 'sha256:then' } };
+  const reattach = appFunction('reattachReview', 'async function jumpToReview', {
+    state, describeSelection: () => picked, sameReviewQuote, reattachedReviewAnchor,
+    pdfDocumentDigest: async () => 'sha256:pdf',
+    patchReview: async (review, patch) => patches.push(patch),
+    setStatus() {},
+  });
+  await reattach({ id: 'r1', quote: 'the quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
+  assert.equal(patches.length, 1, `${kind} reattach patches the review.`);
+  const [patch] = patches;
+  assert.equal(patch.anchor.documentRevision, kind === 'pdf' ? 'sha256:pdf' : 'sha256:now',
+    `${kind} reattach stamps the digest of the file shown.`);
+  if (kind === 'markdown') {
+    assert.deepEqual(patch.at, { line: 9, end: 11 }, 'Markdown reattach moves the lines with the context.');
+    assert.deepEqual(patch.anchor.original.at, { line: 2 }, 'The first place is kept.');
+  } else {
+    assert.equal('at' in patch, false, 'PDF reattach leaves its page alone.');
+  }
+}
+
+// A Markdown selection without a source line reattaches the context only: the
+// backend refuses an `at` without a line.
+{
+  const patches = [];
+  const reattach = appFunction('reattachReview', 'async function jumpToReview', {
+    state: { file: { path: 'a', kind: 'markdown' }, generation: 1, markdownDigest: 'sha256:now' },
+    describeSelection: () => ({ kind: 'markdown', quote: 'the quote', at: {}, anchor: { prefix: 'p', suffix: 's' } }),
+    sameReviewQuote, reattachedReviewAnchor,
+    patchReview: async (review, patch) => patches.push(patch),
+    setStatus() {},
+  });
+  await reattach({ id: 'r1', quote: 'the quote', at: { line: 2 }, anchor: { prefix: 'old' } });
+  assert.equal(patches.length, 1, 'The context is still reattached.');
+  assert.equal('at' in patches[0], false, 'No line, no at.');
+}
+
+// What the Markdown selection sends along when the article has no context to give.
+{
+  const selected = { isCollapsed: false, toString: () => ' quote ', anchorNode: {}, focusNode: {}, getRangeAt: () => ({}) };
+  const context = (anchor, digest) => ({
+    state: { file: { kind: 'markdown', path: 'a.md' }, markdownDigest: digest },
+    window: { getSelection: () => selected },
+    ui: { markdown: {} },
+    basenameFromPath: (path) => path,
+    lineNear: () => 3, atRange: (start) => ({ line: start }),
+    markdownAnchorForSelection: () => anchor,
+  });
+  const describe = (anchor, digest) => appFunction('describeSelection', '/// Human form of a record', context(anchor, digest));
+  assert.deepEqual({ ...describe(null, 'sha256:seen')({ context: true }).anchor }, { documentRevision: 'sha256:seen' },
+    'Raw mode still sends the digest the viewer saw.');
+  assert.equal(describe(null, null)({ context: true }).anchor, undefined);
+  assert.deepEqual({ ...describe({ prefix: 'p', documentRevision: 'sha256:x' }, 'sha256:seen')({ context: true }).anchor },
+    { prefix: 'p', documentRevision: 'sha256:x' }, 'Context taken at selection time keeps its own digest.');
+  assert.equal(describe(null, 'sha256:seen')().anchor, undefined, 'No context is read unless it will be saved.');
+}
+
+// The review panel: where a review is, and whether it is made on another version.
+{
+  const element = () => {
+    const node = {
+      children: [], dataset: {}, style: {}, textContent: '', className: '',
+      classList: { added: [], add(name) { this.added.push(name); }, toggle() {}, contains: () => false },
+      append(...items) { node.children.push(...items); },
+      addEventListener() {}, setAttribute() {},
+    };
+    return node;
+  };
+  const texts = (node) => [node.textContent, ...node.children.flatMap((child) => (typeof child === 'string' ? [child] : texts(child)))];
+  const render = (review, locationStatus) => {
+    const list = element();
+    const state = {
+      file: { path: 'a.md', kind: 'markdown' }, markdownDigest: 'sha256:new', reviews: [review],
+      reviewLocations: new Map([['a.md\u0000r1', locationStatus]]), reviewConflicts: new Map(),
+      reviewActionFilter: 'all', reviewStatusFilter: 'all',
+    };
+    appFunction('renderReviewList', 'function selectReview', {
+      state, ui: { reviewList: list, reviewCount: element() },
+      document: { activeElement: null, createElement: element, createTextNode: (text) => text },
+      draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
+      reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion,
+      scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
+      patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
+      reviewRowById: () => null, HTMLTextAreaElement: class {},
+    })();
+    const row = list.children[0];
+    const found = texts(row);
+    return {
+      older: found.includes('Made on an earlier version of this file'),
+      lines: found.some((text) => text.startsWith('Placed by its line range')),
+      unlocated: found.includes('Unlocated · not highlighted'),
+      reattach: found.includes('Reattach selection'),
+      dimmed: row.classList.added.includes('unlocated'),
+    };
+  };
+  const old = { id: 'r1', status: 'open', quote: 'q', anchor: { documentRevision: 'sha256:old' } };
+  assert.deepEqual(render(old, 'located'),
+    { older: false, lines: false, unlocated: false, reattach: false, dimmed: false },
+    'A review located on the text shown needs no flag, whichever version it was made on.');
+  assert.deepEqual(render(old, 'unlocated'),
+    { older: true, lines: false, unlocated: true, reattach: true, dimmed: true },
+    'A review that is lost and was made on another version says so and offers Reattach.');
+  assert.deepEqual(render({ id: 'r1', status: 'open', quote: 'q' }, 'lines'),
+    { older: false, lines: true, unlocated: false, reattach: true, dimmed: false },
+    'A review placed by its lines offers Reattach, so an old sidecar can be upgraded.');
+  assert.equal(render({ id: 'r1', status: 'applied', quote: 'q' }, 'lines').reattach, false,
+    'Only an open review is reattached.');
+}
+
+// What the Markdown paint does with each kind of review.
+{
+  const calls = [];
+  let reads = 0;
+  const state = { file: { path: 'a.md' }, mdFind: null, reviewLocations: new Map(), reviews: [] };
+  const context = {
+    state, ui: { markdown: { querySelectorAll: () => [] } },
+    unwrapMarks() {}, unwrapReviewMarks() {}, renderReviewList() {}, buildMarkdownFind() {},
+    collectTextParts: () => { reads += 1; return { joined: 'a repeat b repeat c', parts: [] }; },
+    resolveMarkdownReview, reviewAction, reviewStatus,
+    reviewStateKey: (path, id) => `${path}\u0000${id}`,
+    wrapSpanParts: (root, parts, span) => { calls.push(['span', span.start]); return { parentElement: null }; },
+    markdownReviewMark: () => ({}),
+    markdownBadgeHost: () => null,
+    paintMarkdownByLines: (review) => { calls.push(['lines', review.id]); return null; },
+    placeMarkdownBadge() {},
+  };
+  const paint = appFunction('paintMarkdownMarks', 'function paintReviewMarks', context);
+  const at = { line: 1 };
+  state.reviews = [
+    { id: 'r1', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+    { id: 'r2', quote: 'repeat', at },
+    { id: 'r3', quote: 'repeat', at, anchor: { prefix: 'zzz' } },
+    { id: 'r4', quote: 'missing', at, action: 'delete', status: 'applied', anchor: { prefix: 'a' } },
+    { id: 'r5', quote: 'repeat', at: {}, anchor: { prefix: 'b' } },
+    { id: 'r6', quote: 'repeat', at, anchor: { prefix: 'a', suffix: 'b' } },
+    { id: 'r7', quote: 'gone', at },
+  ];
+  paint();
+  assert.deepEqual(calls.map((call) => call.join(':')), ['span:11', 'span:2', 'lines:r2', 'lines:r7'],
+    'Located reviews are wrapped from the last offset to the first, then the context-free ones by their lines.');
+  assert.equal(reads, 1, 'The article text is read once for all reviews that do not overlap.');
+  const status = (id) => state.reviewLocations.get(`a.md\u0000${id}`);
+  assert.deepEqual([status('r1'), status('r2'), status('r3'), status('r4'), status('r5'), status('r6'), status('r7')],
+    ['located', 'lines', 'ambiguous', 'preserved', undefined, 'located', 'lines'],
+    'A context-free repeat or miss is placed by its lines, which the panel offers to Reattach.');
+  calls.length = 0;
+  reads = 0;
+  state.reviews = [
+    { id: 'o1', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+    { id: 'o2', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
+  ];
+  paint();
+  assert.deepEqual([calls.length, reads], [2, 2], 'Reviews on the same text are wrapped from a fresh read.');
+}
+
+// A reload replaces the article's DOM. Identical reviews must not leave it unmarked.
+{
+  const reviews = [{ id: 'r1', kind: 'markdown', at: { line: 1 }, quote: 'new', action: 'improve', status: 'open', color: 1 }];
+  let painted = false;
+  const article = { set innerHTML(value) { painted = false; } };
+  const state = {
+    generation: 1, file: { path: 'notes.md', kind: 'markdown' }, reviews: [],
+    reviewDocumentPath: null, reviewRevision: 0, markdownBlocks: null,
+  };
+  const reviewPaintSignature = appFunction('reviewPaintSignature', 'function reviewRowById', {});
+  const context = {
+    state, ui: { markdown: article, markdownRaw: {}, markdownStage: { scrollHeight: 1000 } },
+    releaseDocument: async () => {},
+    invoke: async () => ({ html: '<p>new</p>', raw: 'new', digest: 'sha256:aa' }),
+    embedMarkdownImages() {}, colourCode() {}, setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
+    markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
+    MARKDOWN_WINDOW_WIDTH: 780,
+    reviewPaintSignature, reviewIdNum: () => 1, renderReviewList() {},
+    paintMarkdownMarks() { painted = true; },
+    loadReviews() {},
+  };
+  context.paintReviewMarks = appFunction('paintReviewMarks', 'function reviewFromEvent', context);
+  const show = appFunction('showMarkdown', '/// `_review.json`', context);
+  const apply = appFunction('applyReviewStore', 'async function loadReviews(', context);
+  for (const round of ['first open', 'reload with identical reviews']) {
+    await show(state.file, { top: 0, left: 0, scale: 1 }, 1, false);
+    apply({ revision: 1, nextId: 2, reviews: structuredClone(reviews) });
+    assert.equal(painted, true, `Marks must be painted after ${round}.`);
+  }
+  assert.equal(state.markdownDigest, 'sha256:aa', 'The digest of the file as read is kept for new reviews.');
+}
+
+// A review made on another version of the file is flagged while it is open.
+{
+  const review = (status, revision) => ({ status, anchor: revision ? { documentRevision: revision } : {} });
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new'), true);
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:new'), 'sha256:new'), false);
+  assert.equal(madeOnOlderVersion(review('open'), 'sha256:new'), false, 'A review saved without a digest is not flagged.');
+  assert.equal(madeOnOlderVersion(review('applied', 'sha256:old'), 'sha256:new'), false, 'Only open reviews need a second look.');
+  assert.equal(madeOnOlderVersion({ status: 'open' }, 'sha256:new'), false);
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), null), false, 'No digest for the shown file, no flag.');
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new', 'located'), false,
+    'A review located on the shown text is not flagged.');
+  assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new', 'ambiguous'), true);
 }
 
 {
@@ -251,7 +737,7 @@ function appFunction(name, next, context, source = app) {
     return true;
   };
   const open = appFunction('open', 'const binary = findBinary();', {
-    spawn: () => child, process: { env: {} },
+    spawn: () => child, process: { env: {} }, basename: (name) => name.split('/').pop(),
     readFileSync: () => Uint8Array.of(37), openSync: () => 1,
     closeSync() {}, writeSync() {}, writeFileSync() {}, renameSync() {}, unlinkSync() {},
     setTimeout: () => 1, clearTimeout() {},
@@ -455,7 +941,7 @@ function appFunction(name, next, context, source = app) {
     flushCommentSave: async () => {}, captureView: () => null,
     clearPrintPages() {}, setTitle() {}, setStatus() {},
     document: { body: { classList: { add() {}, toggle() {}, remove() {} } } },
-    showPdf: async () => {}, loadReviews: async () => {},
+    showPdf: async () => {}, loadReviews: async () => {}, syncPageViewMenu() {},
   });
   await open({ path: 'a.pdf', name: 'a.pdf', kind: 'pdf' }, { preserveView: true });
   assert.equal(state.pendingNote, note, 'Reloading the same document must preserve the selected quote.');
@@ -1020,14 +1506,37 @@ assert.match(csp, /img-src[^;]*http:\/\/doc\.localhost/, 'CSP must allow doc ima
 assert.match(csp, /connect-src[^;]*http:\/\/doc\.localhost/, 'CSP must allow doc fetches.');
 assert.match(
   main,
-  /register_uri_scheme_protocol\("doc"/,
+  /register_asynchronous_uri_scheme_protocol\("doc"/,
   'The doc protocol must be registered.',
 );
 assert.match(
   main,
-  /fn serve_document\([\s\S]*?state\.allowed\.contains\(&canonical\)[\s\S]*?"Cache-Control", "no-store"/,
-  'Every served document must pass the allowlist and carry no-store.',
+  /fn serving\([\s\S]*?state\.allowed\.contains\(canonical\)[\s\S]*?state\.embedded\.contains\(canonical\)[\s\S]*?\n\}/,
+  'Only opened files and checked embedded images may be served.',
 );
+assert.match(
+  main,
+  /fn serve_document\([\s\S]*?let Some\(served\) = [\s\S]*?serving\(&state, &canonical\)[\s\S]*?\) else \{\s*return deny\(404\);\s*\};[\s\S]*?Served::Embedded => read_image\(&canonical\)[\s\S]*?document_response\(&served/,
+  'A path that serving() refuses must be denied, and embedded images must be rechecked before any response.',
+);
+assert.match(
+  main,
+  /fn document_response\([\s\S]*?"Cache-Control", "no-store"[\s\S]*?"X-Content-Type-Options", "nosniff"[\s\S]*?Served::Embedded[\s\S]*?"Content-Security-Policy"/,
+  'Every served document carries no-store and nosniff, and embedded images a sandbox policy.',
+);
+{
+  const production = main.slice(0, main.indexOf('#[cfg(test)]\nmod tests'));
+  const users = new Set();
+  for (const use of production.matchAll(/\.embedded\b/g)) {
+    const before = production.slice(0, use.index);
+    users.add([...before.matchAll(/^(?:pub )?fn (\w+)/gm)].at(-1)?.[1]);
+  }
+  assert.deepEqual(
+    [...users].sort(),
+    ['read_markdown', 'serving'],
+    'Only serving and read_markdown may touch the embedded image set.',
+  );
+}
 assert.match(
   main,
   /fn adopt\([\s\S]*?state\.allowed\.insert\(canonical\.clone\(\)\)/,
@@ -1045,11 +1554,11 @@ assert.match(
 );
 
 // Markdown crosses the IPC boundary as HTML, so it must be sanitized before
-// it leaves Rust, and images must not widen file access.
+// it leaves Rust, and an image must be a checked local file.
 assert.match(
   main,
-  /fn render_markdown\([\s\S]*?builder\.rm_tags\(\["img"\]\)[\s\S]*?builder\.clean\(/,
-  'Markdown must be sanitized by ammonia with images stripped.',
+  /fn render_markdown\([\s\S]*?builder\.attribute_filter\([\s\S]*?judge_image\([\s\S]*?builder\.clean\(/,
+  'Markdown must be sanitized by ammonia, with every image source judged as a local file.',
 );
 assert.match(
   main,
@@ -1410,22 +1919,27 @@ for (const option of ['cMapUrl', 'standardFontDataUrl', 'wasmUrl', 'iccUrl']) {
 assert.match(main, /options\.insert\(Options::ENABLE_MATH\);/, 'Math must be enabled in pulldown-cmark.');
 assert.match(
   main,
-  /builder\.add_tags\(MATHML_TAGS\);[\s\S]*?builder\.attribute_filter\(keep_known_styles\);[\s\S]*?builder\.clean\(&rendered\)/,
+  /for \(tag, attributes\) in MATHML \{[\s\S]*?builder\.attribute_filter\([\s\S]*?keep_known_styles\([\s\S]*?builder\.clean\(&rendered\)/,
   'MathML must be allowlisted in ammonia and cleaned with the document, not spliced in after.',
 );
 assert.match(
   main,
-  /annotation: None|\.\.RenderConfig::default\(\)/,
+  /annotation: false,/,
   'No TeX annotation: the renderer writes it unescaped.',
 );
 const indexHtml = await readFile('src/index.html', 'utf8');
 assert.match(
   indexHtml,
-  /<link rel="stylesheet" href="\.\/vendor\/pulldown-latex\/styles\.css" \/>/,
-  'The math stylesheet (font faces for Latin Modern) must be linked.',
+  /<link rel="stylesheet" href="\.\/vendor\/math-core\/mathmlfixes\.css" \/>/,
+  'The math stylesheet (equation fixes for MathML) must be linked.',
 );
-for (const file of ['styles.css', 'font/latinmodern-math.woff2', 'font/lmroman12-regular.woff2']) {
-  await assert.doesNotReject(access(`src/vendor/pulldown-latex/${file}`), `${file} must be vendored.`);
+for (const file of [
+  'math-core/mathmlfixes.css',
+  'math-core/NewCMMath-Book.woff2',
+  'math-core/GUST-FONT-LICENSE.txt',
+  'latin-modern/lmroman12-regular.woff2',
+]) {
+  await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
 
 // Markdown links: nothing navigates the webview. Same-page links scroll, web
@@ -1441,6 +1955,22 @@ assert.match(
   /fn open_link\(url: String\)[\s\S]*?starts_with\("http:\/\/"\)[\s\S]*?starts_with\("https:\/\/"\);[\s\S]*?return Err/,
   'open_link must refuse every scheme but http and https.',
 );
+// A same-page link finds an equation whose id keeps the label's
+// percent-encoding, and a heading whose id does not.
+{
+  const ids = ['md-math:eq%20a', 'md-math:a%3Cb', 'md-results 2'];
+  const ui = { markdown: { querySelector: (selector) => {
+    const id = /^\[id="(.*)"\]$/.exec(selector)?.[1].replace(/\\(.)/g, '$1');
+    return ids.includes(id) ? { id } : null;
+  } } };
+  const CSS = { escape: (text) => text.replace(/["\\%<: ]/g, '\\$&') };
+  const target = appFunction('markdownFragmentTarget', "ui.markdown.addEventListener('click'", { ui, CSS });
+  assert.equal(target('md-math:eq%20a')?.id, 'md-math:eq%20a', 'An encoded equation label is found as written.');
+  assert.equal(target('md-math:a%3Cb')?.id, 'md-math:a%3Cb', 'An encoded equation label is found as written.');
+  assert.equal(target('md-results%202')?.id, 'md-results 2', 'An encoded link finds a plain id.');
+  assert.equal(target('md-math:%E0%A4%A'), null, 'A malformed fragment finds nothing and does not throw.');
+  assert.equal(target(''), null);
+}
 assert.match(app, /const target = siblingPath\(href\);\s*if \(target\) \{\s*void openPath\(target\);/, 'Relative markdown links open as tabs.');
 
 // Smoke mode. Nothing here runs for a reader; it exists so a build server can
@@ -1536,7 +2066,7 @@ assert.match(
 // One selection record for Markdown and PDF. The Review panel lists them.
 assert.match(
   app,
-  /function describeSelection\(\)[\s\S]*?return \{ file, kind: 'markdown', at: atRange\(start, end, 'line'\), quote \}/,
+  /function describeSelection\([^)]*\)[\s\S]*?return \{ file, kind: 'markdown', at: atRange\(start, end, 'line'\), quote, \.\.\.\(anchor \? \{ anchor \} : \{\}\) \}/,
   'describeSelection must return a review record, not a display string.',
 );
 assert.match(
@@ -1780,7 +2310,7 @@ assert.notEqual(reviewStateKey('a.pdf', 'r1'), reviewStateKey('b.pdf', 'r1'),
   const pages = [{ page: 1, text: items.join(' ') }];
   const word = resolveReviewAnchor(pages, 'The nonlinear term');
   assert.equal(word.status, 'located', 'A quote across a font change inside a word is located.');
-  assert.equal(normalizeReviewText(pages[0].text).slice(word.start, word.end), 'the non linear term');
+  assert.equal(pages[0].text.slice(word.start, word.end), 'The   non linear term', 'Offsets index the page text.');
   assert.equal(resolveReviewAnchor(pages, 'velocity uτ grows').status, 'located',
     'A quote across inline math pieces is located.');
   assert.equal(resolveReviewAnchor([{ page: 1, text: 'u τ and u τ' }], 'uτ').status, 'ambiguous',
@@ -2034,6 +2564,32 @@ assert.equal(mapCollapsedIndex('a  b', 2), 3);
     'An authoritative disk read can represent a reset/imported revision counter.');
   assert.equal(state.reviewRevision, 2);
 }
+// A Markdown paint draws the panel itself, so the panel is not drawn twice.
+for (const [kind, signature, panels, paints] of [
+  ['markdown', 'new', 0, 1], ['markdown', 'same', 1, 0], ['pdf', 'new', 1, 1],
+]) {
+  const state = { file: { path: 'a', kind }, reviewDocumentPath: 'a', reviewRevision: 0, reviews: [] };
+  let sigs = 0;
+  let panelsDrawn = 0;
+  let painted = 0;
+  const apply = appFunction('applyReviewStore', 'async function loadReviews(', {
+    state, reviewPaintSignature: () => (signature === 'same' ? 's' : String(sigs++)),
+    reviewIdNum: () => 1, loadReviews() {},
+    renderReviewList() { panelsDrawn += 1; }, paintReviewMarks() { painted += 1; },
+  });
+  apply({ revision: 1, reviews: [{ id: 'r1' }] });
+  assert.deepEqual([panelsDrawn, painted], [panels, paints],
+    `${kind} store with ${signature} paint: panel drawn ${panels}, paints ${paints}.`);
+}
+// A target aimed at Markdown leaves find marks alone, so the counter stays true.
+{
+  const selectors = [];
+  await appFunction('applyTarget', '/// Replace each element', {
+    state: { file: { kind: 'markdown' } }, ui: { markdown: {} },
+    setRaw() {}, unwrapMarks: (root, selector) => selectors.push(selector),
+  })({ line: null, search: null, page: null });
+  assert.deepEqual(selectors, ['mark.aim:not(.find)']);
+}
 assert.match(page, /id="reviewMenu"/, 'Right-click on a selection adds a review.');
 assert.match(
   app,
@@ -2163,6 +2719,8 @@ for (const fixture of [
   'tests/fixtures/swatch.png',
   'tests/fixtures/large-figure.png',
   'tests/fixtures/notes.md',
+  'tests/fixtures/review-parity.md',
+  'tests/fixtures/code.md',
 ]) {
   await access(fixture);
 }
@@ -2178,6 +2736,109 @@ for (const source of [
   assert.equal(source.match(/pdfjsVersion = (\S+)/)?.[1], vendored,
     'Core, worker, and viewer must match the recorded PDF.js version.');
 }
+// Coloured code blocks: the fence tags, the budgets, and text that stays the same.
+{
+  const unescape = (html) => html.replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+  const block = (tag, text) => ({
+    classList: tag ? [`language-${tag}`] : [],
+    textContent: text,
+    html: null,
+    anchors: [{ className: 'src' }],
+    kept: null,
+    querySelectorAll(selector) { assert.equal(selector, '.src'); return this.anchors; },
+    prepend(...nodes) { this.kept = nodes; },
+    set innerHTML(html) { this.html = html; this.textContent = unescape(html); this.kept = null; },
+  });
+  const run = (...codes) => colourCode({ querySelectorAll: (selector) => {
+    assert.equal(selector, 'pre > code', 'Only fenced blocks are coloured, never inline code.');
+    return codes;
+  } });
+  const source = 'def f(x):\n    return "a<b" + str(1) # & done\n';
+
+  const python = block('python', source);
+  const untagged = block(null, source);
+  const unknown = block('ruby', source);
+  const inherited = block('Python', source);
+  run(python, untagged, unknown, inherited);
+  assert.match(python.html, /<span class="hljs-keyword">def<\/span>/, 'A tagged Python block gets hljs spans.');
+  assert.equal(python.textContent, source, 'Colouring must not change the text.');
+  assert.deepEqual(python.kept, python.anchors, 'The line anchor must stay in a coloured block, or review links lose their line.');
+  for (const plain of [untagged, unknown, inherited]) {
+    assert.equal(plain.html, null, 'An untagged, unknown or mis-cased tag stays plain.');
+  }
+
+  const big = block('python', 'x = 1\n'.repeat(BLOCK_LIMIT / 6 + 1));
+  assert.ok(big.textContent.length > BLOCK_LIMIT);
+  const edge = block('python', 'x'.repeat(BLOCK_LIMIT));
+  run(big, edge);
+  assert.equal(big.html, null, 'A block over 64 KiB stays plain.');
+  assert.notEqual(edge.html, null, 'A block of exactly 64 KiB is coloured.');
+
+  const size = BLOCK_LIMIT - 1;
+  const blocks = Array.from({ length: Math.ceil(DOCUMENT_LIMIT / size) + 2 }, () => block('python', 'x = 1\n'.repeat(1).padEnd(size, ' ')));
+  run(...blocks);
+  const coloured = blocks.filter((b) => b.html !== null).length;
+  assert.equal(coloured, Math.ceil(DOCUMENT_LIMIT / size), 'Colouring stops once 512 KiB of code is used.');
+  assert.ok(blocks.slice(coloured).every((b) => b.html === null), 'Blocks after the budget stay plain.');
+
+  const lang = (tag) => `language-${tag}`;
+  const rustTags = [...main.matchAll(/^\s+"language-([\w+-]+)",$/gm)].map((m) => m[1]);
+  assert.deepEqual(rustTags.slice().sort(), Object.keys(TAGS).sort(),
+    'The Rust sanitizer and src/code-colour.mjs must name the same fence tags.');
+  for (const tag of rustTags) {
+    const probe = block(tag, 'x = 1\n');
+    run(probe);
+    assert.notEqual(probe.html, null, `${lang(tag)} must reach a registered grammar.`);
+  }
+  assert.match(app, /^import \{ colourCode \} from '\.\/code-colour\.mjs';$/m);
+  assert.match(app, /embedMarkdownImages\(ui\.markdown, file\.revision\);\n\s+colourCode\(ui\.markdown\);/,
+    'Colour runs on the fresh article, before anything reads its blocks or paginates it.');
+  assert.doesNotMatch(app, /colourCode\(ui\.markdownRaw\)/, 'Raw mode is never coloured.');
+
+  const vendorList = await readFile('src/vendor/highlightjs/VERSION', 'utf8');
+  const hashes = [...vendorList.matchAll(/^ {2}([0-9a-f]{64}) {2}(\S+)$/gm)];
+  assert.equal(hashes.length, 19, 'VERSION lists the licence, the core and 17 grammars.');
+  for (const [, hash, file] of hashes) {
+    const actual = createHash('sha256').update(await readFile(`src/vendor/highlightjs/${file}`)).digest('hex');
+    assert.equal(actual, hash, `${file} must match its VERSION hash.`);
+  }
+}
+
+// Code token colours are defined in every mode and are readable on the code background (WCAG AA).
+{
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const tokens = ['keyword', 'built-in', 'type', 'literal', 'number', 'string', 'comment', 'meta',
+    'title', 'params', 'variable', 'attr', 'symbol', 'section', 'addition', 'deletion'];
+  const backgrounds = [...styles.matchAll(/--md-code-bg: (#[0-9a-f]{6})/g)];
+  assert.equal(backgrounds.length, 4, 'Day, night, sepia and print each set the code background.');
+  const worst = [];
+  for (const { index, 1: bg } of backgrounds) {
+    const open = styles.lastIndexOf('{', index);
+    const rule = styles.slice(open, styles.indexOf('}', index));
+    const colours = Object.fromEntries([...rule.matchAll(/--md-code-([a-z-]+): (#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+    delete colours.bg;
+    assert.deepEqual(Object.keys(colours).sort(), tokens.slice().sort(), `Every mode defines every token (background ${bg}).`);
+    const ratios = Object.entries(colours).map(([name, colour]) => [name, ratio(colour, bg)]);
+    const [name, low] = ratios.reduce((a, b) => (b[1] < a[1] ? b : a));
+    assert.ok(low >= 4.5, `${name} on ${bg} is ${low.toFixed(2)}:1, below 4.5:1.`);
+    worst.push(`${bg} ${low.toFixed(2)}`);
+  }
+  console.log(`Code colour contrast, lowest per background: ${worst.join(', ')}`);
+  for (const token of tokens) {
+    assert.match(styles, new RegExp(`\\.hljs-[\\w-]+[^{]*\\{[^}]*var\\(--md-code-${token}\\)`),
+      `A .hljs rule must use --md-code-${token}.`);
+  }
+}
+
 const viewerCss = await readFile('src/vendor/pdfjs/web/pdf_viewer.css', 'utf8');
 for (const match of viewerCss.matchAll(/url\(["']?(images\/[^)'"\s]+)["']?\)/g)) {
   await access(`src/vendor/pdfjs/web/${match[1]}`);
