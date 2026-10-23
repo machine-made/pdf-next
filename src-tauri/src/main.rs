@@ -1570,20 +1570,21 @@ fn link_bare_urls(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
     out
 }
 
-/// Byte spans of the web addresses in `text`.
+/// Byte spans of the web addresses in `text`, found in one forward pass.
 fn bare_urls(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
     let mut spans = Vec::new();
     let mut at = 0;
-    while at < text.len() {
-        let rest = &text[at..];
-        let Some(found) = ["https://", "http://", "www."]
-            .iter()
-            .filter_map(|prefix| rest.find(prefix).map(|i| (i, prefix.len())))
-            .min()
+    while at < bytes.len() {
+        // The prefixes are ASCII, so a match starts on a character boundary.
+        let Some(prefix) = ["https://", "http://", "www."]
+            .into_iter()
+            .find(|prefix| bytes[at..].starts_with(prefix.as_bytes()))
         else {
-            break;
+            at += 1;
+            continue;
         };
-        let from = at + found.0;
+        let from = at;
         let after_word = text[..from]
             .chars()
             .next_back()
@@ -1592,20 +1593,22 @@ fn bare_urls(text: &str) -> Vec<(usize, usize)> {
             + text[from..]
                 .find(|c: char| c.is_whitespace() || c == '<')
                 .unwrap_or(text.len() - from);
+        let opens = text[from..to].matches('(').count();
+        let mut closes = text[from..to].matches(')').count();
         loop {
-            let url = &text[from..to];
-            let opens = url.matches('(').count();
-            let closes = url.matches(')').count();
-            match url.chars().next_back() {
+            match text[from..to].chars().next_back() {
                 Some(c) if ".,:;!?'\"*_~".contains(c) => to -= c.len_utf8(),
-                Some(')') if closes > opens => to -= 1,
+                Some(')') if closes > opens => {
+                    to -= 1;
+                    closes -= 1;
+                }
                 _ => break,
             }
         }
-        if after_word && to > from + found.1 {
+        if after_word && to > from + prefix.len() {
             spans.push((from, to));
         }
-        at = to.max(from + found.1);
+        at = to.max(from + prefix.len());
     }
     spans
 }
@@ -4595,6 +4598,15 @@ mod tests {
         for id in ["md-foo", "md-foo-1", "md-foo-1-1", "md-foo-2"] {
             assert_eq!(html.matches(&format!(r#"id="{id}""#)).count(), 1, "{html}");
         }
+    }
+
+    #[test]
+    fn bare_addresses_are_found_in_linear_time() {
+        let text = "https://a.b/ ".repeat(1024 * 1024 / 13);
+        let started = std::time::Instant::now();
+        let spans = super::bare_urls(&text);
+        assert_eq!(spans.len(), 1024 * 1024 / 13);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
