@@ -5258,7 +5258,8 @@ async function smokeMarkdownPages() {
   await trimWindowToContent({ recenter: true });
   // A screen narrower than two A4 pages (CI runners are) needs zooming out, as a reader would.
   const scale = state.markdownScale;
-  const room = ui.markdown.parentElement.clientWidth / (2 * a4 + 24 + 32);
+  // Only #markdown is zoomed; the stage's 32 px padding stays fixed.
+  const room = (ui.markdown.parentElement.clientWidth - 32) / (2 * a4 + 24) * 0.98;
   if (!await settles(() => inRow() === 2, 1_000) && room < scale) setMarkdownScale(room);
   if (!await settles(() => inRow() === 2, 3_000)) throw new Error(`two page view: ${inRow()} per row`);
   const row = inRow();
