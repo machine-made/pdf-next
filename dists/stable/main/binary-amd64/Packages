@@ -43,3 +43,18 @@ Priority: optional
 Description: Tiny PDF, image and markdown viewer with one-second live reload
  pdf-next opens PDFs, images and markdown, follows your system dark mode, searches text, and reloads within a second of the file changing on disk — built for the LaTeX, Typst and markdown compile loop.
 
+Package: pdf-next
+Version: 0.15.0
+Architecture: amd64
+Maintainer: Ricardo Frantz
+Installed-Size: 13199
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libwebkit2gtk-4.1-0, libgtk-3-0
+Filename: pool/main/p/pdf-next/pdf-next_0.15.0_amd64.deb
+Size: 7562418
+MD5sum: cfe80fcfc766e9d2d1e45de14450f28e
+SHA1: f095690d428fc945e81e4d98c94cbc19dd2bff5c
+SHA256: 81efd94649bdaaf5a896e671673d5fe055b66ae8ced5ad7750a13fb9be49e357
+Priority: optional
+Description: Tiny PDF, image and markdown viewer with one-second live reload
+ pdf-next opens PDFs, images and markdown, follows your system dark mode, searches text, and reloads within a second of the file changing on disk — built for the LaTeX, Typst and markdown compile loop.
+
