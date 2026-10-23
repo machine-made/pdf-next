@@ -2,4 +2,4 @@ Version: 6.3.289
 Source: pdfjs-dist@6.3.289
 Integrity: sha512-ZHjSVpDa3D6izMq8/04lvkhkATUmL9px6ChPaXc1k6nU2Mrhlg1/7F0bdUqCwUjw3NsPTfPZsMDUU6ZIcRaeQw==
 Date: 2026-10-01
-Patches: page cache size 3; detail canvas uses CSS-rounded page dimensions; canceled renders do not cache incomplete operation bounds
+Patches: page cache size 3; detail canvas uses CSS-rounded page dimensions; canceled renders do not cache incomplete operation bounds; bounded software stream decoding (64 MiB per stream, 256 MiB cumulative allocations per document; image filters only as final layer)
