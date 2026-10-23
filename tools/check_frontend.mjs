@@ -214,6 +214,17 @@ function appFunction(name, next, context, source = app) {
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
 }
 
+// A Markdown image gets its src from the doc protocol URL of the checked
+// path, with the document revision so a regenerated figure loads again.
+{
+  const image = { dataset: { doc: '/figs/a b.png' }, src: '' };
+  const embed = appFunction('embedMarkdownImages', '/// The HTML arrives', {
+    sourceUrl: (file) => `doc://${encodeURIComponent(file.path)}?v=${file.revision}`,
+  });
+  embed({ querySelectorAll: (selector) => (selector === 'img[data-doc]' ? [image] : []) }, 7);
+  assert.equal(image.src, 'doc://%2Ffigs%2Fa%20b.png?v=7');
+}
+
 // Markdown highlighting must stay within a small synchronous work budget.
 {
   const diff = appFunction('changedIndices', '/// Extract ', {});
@@ -245,6 +256,7 @@ function appFunction(name, next, context, source = app) {
     state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
+    embedMarkdownImages() {},
     setRaw() {}, setMarkdownScale() {},
     markdownBlocks: () => texts.map((text) => ({ text })),
     changedIndices: diff,
@@ -1046,8 +1058,13 @@ assert.match(
 );
 assert.match(
   main,
-  /fn serve_document\([\s\S]*?state\.allowed\.contains\(&canonical\)[\s\S]*?"Cache-Control", "no-store"/,
-  'Every served document must pass the allowlist and carry no-store.',
+  /fn serving\([\s\S]*?state\.allowed\.contains\(canonical\)[\s\S]*?state\.embedded\.contains\(canonical\)[\s\S]*?\n\}/,
+  'Only opened files and checked embedded images may be served.',
+);
+assert.match(
+  main,
+  /fn serve_document\([\s\S]*?serving\(&state, &canonical\)[\s\S]*?read_image\(&canonical\)[\s\S]*?"Cache-Control", "no-store"/,
+  'Every served document must pass the allowlist, embedded images must be rechecked, and all carry no-store.',
 );
 assert.match(
   main,
@@ -1066,11 +1083,11 @@ assert.match(
 );
 
 // Markdown crosses the IPC boundary as HTML, so it must be sanitized before
-// it leaves Rust, and images must not widen file access.
+// it leaves Rust, and an image must be a checked local file.
 assert.match(
   main,
-  /fn render_markdown\([\s\S]*?builder\.rm_tags\(\["img"\]\)[\s\S]*?builder\.clean\(/,
-  'Markdown must be sanitized by ammonia with images stripped.',
+  /fn render_markdown\([\s\S]*?builder\.attribute_filter\([\s\S]*?judge_image\([\s\S]*?builder\.clean\(/,
+  'Markdown must be sanitized by ammonia, with every image source judged as a local file.',
 );
 assert.match(
   main,
@@ -1431,7 +1448,7 @@ for (const option of ['cMapUrl', 'standardFontDataUrl', 'wasmUrl', 'iccUrl']) {
 assert.match(main, /options\.insert\(Options::ENABLE_MATH\);/, 'Math must be enabled in pulldown-cmark.');
 assert.match(
   main,
-  /builder\.add_tags\(MATHML_TAGS\);[\s\S]*?builder\.attribute_filter\(keep_known_styles\);[\s\S]*?builder\.clean\(&rendered\)/,
+  /builder\.add_tags\(MATHML_TAGS\);[\s\S]*?builder\.attribute_filter\([\s\S]*?keep_known_styles\([\s\S]*?builder\.clean\(&rendered\)/,
   'MathML must be allowlisted in ammonia and cleaned with the document, not spliced in after.',
 );
 assert.match(

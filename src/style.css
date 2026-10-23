@@ -1289,6 +1289,24 @@ body.mode-sepia #markdownStage {
   background: var(--md-code-bg);
 }
 
+#markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
+#markdown p > img:only-child {
+  display: block;
+  margin: 0 auto;
+}
+
+#markdown .md-image-refused {
+  padding: 1px 6px;
+  border: 1px dashed var(--md-rule);
+  border-radius: 4px;
+  color: var(--md-dim);
+  font-size: 0.9em;
+}
+
 #markdown hr {
   margin: 1.6em 0;
   border: 0;

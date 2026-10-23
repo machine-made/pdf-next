@@ -34,7 +34,9 @@ The Reduce button can write
 crash reporting, or analytics.
 
 **Documents.** PDFs, images and markdown are rendered on your machine. A
-markdown file's images are removed; `#` links
+markdown file's images are shown only when they are image files on your own
+disk: the app reads each local image the file refers to, and never loads a
+remote image, so reading a file does not tell any server. `#` links
 scroll, web links open in your own browser, and links to other files open
 them in the viewer only when you click.
 
