@@ -32,6 +32,8 @@ open = "5"
 pulldown-latex = "0.8.0"
 # Pure-Rust PDF shrink (no Ghostscript). Writes `{stem}_reduced.pdf`.
 picamatl = "0.4"
+# Use the same parser as picamatl to bound load-time stream decompression.
+lopdf = { version = "0.44", default-features = false }
 
 # A file dropped on the window arrives as a list of paths that can be empty:
 # macOS carries the names on more than one pasteboard type and the webview
