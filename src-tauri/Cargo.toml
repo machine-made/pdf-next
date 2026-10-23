@@ -29,7 +29,8 @@ percent-encoding = "2"
 # Hands a release download URL to the default browser — the one URL the
 # frontend may ask to open, and it is checked in Rust first.
 open = "5"
-pulldown-latex = "0.8.0"
+# The macro guard in render_math is checked against this exact parser version.
+pulldown-latex = "=0.8.0"
 # Pure-Rust PDF shrink (no Ghostscript). Writes `{stem}_reduced.pdf`.
 picamatl = "0.4"
 
