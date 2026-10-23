@@ -61,6 +61,8 @@ struct WatchState {
     /// change to one counts as a change to the document. An image that was
     /// missing at render time is listed too, so its arrival is seen.
     images: Vec<(PathBuf, Option<Stamp>)>,
+    /// Where the next watcher tick starts in `images`.
+    image_cursor: usize,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -251,9 +253,14 @@ fn describe(path: &Path) -> FileInfo {
     }
 }
 
+fn stamp_of(metadata: &std::fs::Metadata) -> Stamp {
+    (metadata.modified().ok(), metadata.len())
+}
+
 fn stat(path: &Path) -> Option<Stamp> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.modified().ok(), metadata.len()))
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| stamp_of(&metadata))
 }
 
 /// Is the file finished being written?
@@ -1393,6 +1400,19 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
         let event_to_push = match &event {
             Event::Html(h) if hides_anchor(h) => Event::Text(h.clone()),
             Event::InlineHtml(h) if hides_anchor(h) => Event::Text(h.clone()),
+            // ammonia drops a `c:` source as a URL scheme before `judge_image`
+            // sees it, so a Windows drive path travels with its colon encoded.
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) if cfg!(windows) && drive_path(dest_url) => Event::Start(Tag::Image {
+                link_type: *link_type,
+                dest_url: dest_url.replacen(':', "%3A", 1).into(),
+                title: title.clone(),
+                id: id.clone(),
+            }),
             Event::InlineMath(tex) => Event::Html(render_math(tex, false, &mut math_budget).into()),
             Event::DisplayMath(tex) => {
                 // Emit line anchor before the rendered math.
@@ -1455,31 +1475,39 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     drop(builder);
     let verdicts = verdicts.lock().map(|v| v.clone()).unwrap_or_default();
     let mut shown = Vec::new();
-    let mut absent = Vec::new();
+    let mut watch: Vec<(PathBuf, Option<Stamp>)> = Vec::new();
     for verdict in &verdicts {
-        match verdict {
-            ImageVerdict::Shown(path) if !shown.contains(path) => shown.push(path.clone()),
+        let (path, stamp) = match verdict {
+            ImageVerdict::Shown { path, stamp } => {
+                if !shown.contains(path) {
+                    shown.push(path.clone());
+                }
+                (path, Some(*stamp))
+            }
             ImageVerdict::Refused {
                 watch: Some(path), ..
-            } if !absent.contains(path) => {
-                absent.push(path.clone());
-            }
-            _ => {}
+            } => (path, None),
+            _ => continue,
+        };
+        if !watch.iter().any(|(seen, _)| seen == path) {
+            watch.push((path.clone(), stamp));
         }
     }
     Rendered {
         html: replace_images(&cleaned, &verdicts),
         shown,
-        absent,
+        watch,
     }
 }
 
 /// What `render_markdown` hands back: the sanitized page, the canonical paths
-/// of the images it shows, and the paths of local images that were not there.
+/// of the images it shows, and every local image path the watcher should
+/// follow (shown or missing) with its `stat` from the moment it was judged.
+/// Each image is judged once and the count is capped, so `watch` is too.
 struct Rendered {
     html: String,
     shown: Vec<PathBuf>,
-    absent: Vec<PathBuf>,
+    watch: Vec<(PathBuf, Option<Stamp>)>,
 }
 
 const IMAGE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -1489,7 +1517,8 @@ const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "avif", "gif"
 
 #[derive(Clone, Debug)]
 enum ImageVerdict {
-    Shown(PathBuf),
+    /// `stamp` is the file's `stat` when it was judged.
+    Shown { path: PathBuf, stamp: Stamp },
     /// `watch` is where a missing file was looked for, so the watcher can see
     /// it arrive.
     Refused {
@@ -1508,10 +1537,9 @@ impl ImageVerdict {
 }
 
 /// Why a canonical path may not be shown as an image, if it may not.
-fn image_problem(canonical: &Path) -> Option<&'static str> {
-    let Ok(metadata) = std::fs::metadata(canonical) else {
-        return Some("not found");
-    };
+/// `metadata` comes from the caller, so a file already open is judged by the
+/// handle and not by a path that may have changed since.
+fn image_problem(canonical: &Path, metadata: &std::fs::Metadata) -> Option<&'static str> {
     if !metadata.is_file() {
         return Some("not a regular file");
     }
@@ -1525,27 +1553,68 @@ fn image_problem(canonical: &Path) -> Option<&'static str> {
     (metadata.len() > IMAGE_LIMIT).then_some("larger than 64 MB")
 }
 
+fn is_separator(c: char) -> bool {
+    c == '/' || c == '\\'
+}
+
+/// `C:/dir` or `C:\dir`: a drive letter, a colon and a separator.
+fn drive_path(src: &str) -> bool {
+    let mut chars = src.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.next() == Some(':')
+        && chars.next().is_some_and(is_separator)
+}
+
+/// A Windows path prefix other than a plain drive letter (UNC share, verbatim
+/// or device path) that the folder of the document does not already have.
+/// Joining such a source would send the reader to another machine or device.
+/// Other systems have no prefixes.
+fn foreign_prefix(joined: &Path, base: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match joined.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_))
+                && base.components().next() != Some(Component::Prefix(prefix))
+        }
+        _ => false,
+    }
+}
+
 /// Decide whether an `img src` written in a Markdown file may be shown. The
 /// source is a path, never a URL: anything with a scheme, and anything that
-/// starts like a network share, is refused before the disk is touched.
+/// starts like a network share, is refused before the disk is touched. A
+/// Windows drive path counts as a path on Windows only.
 fn judge_image(src: &str, base: &Path) -> ImageVerdict {
     let decoded = percent_encoding::percent_decode_str(src).decode_utf8_lossy();
-    if decoded.starts_with("//")
-        || decoded.starts_with(r"\\")
-        || ammonia::Url::parse(&decoded).is_ok()
-    {
+    let mut leading = decoded.chars();
+    let share =
+        leading.next().is_some_and(is_separator) && leading.next().is_some_and(is_separator);
+    let drive = cfg!(windows) && drive_path(&decoded);
+    if share || (!drive && ammonia::Url::parse(&decoded).is_ok()) {
         return ImageVerdict::refused("remote images are not loaded");
     }
     let joined = base.join(decoded.as_ref());
+    if foreign_prefix(&joined, base) {
+        return ImageVerdict::refused("remote images are not loaded");
+    }
     let Ok(canonical) = std::fs::canonicalize(&joined) else {
         return ImageVerdict::Refused {
             reason: "not found",
             watch: Some(joined),
         };
     };
-    match image_problem(&canonical) {
+    let Ok(metadata) = std::fs::metadata(&canonical) else {
+        return ImageVerdict::Refused {
+            reason: "not found",
+            watch: Some(canonical),
+        };
+    };
+    match image_problem(&canonical, &metadata) {
         Some(reason) => ImageVerdict::refused(reason),
-        None => ImageVerdict::Shown(canonical),
+        None => ImageVerdict::Shown {
+            stamp: stamp_of(&metadata),
+            path: canonical,
+        },
     }
 }
 
@@ -1624,7 +1693,7 @@ fn image_markup(tag: &str, verdicts: &[ImageVerdict]) -> String {
                 .and_then(|n| n.parse::<usize>().ok())
         })
         .and_then(|n| verdicts.get(n));
-    let Some(ImageVerdict::Shown(path)) = verdict else {
+    let Some(ImageVerdict::Shown { path, .. }) = verdict else {
         let reason = match verdict {
             Some(ImageVerdict::Refused { reason, .. }) => reason,
             _ => "only local image files are shown",
@@ -1674,17 +1743,12 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
     }
     let raw = std::fs::read_to_string(&canonical).map_err(|error| error.to_string())?;
     let rendered = render_markdown(&raw, canonical.parent().unwrap_or(Path::new("")));
-    let stamps: Vec<_> = rendered
-        .shown
-        .iter()
-        .chain(&rendered.absent)
-        .map(|image| (image.clone(), stat(image)))
-        .collect();
     {
         let mut state = watched.0.lock().map_err(|error| error.to_string())?;
         state.embedded.extend(rendered.shown);
         if state.path.as_deref() == Some(canonical.as_path()) {
-            state.images = stamps;
+            state.images = rendered.watch;
+            state.image_cursor = 0;
         }
     }
     Ok(MarkdownDoc {
@@ -1756,21 +1820,60 @@ fn serving(state: &WatchState, canonical: &Path) -> Option<Served> {
     }
 }
 
+/// Open for reading without waiting. Opening a FIFO that no process writes
+/// to blocks forever otherwise, and a file can be swapped for one after it was
+/// judged.
+fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK is 0o4000 on Linux and Android, 0x4 on macOS and the BSDs.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const O_NONBLOCK: i32 = 0o4000;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        const O_NONBLOCK: i32 = 0x4;
+        options.custom_flags(O_NONBLOCK);
+    }
+    options.open(path)
+}
+
 /// The bytes of an embedded image, if it is still a regular image file within
-/// the size cap. The read is capped as well, in case the file grows after the
-/// check.
+/// the size cap. The file is opened first and judged by its own handle; the
+/// read is capped as well, in case the file grows after the check.
 fn read_image(canonical: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
-    if image_problem(canonical).is_some() {
+    let file = open_nonblocking(canonical).ok()?;
+    if image_problem(canonical, &file.metadata().ok()?).is_some() {
         return None;
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(canonical)
-        .ok()?
-        .take(IMAGE_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(IMAGE_LIMIT + 1).read_to_end(&mut bytes).ok()?;
     (bytes.len() as u64 <= IMAGE_LIMIT).then_some(bytes)
+}
+
+/// The response for bytes that passed the allow check. Nothing may be sniffed
+/// into another type. An embedded image is Markdown-controlled content: an SVG
+/// opened as a document must not run script or load anything. PDF.js needs
+/// none of that for the documents the reader opened.
+fn document_response(served: &Served, canonical: &Path, bytes: Vec<u8>) -> http::Response<Vec<u8>> {
+    let mut response = http::Response::builder()
+        .status(200)
+        .header("Content-Type", mime_for(canonical))
+        .header("Content-Length", bytes.len().to_string())
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        // PDF.js fetches these bytes from the app origin; without this header
+        // the cross-origin fetch to doc.localhost is blocked by the webview.
+        .header("Access-Control-Allow-Origin", "*");
+    if *served == Served::Embedded {
+        response = response.header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+        );
+    }
+    response.body(bytes).expect("document response")
 }
 
 /// The `doc://` protocol carries document bytes into the webview, replacing
@@ -1804,28 +1907,20 @@ fn serve_document(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Re
     let Ok(canonical) = std::fs::canonicalize(PathBuf::from(requested.as_ref())) else {
         return deny(404);
     };
-    let served = app.try_state::<Watched>().and_then(|watched| {
+    let Some(served) = app.try_state::<Watched>().and_then(|watched| {
         let state = watched.0.lock().ok()?;
         serving(&state, &canonical)
-    });
+    }) else {
+        return deny(404);
+    };
     let bytes = match served {
-        Some(Served::Opened) => std::fs::read(&canonical).ok(),
-        Some(Served::Embedded) => read_image(&canonical),
-        None => None,
+        Served::Opened => std::fs::read(&canonical).ok(),
+        Served::Embedded => read_image(&canonical),
     };
     let Some(bytes) = bytes else {
         return deny(404);
     };
-    http::Response::builder()
-        .status(200)
-        .header("Content-Type", mime_for(&canonical))
-        .header("Content-Length", bytes.len().to_string())
-        .header("Cache-Control", "no-store")
-        // PDF.js fetches these bytes from the app origin; without this header
-        // the cross-origin fetch to doc.localhost is blocked by the webview.
-        .header("Access-Control-Allow-Origin", "*")
-        .body(bytes)
-        .expect("document response")
+    document_response(&served, &canonical, bytes)
 }
 
 /// How much bigger the whole window is than its content, in logical pixels.
@@ -2133,22 +2228,44 @@ fn watch_review_sidecar(
     }
 }
 
+/// At most this many image paths are stat-ed per watcher tick, so a document
+/// with a thousand figures does not stall the loop. Ticks go round the list.
+const IMAGES_PER_TICK: usize = 256;
+
 /// Did an image of the watched Markdown file change, appear or disappear since
-/// the last look? The new `stat`s are recorded, so one change is reported once.
-fn embedded_images_changed(watched: &Watched, path: &Path) -> bool {
-    let Ok(state) = watched.0.lock() else {
+/// the last look? One batch of the list is checked per call, and its new
+/// `stat`s are recorded, so one change is reported once.
+fn embedded_images_changed(
+    watched: &Watched,
+    path: &Path,
+    stat: impl Fn(&Path) -> Option<Stamp>,
+) -> bool {
+    let Ok(mut state) = watched.0.lock() else {
         return false;
     };
-    if state.path.as_deref() != Some(path) || state.images.is_empty() {
+    let total = state.images.len();
+    if state.path.as_deref() != Some(path) || total == 0 {
         return false;
     }
-    let recorded = state.images.clone();
-    drop(state);
-    let now: Vec<_> = recorded
-        .iter()
-        .map(|(image, _)| (image.clone(), stat(image)))
+    let start = state.image_cursor % total;
+    let count = total.min(IMAGES_PER_TICK);
+    state.image_cursor = (start + count) % total;
+    let batch: Vec<_> = (0..count)
+        .map(|offset| {
+            let at = (start + offset) % total;
+            (at, state.images[at].clone())
+        })
         .collect();
-    if now == recorded {
+    drop(state);
+    let now: Vec<_> = batch
+        .iter()
+        .map(|(at, (image, _))| (*at, image.clone(), stat(image)))
+        .collect();
+    let changed = now
+        .iter()
+        .zip(&batch)
+        .any(|((_, _, stamp), (_, (_, recorded)))| stamp != recorded);
+    if !changed {
         return false;
     }
     let Ok(mut state) = watched.0.lock() else {
@@ -2157,7 +2274,11 @@ fn embedded_images_changed(watched: &Watched, path: &Path) -> bool {
     if state.path.as_deref() != Some(path) {
         return false;
     }
-    state.images = now;
+    for (at, image, stamp) in now {
+        if let Some(entry) = state.images.get_mut(at).filter(|entry| entry.0 == image) {
+            entry.1 = stamp;
+        }
+    }
     true
 }
 
@@ -2241,7 +2362,7 @@ fn spawn_watcher(app: AppHandle) {
                         state.missing = false;
                     }
                     let images =
-                        !changed && !reappeared && embedded_images_changed(&watched, &path);
+                        !changed && !reappeared && embedded_images_changed(&watched, &path, stat);
                     if changed || reappeared || images {
                         let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                         let _ = app.emit(
@@ -4041,8 +4162,13 @@ fn main() {
         .plugin(navigation_guard())
         .plugin(tauri_plugin_dialog::init())
         .manage(Watched::default())
-        .register_uri_scheme_protocol("doc", |ctx, request| {
-            serve_document(ctx.app_handle(), &request)
+        // The disk read runs off the UI thread: a slow file or network share
+        // must not freeze the window.
+        .register_asynchronous_uri_scheme_protocol("doc", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(serve_document(&app, &request).map(std::borrow::Cow::Owned));
+            });
         })
         .invoke_handler(tauri::generate_handler![
             open_path,
@@ -4286,13 +4412,74 @@ mod tests {
                 "![x](file:///etc/passwd)",
                 "only local image files are shown",
             ),
-            ("![x](C:/figs/a.png)", "only local image files are shown"),
             ("<img alt=x>", "only local image files are shown"),
         ] {
             let html = refused(source, &doc);
             assert!(
                 html.contains(&format!("image not shown: {reason}")),
                 "{source}: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn drive_paths_follow_the_system() {
+        assert!(super::drive_path("C:/figs/a.png"));
+        assert!(super::drive_path(r"c:\figs\a.png"));
+        assert!(!super::drive_path("C:figs"));
+        assert!(!super::drive_path("http://x"));
+        let (_dir, doc) = image_tree();
+        let slash = "![x](C:/figs/a.png)";
+        let back = r"![x](C:\figs\a.png)";
+        let html_img = "<img src='C:/figs/a.png'>";
+        if cfg!(windows) {
+            // `figs` is not on the drive root, so the file is not there; the
+            // verdict is "not found", which only a path can give.
+            for source in [slash, back, html_img] {
+                let html = refused(source, &doc);
+                assert!(html.contains("not found"), "{source}: {html}");
+            }
+        } else {
+            for source in [slash, back, html_img] {
+                let html = refused(source, &doc);
+                assert!(
+                    html.contains("only local image files are shown"),
+                    "{source}: {html}"
+                );
+            }
+            let verdict = super::judge_image("C:/figs/a.png", &doc);
+            assert!(matches!(
+                verdict,
+                super::ImageVerdict::Refused { watch: None, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn network_share_sources_are_refused_without_touching_the_disk() {
+        let (_dir, doc) = image_tree();
+        for source in [
+            "//host/share/a.png",
+            r"\\host\share\a.png",
+            r"/\host/share/a.png",
+            r"\/host/share/a.png",
+            "%2F%5Chost/share/a.png",
+            "%5C%5Chost%5Cshare%5Ca.png",
+        ] {
+            assert!(
+                matches!(
+                    super::judge_image(source, &doc),
+                    super::ImageVerdict::Refused {
+                        reason: "remote images are not loaded",
+                        watch: None
+                    }
+                ),
+                "{source}"
+            );
+            let rendered = render_markdown(&format!("<img src=\"{source}\">"), &doc);
+            assert!(
+                rendered.shown.is_empty() && rendered.watch.is_empty(),
+                "{source}"
             );
         }
     }
@@ -4385,11 +4572,106 @@ mod tests {
     fn missing_images_are_reported_for_the_watcher() {
         let (_dir, doc) = image_tree();
         let rendered = render_markdown("![x](figs/later.png)", &doc);
-        assert_eq!(rendered.absent, vec![doc.join("figs/later.png")]);
+        assert_eq!(rendered.watch, vec![(doc.join("figs/later.png"), None)]);
+    }
+
+    fn watching(
+        doc: &std::path::Path,
+        watch: Vec<(PathBuf, Option<super::Stamp>)>,
+    ) -> super::Watched {
+        let watched = super::Watched::default();
+        {
+            let mut state = watched.0.lock().unwrap();
+            state.path = Some(doc.to_path_buf());
+            state.images = watch;
+        }
+        watched
     }
 
     #[test]
-    fn embedded_images_are_served_but_never_acted_on() {
+    fn figure_created_after_it_was_judged_counts_as_a_change() {
+        let (_dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        let rendered = render_markdown("![x](figs/later.png)", &doc);
+        // The figure appears after judging but before anything else stats it.
+        std::fs::write(doc.join("figs/later.png"), b"png").unwrap();
+        let watched = watching(&notes, rendered.watch);
+        assert!(super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+        assert!(!super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+    }
+
+    #[test]
+    fn shown_image_keeps_the_stat_it_was_judged_with() {
+        let (_dir, doc) = image_tree();
+        let rendered = render_markdown("![x](figs/a.png)", &doc);
+        let image = std::fs::canonicalize(doc.join("figs/a.png")).unwrap();
+        assert_eq!(rendered.watch, vec![(image.clone(), super::stat(&image))]);
+        std::fs::write(&image, b"changed").unwrap();
+        let notes = doc.join("notes.md");
+        let watched = watching(&notes, rendered.watch);
+        assert!(super::embedded_images_changed(
+            &watched,
+            &notes,
+            super::stat
+        ));
+    }
+
+    #[test]
+    fn shown_and_missing_images_share_one_cap() {
+        let (_dir, doc) = image_tree();
+        let source: String = (0..super::MARKDOWN_IMAGE_COUNT + 500)
+            .map(|n| {
+                let name = if n % 2 == 0 {
+                    "a".to_string()
+                } else {
+                    format!("gone{n}")
+                };
+                format!("![x](figs/{name}.png)\n\n")
+            })
+            .collect();
+        let rendered = render_markdown(&source, &doc);
+        assert!(rendered.watch.len() <= super::MARKDOWN_IMAGE_COUNT);
+        assert!(rendered.watch.len() > 500, "{}", rendered.watch.len());
+    }
+
+    #[test]
+    fn watcher_stats_a_bounded_batch_per_tick_and_covers_every_image() {
+        let (_dir, doc) = image_tree();
+        let notes = doc.join("notes.md");
+        let images: Vec<_> = (0..600)
+            .map(|n| (doc.join(format!("figs/{n}.png")), None))
+            .collect();
+        let watched = watching(&notes, images.clone());
+        let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+        let counted = |path: &std::path::Path| {
+            seen.borrow_mut().insert(path.to_path_buf());
+            None
+        };
+        let mut most = 0;
+        for _ in 0..3 {
+            let before = seen.borrow().len();
+            assert!(!super::embedded_images_changed(&watched, &notes, counted));
+            most = most.max(seen.borrow().len() - before);
+        }
+        assert!(most <= super::IMAGES_PER_TICK, "{most}");
+        assert_eq!(seen.borrow().len(), images.len());
+        // One of the last images changes; it is found within a few ticks.
+        let late = images[599].0.clone();
+        std::fs::write(&late, b"png").unwrap();
+        let found = (0..3).any(|_| super::embedded_images_changed(&watched, &notes, super::stat));
+        assert!(found);
+    }
+
+    #[test]
+    fn embedded_images_are_served_but_only_the_allow_set_is_acted_on() {
         let (dir, doc) = image_tree();
         let notes = doc.join("notes.md");
         std::fs::write(&notes, "![x](figs/a.png)").unwrap();
@@ -4406,13 +4688,44 @@ mod tests {
             Some(super::Served::Embedded)
         );
         assert_eq!(super::serving(&state, &beside), None);
-
-        let path = shown.to_str().unwrap();
-        assert!(trash_target(path, Some(&notes)).is_err());
-        let allowed = admitted([notes]);
-        assert!(list_reviews(path, &allowed).is_err());
-        assert!(write_review(path, markdown_review(), &allowed).is_err());
         assert_eq!(super::read_image(&shown).unwrap(), b"png");
+        // Every other use of `embedded` is ruled out by tools/check_frontend.mjs.
+    }
+
+    #[test]
+    fn embedded_responses_are_sandboxed_and_opened_ones_are_not() {
+        let png = std::path::Path::new("a.png");
+        let embedded = super::document_response(&super::Served::Embedded, png, b"x".to_vec());
+        let opened = super::document_response(&super::Served::Opened, png, b"x".to_vec());
+        for response in [&embedded, &opened] {
+            assert_eq!(response.headers()["X-Content-Type-Options"], "nosniff");
+            assert_eq!(response.headers()["Cache-Control"], "no-store");
+        }
+        assert_eq!(
+            embedded.headers()["Content-Security-Policy"],
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+        );
+        assert!(opened.headers().get("Content-Security-Policy").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_swapped_in_after_judging_does_not_block_the_read() {
+        let (_dir, doc) = image_tree();
+        let (_, shown) = shown_in("![x](figs/a.png)", &doc);
+        let image = shown[0].clone();
+        std::fs::remove_file(&image).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&image)
+            .status()
+            .unwrap()
+            .success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(super::read_image(&image)).unwrap());
+        let read = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("read_image blocked on a FIFO");
+        assert!(read.is_none());
     }
 
     #[test]
