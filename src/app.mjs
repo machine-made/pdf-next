@@ -533,11 +533,14 @@ function imageContainScale() {
 // the new one marked.
 
 /// LCS-based diff: returns indices into `after` array that are new or changed.
-/// Pure function, no side effects. O(n·m) time, capped at 4000×4000 to avoid
-/// pathological cases.
+/// Pure function, no side effects. Compares at most 4000 blocks per document;
+/// skips highlighting above 250,000 block pairs to bound UI-thread work.
 function changedIndices(before, after) {
   const n = Math.min(before.length, 4000);
   const m = Math.min(after.length, 4000);
+  if (n * m > 250_000) {
+    return [];
+  }
 
   // Build LCS table.
   const dp = Array(n + 1)
