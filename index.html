@@ -20,9 +20,9 @@ the file changes. This page is its apt repository.</p>
 
 <h2>Install</h2>
 <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://ricardofrantz.github.io/pdf-next/pdf-next.asc \
+curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc \
   | sudo tee /etc/apt/keyrings/pdf-next.asc &gt; /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://ricardofrantz.github.io/pdf-next stable main" \
+echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://machine-made.github.io/pdf-next stable main" \
   | sudo tee /etc/apt/sources.list.d/pdf-next.list &gt; /dev/null
 sudo apt update
 sudo apt install pdf-next</code></pre>
@@ -36,8 +36,8 @@ sudo rm /etc/apt/sources.list.d/pdf-next.list /etc/apt/keyrings/pdf-next.asc</co
 
 <footer>
   Packages are built and signed by
-  <a href="https://github.com/ricardofrantz/pdf-next/actions">GitHub Actions</a>
-  from <a href="https://github.com/ricardofrantz/pdf-next">the source</a>.
+  <a href="https://github.com/machine-made/pdf-next/actions">GitHub Actions</a>
+  from <a href="https://github.com/machine-made/pdf-next">the source</a>.
   Signing key fingerprint
   <code>94AF 4860 CC16 FD9C 1C66 044B A419 FDEC 5985 1786</code>.
 </footer>
