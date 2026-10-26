@@ -203,6 +203,16 @@ pdf-next` to take it off. Every version from 0.14.3 on stays in the
 repository, so `sudo apt install pdf-next=0.14.3` still installs that one
 after a newer release.
 
+Added the repository from the old address, `ricardofrantz.github.io`? That
+address now returns 404, so `apt update` reports an error and `apt upgrade`
+finds no new version. Replace the source file once, or run the one-line
+installer above again, which rewrites it. This command edits the address in
+place:
+
+```bash
+sudo sed -i 's#ricardofrantz\.github\.io#machine-made.github.io#' /etc/apt/sources.list.d/pdf-next.list && sudo apt update
+```
+
 ### The file itself
 
 Or take it from [Releases](https://github.com/machine-made/pdf-next/releases):

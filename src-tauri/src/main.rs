@@ -3867,11 +3867,24 @@ fn open_link(url: String) -> Result<(), String> {
 ///
 /// Kept apart from `open_download` so the allowlist can be tested, passes
 /// included, without starting a browser.
+///
+/// The prefix fixes the scheme, the host and the first path segments. What
+/// follows must be plain path segments. A release link never carries a query,
+/// a fragment or an escape, and each of those is a way past a prefix check:
+/// the browser decodes `%2e%2e` to `..` and reads `\` as `/`.
 fn is_release_url(url: &str) -> bool {
     const RELEASES: &str = "https://github.com/machine-made/pdf-next/releases/";
-    url.starts_with(RELEASES)
-        && !url.contains("..")
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    let Some(path) = url.strip_prefix(RELEASES) else {
+        return false;
+    };
+    !path.is_empty()
+        && !path.contains("..")
+        && path.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+        })
 }
 
 /// Open a release download in the default browser.
@@ -6153,15 +6166,33 @@ mod tests {
             "https://github.com/someone-else/pdf-next/releases/download/v1/x.exe",
             "https://github.com/ricardofrantz/pdf-next/releases/download/v1/x.exe",
             "https://evil.example/pdf-next/releases/x.exe",
+            "https://evil.example/machine-made/pdf-next/releases/download/v1/x.exe",
+            "https://github.com.evil.example/machine-made/pdf-next/releases/download/v1/x.exe",
+            "https://github.com@evil.example/machine-made/pdf-next/releases/download/v1/x.exe",
+            "http://github.com/machine-made/pdf-next/releases/download/v1/x.exe",
+            "ftp://github.com/machine-made/pdf-next/releases/download/v1/x.exe",
+            "https://github.com/machine-made/pdf-next/releases/",
             "https://github.com/machine-made/pdf-next/releases/../../settings",
+            "https://github.com/machine-made/pdf-next/releases/%2e%2e/settings",
+            "https://github.com/machine-made/pdf-next/releases/%2E%2e/settings",
+            "https://github.com/machine-made/pdf-next/releases/download%2fv1%2fx.exe",
+            "https://github.com/machine-made/pdf-next/releases/download//x.exe",
+            "https://github.com/machine-made/pdf-next/releases/download\\v1\\x.exe",
+            "https://github.com/machine-made/pdf-next/releases/download/v1/x.exe?raw=1",
+            "https://github.com/machine-made/pdf-next/releases/download/v1/x.exe#top",
             "https://github.com/machine-made/pdf-next/releases/x.exe --flag",
+            "https://github.com/machine-made/pdf-next/releases/x.exe\n",
             "file:///etc/passwd",
         ] {
             assert!(!is_release_url(url), "{url} must be refused");
             assert!(open_download(url.into()).is_err(), "{url} must be refused");
         }
-        let release = "https://github.com/machine-made/pdf-next/releases/download/v0.15.1/pdf-next_0.15.1_x64-setup.exe";
-        assert!(is_release_url(release), "{release} must be allowed");
+        for url in [
+            "https://github.com/machine-made/pdf-next/releases/download/v0.15.1/pdf-next_0.15.1_x64-setup.exe",
+            "https://github.com/machine-made/pdf-next/releases/tag/v0.15.1",
+        ] {
+            assert!(is_release_url(url), "{url} must be allowed");
+        }
     }
 
     #[test]
