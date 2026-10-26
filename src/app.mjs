@@ -4199,7 +4199,7 @@ async function reduceOpenPdf() {
 // its own.
 
 const RELEASES_API =
-  'https://api.github.com/repos/ricardofrantz/pdf-next/releases/latest';
+  'https://api.github.com/repos/machine-made/pdf-next/releases/latest';
 
 /// `v0.6.0` or `0.6.0` → [0, 6, 0]; anything else → null.
 function parseVersion(text) {
