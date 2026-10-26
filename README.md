@@ -4,11 +4,11 @@ A small, fast PDF, image and markdown viewer that **reloads the moment the file 
 built for the LaTeX and Typst compile loop, where you rebuild and want to see the result
 without touching anything.
 
-[![CI](https://github.com/ricardofrantz/pdf-next/actions/workflows/ci.yml/badge.svg)](https://github.com/ricardofrantz/pdf-next/actions/workflows/ci.yml)
+[![CI](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml/badge.svg)](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![GitHub](https://img.shields.io/badge/github-pdf--next-blue)](https://github.com/ricardofrantz/pdf-next)
+[![GitHub](https://img.shields.io/badge/github-pdf--next-blue)](https://github.com/machine-made/pdf-next)
 
-It is the desktop sibling of [vscode-pdf Next](https://github.com/ricardofrantz/vscode-pdf-next)
+It is the desktop sibling of [vscode-pdf Next](https://github.com/machine-made/vscode-pdf-next)
 and shares its rendering approach: Mozilla PDF.js (`pdfjs-dist@6.3.289`) parsing in a
 real worker thread, dark reading modes that recolour pages instead of filtering them, and reload
 that survives a build deleting and recreating the file mid-compile.
@@ -136,8 +136,8 @@ that survives a build deleting and recreating the file mid-compile.
 
 | System | Command |
 | ------ | ------- |
-| Windows | `winget install RicardoFrantz.pdf-next`, or [download the `.exe` installer](https://github.com/ricardofrantz/pdf-next/releases/latest) |
-| macOS | `brew install --cask ricardofrantz/tap/pdf-next` |
+| Windows | `winget install RicardoFrantz.pdf-next`, or [download the `.exe` installer](https://github.com/machine-made/pdf-next/releases/latest) |
+| macOS | `brew install --cask machine-made/tap/pdf-next` |
 | Debian, Ubuntu | add the repository below, then `sudo apt install pdf-next` |
 
 ### macOS, with Homebrew
@@ -146,13 +146,13 @@ The cask lives in a personal tap rather than Homebrew's own repository, so the
 tap is named once. Writing it in full does that for you:
 
 ```bash
-brew install --cask ricardofrantz/tap/pdf-next
+brew install --cask machine-made/tap/pdf-next
 ```
 
 Or add the tap first and use the short name from then on:
 
 ```bash
-brew tap ricardofrantz/tap
+brew tap machine-made/tap
 brew install --cask pdf-next
 ```
 
@@ -160,7 +160,7 @@ Afterwards:
 
 ```bash
 brew upgrade --cask pdf-next     # to the newest release
-brew uninstall --cask pdf-next   # and `brew untap ricardofrantz/tap` to forget the tap
+brew uninstall --cask pdf-next   # and `brew untap machine-made/tap` to forget the tap
 ```
 
 A workflow in the tap reads this repository's releases once a day, so a new
@@ -171,7 +171,7 @@ version arrives there within a day of its tag rather than the moment it lands.
 pdf-next is in the winget catalog as `RicardoFrantz.pdf-next`. Each release
 reaches winget after Microsoft merges its manifest pull request, so winget can
 lag a few days behind the `.exe` on
-[Releases](https://github.com/ricardofrantz/pdf-next/releases/latest).
+[Releases](https://github.com/machine-made/pdf-next/releases/latest).
 
 ```bash
 winget install RicardoFrantz.pdf-next
@@ -184,16 +184,16 @@ winget uninstall RicardoFrantz.pdf-next
 One line:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ricardofrantz/pdf-next/main/tools/install-apt.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/machine-made/pdf-next/main/tools/install-apt.sh | sudo sh
 ```
 
 Or add the signed repository yourself:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://ricardofrantz.github.io/pdf-next/pdf-next.asc \
+curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc \
   | sudo tee /etc/apt/keyrings/pdf-next.asc > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://ricardofrantz.github.io/pdf-next stable main" \
+echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://machine-made.github.io/pdf-next stable main" \
   | sudo tee /etc/apt/sources.list.d/pdf-next.list > /dev/null
 sudo apt update && sudo apt install pdf-next
 ```
@@ -205,7 +205,7 @@ after a newer release.
 
 ### The file itself
 
-Or take it from [Releases](https://github.com/ricardofrantz/pdf-next/releases):
+Or take it from [Releases](https://github.com/machine-made/pdf-next/releases):
 `.exe` or `.msi` for Windows, a universal `.dmg` for macOS (Intel and Apple
 Silicon in one file), `.deb`, `.rpm` or `.AppImage` (`chmod +x` and run) for
 Linux.

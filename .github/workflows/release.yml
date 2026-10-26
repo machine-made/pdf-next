@@ -107,11 +107,11 @@ jobs:
               it copies and opens), or `winget install RicardoFrantz.pdf-next`.
               If SmartScreen warns (an unsigned build), choose *More info -> Run anyway*.
             - **macOS** — universal `.dmg` (Intel and Apple Silicon), or
-              `brew install --cask ricardofrantz/tap/pdf-next`. Unsigned, so
+              `brew install --cask machine-made/tap/pdf-next`. Unsigned, so
               the first launch needs
               `xattr -dr com.apple.quarantine /Applications/pdf-next.app`.
             - **Debian and Ubuntu** — `apt install pdf-next` once the
-              repository at https://ricardofrantz.github.io/pdf-next is added
+              repository at https://machine-made.github.io/pdf-next is added
               (see the README), or the `.deb` and `.AppImage` below.
           # Held as a draft until every platform's bundle has opened a
           # document. Nothing is announced, and nothing a package manager

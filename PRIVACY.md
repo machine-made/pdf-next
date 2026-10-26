@@ -44,4 +44,4 @@ apart from a local disk, and its images are read like local ones. `#` links
 scroll, web links open in your own browser, and links to other files open
 them in the viewer only when you click.
 
-Questions: https://github.com/ricardofrantz/pdf-next/issues
+Questions: https://github.com/machine-made/pdf-next/issues

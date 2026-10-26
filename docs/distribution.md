@@ -101,7 +101,7 @@ the `public_repo` scope; without it the job warns and skips. To submit a
 release again, run the workflow by hand with its tag:
 
 ```
-gh workflow run winget.yml -R ricardofrantz/pdf-next -f tag=v0.14.5
+gh workflow run winget.yml -R machine-made/pdf-next -f tag=v0.14.5
 ```
 
 The winget-pkgs bots and a moderator still review and merge the pull request.
@@ -140,7 +140,7 @@ the same as `PackageVersion`. Or let
 
 ```
 wingetcreate update RicardoFrantz.pdf-next --version 0.14.5 \
-  --urls https://github.com/ricardofrantz/pdf-next/releases/download/v0.14.5/pdf-next_0.14.5_x64-setup.exe \
+  --urls https://github.com/machine-made/pdf-next/releases/download/v0.14.5/pdf-next_0.14.5_x64-setup.exe \
   --submit
 ```
 
@@ -158,7 +158,7 @@ The Store accepts a plain Win32 installer by URL; no MSIX packaging.
    `/S`. The installer needs no reboot and is served over HTTPS, as required.
 4. **Store listing**: description, at least one screenshot (1366×768 or
    larger PNG), a 300×300 icon, category *Productivity*, and the privacy
-   policy URL — `https://github.com/ricardofrantz/pdf-next/blob/main/PRIVACY.md`.
+   policy URL — `https://github.com/machine-made/pdf-next/blob/main/PRIVACY.md`.
    The policy is mandatory because the app reaches the network for its update
    check.
 5. **Age ratings**: the IARC questionnaire, every answer "no".
@@ -177,11 +177,11 @@ forks, or 30 watchers — which pdf-next is not yet. A personal tap has no such
 bar and works the same way for the person installing:
 
 ```
-brew install --cask ricardofrantz/tap/pdf-next
+brew install --cask machine-made/tap/pdf-next
 xattr -dr com.apple.quarantine /Applications/pdf-next.app
 ```
 
-The tap is [ricardofrantz/homebrew-tap](https://github.com/ricardofrantz/homebrew-tap).
+The tap is [machine-made/homebrew-tap](https://github.com/machine-made/homebrew-tap).
 `Casks/pdf-next.rb` names the version and the checksum of the universal
 `.dmg`; a workflow in that repository reads the latest release here once a
 day and commits the new version by itself, so a release needs nothing from
@@ -204,7 +204,7 @@ official cask repository would need.
 ## apt
 
 The apt repository is the `gh-pages` branch of this repository, served by
-GitHub Pages at <https://ricardofrantz.github.io/pdf-next>. The `apt` job in
+GitHub Pages at <https://machine-made.github.io/pdf-next>. The `apt` job in
 `release.yml` rebuilds it after every tag: it takes the `.deb` that was just
 published, regenerates `Packages` and `Release`, signs them, and pushes.
 Every version stays in `pool/`, so `apt install pdf-next=0.14.3` keeps working

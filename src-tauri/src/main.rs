@@ -3863,6 +3863,17 @@ fn open_link(url: String) -> Result<(), String> {
     open::that_detached(&url).map_err(|error| error.to_string())
 }
 
+/// Whether `url` points into the project's own releases.
+///
+/// Kept apart from `open_download` so the allowlist can be tested, passes
+/// included, without starting a browser.
+fn is_release_url(url: &str) -> bool {
+    const RELEASES: &str = "https://github.com/machine-made/pdf-next/releases/";
+    url.starts_with(RELEASES)
+        && !url.contains("..")
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 /// Open a release download in the default browser.
 ///
 /// The URL comes from the webview, and "open any URL" is exactly the kind of
@@ -3870,11 +3881,7 @@ fn open_link(url: String) -> Result<(), String> {
 /// releases pass, and nothing else is openable from the frontend.
 #[tauri::command]
 fn open_download(url: String) -> Result<(), String> {
-    const RELEASES: &str = "https://github.com/ricardofrantz/pdf-next/releases/";
-    if !url.starts_with(RELEASES)
-        || url.contains("..")
-        || url.chars().any(|c| c.is_whitespace() || c.is_control())
-    {
+    if !is_release_url(&url) {
         return Err("not a pdf-next release".into());
     }
     open::that_detached(&url).map_err(|error| error.to_string())
@@ -4584,12 +4591,12 @@ mod tests {
         Watched, LEGACY_REVIEW_FILE,
     };
     use super::{
-        change_review_comment, document_watch_due, is_network_path, is_windows_replace_contention,
-        list_reviews, natural_key, next_review_id, open_download, open_link, parse_cli,
-        parse_store, patch_review_record, read_snapshot as read_bound_snapshot, reduced_pdf_path,
-        remove_review, remove_review_cas, rename_with_retry, render_markdown, shrink_pdf_bytes,
-        sidecar_ready, trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt,
-        ReviewPosition, Target,
+        change_review_comment, document_watch_due, is_network_path, is_release_url,
+        is_windows_replace_contention, list_reviews, natural_key, next_review_id, open_download,
+        open_link, parse_cli, parse_store, patch_review_record,
+        read_snapshot as read_bound_snapshot, reduced_pdf_path, remove_review, remove_review_cas,
+        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, trash_target,
+        write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
@@ -6140,16 +6147,21 @@ mod tests {
     }
     #[test]
     fn only_pdf_next_releases_are_openable() {
-        // The success path is deliberately untested: it would open a browser.
+        // `open_download` is only called with refusals: a pass would open a
+        // browser. The passes are checked on `is_release_url`, which it uses.
         for url in [
             "https://github.com/someone-else/pdf-next/releases/download/v1/x.exe",
+            "https://github.com/ricardofrantz/pdf-next/releases/download/v1/x.exe",
             "https://evil.example/pdf-next/releases/x.exe",
-            "https://github.com/ricardofrantz/pdf-next/releases/../../settings",
-            "https://github.com/ricardofrantz/pdf-next/releases/x.exe --flag",
+            "https://github.com/machine-made/pdf-next/releases/../../settings",
+            "https://github.com/machine-made/pdf-next/releases/x.exe --flag",
             "file:///etc/passwd",
         ] {
+            assert!(!is_release_url(url), "{url} must be refused");
             assert!(open_download(url.into()).is_err(), "{url} must be refused");
         }
+        let release = "https://github.com/machine-made/pdf-next/releases/download/v0.15.1/pdf-next_0.15.1_x64-setup.exe";
+        assert!(is_release_url(release), "{release} must be allowed");
     }
 
     #[test]
