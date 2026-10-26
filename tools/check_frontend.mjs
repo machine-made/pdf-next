@@ -1775,8 +1775,13 @@ assert.doesNotMatch(
 );
 assert.match(
   main,
-  /fn open_download\(url: String\)[\s\S]*?const RELEASES: &str = "https:\/\/github\.com\/ricardofrantz\/pdf-next\/releases\/";[\s\S]*?url\.starts_with\(RELEASES\)/,
-  'open_download must refuse anything but a pdf-next release URL.',
+  /fn is_release_url\(url: &str\) -> bool \{[\s\S]*?const RELEASES: &str = "https:\/\/github\.com\/machine-made\/pdf-next\/releases\/";[\s\S]*?url\.strip_prefix\(RELEASES\)[\s\S]*?is_ascii_alphanumeric/,
+  'is_release_url must refuse anything but a pdf-next release URL made of plain path segments.',
+);
+assert.match(
+  main,
+  /fn open_download\(url: String\)[\s\S]*?!is_release_url\(&url\)[\s\S]*?open::that_detached/,
+  'open_download must check is_release_url before it opens anything.',
 );
 assert.match(
   app,

@@ -8,7 +8,7 @@ Only the latest release gets security fixes. Update before you report: the app's
 ## Report a vulnerability
 
 Report it privately at
-https://github.com/ricardofrantz/pdf-next/security/advisories/new.
+https://github.com/machine-made/pdf-next/security/advisories/new.
 Do not open a public issue.
 
 Include:

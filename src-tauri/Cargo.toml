@@ -4,7 +4,7 @@ version = "0.15.1"
 description = "Tiny, fast PDF, image and markdown viewer that reloads when the file changes"
 authors = ["Ricardo Frantz"]
 license = "MIT"
-repository = "https://github.com/ricardofrantz/pdf-next"
+repository = "https://github.com/machine-made/pdf-next"
 edition = "2021"
 rust-version = "1.96"
 
