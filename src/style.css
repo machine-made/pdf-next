@@ -1252,6 +1252,46 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
 }
 
 
+/* machine-made type (github.com/machine-made/type), OFL 1.1, variable. */
+@font-face {
+  font-family: "machine-made Weft";
+  src: url('./vendor/machine-made-type/MachineMadeWeft-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Sans";
+  src: url('./vendor/machine-made-type/MachineMadeSans-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Sans";
+  src: url('./vendor/machine-made-type/MachineMadeSans-Italic-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Heddle";
+  src: url('./vendor/machine-made-type/MachineMadeHeddle-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-stretch: 70% 140%;
+  font-display: swap;
+}
+
+/* The interface font, chosen in Settings. */
+:root[data-ui-font="mm-sans"] {
+  --ui-font: "machine-made Sans", "Segoe UI", -apple-system, "Ubuntu", system-ui, sans-serif;
+}
+
+:root[data-ui-font="weft"] {
+  --ui-font: "machine-made Weft", "Segoe UI", -apple-system, "Ubuntu", system-ui, sans-serif;
+}
+
 /* ── Markdown ────────────────────────────────────────────────────────── */
 /* The prose sits on a page, like a PDF does: white in every theme, recoloured
    only by an explicit page mode. Tokens rather than rules per mode, so the
@@ -1393,6 +1433,18 @@ body.mode-sepia #markdownStage {
 
 #markdown[data-font="sans"] {
   --article-font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+#markdown[data-font="weft"] {
+  --article-font: "machine-made Weft", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#markdown[data-font="mm-sans"] {
+  --article-font: "machine-made Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#markdown[data-font="heddle"] {
+  --article-font: "machine-made Heddle", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 #markdown[data-font="mono"] {
@@ -1645,6 +1697,7 @@ body.pages-on #mdWidth {
   }
 
   #reviewPane,
+  #settingsPanel,
   #noteBox,
   #editBox,
   #reviewChip,
@@ -1880,4 +1933,120 @@ body.reattach-picking .textLayer {
 .review-picking {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ── Settings ────────────────────────────────────────────────────────── */
+#settingsPanel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(300px, calc(100vw - 16px));
+  max-height: calc(100% - 16px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--widget-border);
+  border-radius: 8px;
+  background: var(--widget);
+  box-shadow: 0 8px 24px var(--shadow);
+  font-family: var(--ui-font);
+  font-size: 12px;
+}
+
+#settingsPanel[hidden] {
+  display: none;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+#settingsClose {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+#settingsPanel section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#settingsPanel h3 {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#settingsPanel label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#settingsPanel label.check {
+  justify-content: flex-start;
+}
+
+#settingsPanel select {
+  flex: none;
+  width: 9.5em;
+}
+
+#settingsPanel p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.about-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.35;
+}
+
+.mm-mark {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  fill: currentColor;
+}
+
+.mm-mark .mm-centre {
+  fill: #d7261e;
+}
+
+.about-links {
+  display: flex;
+  gap: 6px;
+}
+
+.about-links button {
+  padding: 2px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 3px;
+  background: var(--widget);
+  cursor: pointer;
+}
+
+.about-links button:hover {
+  background: var(--widget-hover);
 }

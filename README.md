@@ -1,5 +1,7 @@
 # pdf-next
 
+*pdf-next by machine-made.*
+
 A small, fast PDF, image and markdown viewer that **reloads the moment the file changes** —
 built for the LaTeX and Typst compile loop, where you rebuild and want to see the result
 without touching anything.
@@ -84,7 +86,7 @@ that survives a build deleting and recreating the file mid-compile.
   or exceeds the rendering limits is shown as escaped TeX source; an unknown command is marked in
   red and the rest of the equation still renders. A `\eqref` to an equation further down the file
   shows `(??)`.
-- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, Serif, Sans, Mono), the text size (14 px to 24 px) and the column width (Narrow, Normal, Wide, Full); each choice is remembered. Zoom reflows the text rather than scaling it.
+- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono), the text size (14 px to 24 px) and the column width (Narrow, Normal, Wide, Full); each choice is remembered. Zoom reflows the text rather than scaling it.
 - **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
@@ -119,7 +121,7 @@ that survives a build deleting and recreating the file mid-compile.
   sheets as text, and an image gets a sheet to itself. A document whose pages are not all the
   same size follows the first one, as it does in every other viewer. If the machine has nothing
   to print to — no printer, or a stopped print service — it says so rather than opening nothing.
-- **The title says which build you are running** — `paper.pdf — pdf-next 0.15.1` — so a bug report
+- **The title says which build you are running** — `paper.pdf — pdf-next 0.15.2` — so a bug report
   can name a version without hunting for an about box.
 - **Tells you when there is a newer version.** A few seconds after launch the app asks
   GitHub for the latest release, once; if it is newer, the last toolbar button lights up and a
@@ -127,6 +129,7 @@ that survives a build deleting and recreating the file mid-compile.
   browser, from the repo's own Releases page. Pressing the button checks again on demand.
   Nothing polls: that one request at launch is the only network access the app makes on its
   own, downloads only ever happen on a press, and GitHub is the only host it can reach.
+- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
 - **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
@@ -522,10 +525,11 @@ each platform's bundle has opened a document.
 
 ## Scope
 
-A viewer, not an editor. No annotations, no forms, no editing, no cloud. It opens a file, keeps
-it current, and gets out of the way.
+A viewer first. No annotations, no forms, no cloud. It opens a file, keeps it current, and gets
+out of the way. The one exception is small, deliberate edits to a Markdown file you are reading
+(bold, italic, a reworded sentence), each one checked against the file on disk and undoable.
 
-MIT licensed. Built on [Mozilla PDF.js](https://github.com/mozilla/pdf.js) and
+pdf-next is made by machine-made, a lab for software built with AI agents. MIT licensed. Built on [Mozilla PDF.js](https://github.com/mozilla/pdf.js) and
 [Tauri](https://tauri.app).
 
 ## Disclaimer
@@ -538,5 +542,7 @@ for following the laws and rules that apply to you. The full terms are in
 
 pdf-next is not affiliated with or endorsed by Mozilla. PDF.js is © Mozilla and
 contributors, under the Apache License 2.0.
+
+The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https://github.com/machine-made/type) under the SIL Open Font License 1.1; their licences are in `src/vendor/machine-made-type/`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.

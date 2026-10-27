@@ -80,6 +80,11 @@
         <path d="M4.5 11.5H3C2.45 11.5 2 11.05 2 10.5V7C2 6.45 2.45 6 3 6H13C13.55 6 14 6.45 14 7V10.5C14 11.05 13.55 11.5 13 11.5H11.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
         <rect x="4.5" y="9.5" width="7" height="4" rx="0.6" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
       </symbol>
+      <symbol id="i-settings" viewBox="0 0 16 16" fill="none">
+        <path d="M2.5 4.5H8.5M11.5 4.5H13.5M2.5 11.5H4.5M7.5 11.5H13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="10" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="6" cy="11.5" r="1.6" stroke="currentColor" stroke-width="1.5"/>
+      </symbol>
       <symbol id="i-close" viewBox="0 0 16 16" fill="none">
         <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </symbol>
@@ -183,6 +188,9 @@
         </button>
         <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
           <option value="latin-modern" selected>Latin Modern</option>
+          <option value="weft">mm Weft</option>
+          <option value="mm-sans">mm Sans</option>
+          <option value="heddle">mm Heddle</option>
           <option value="serif">Serif</option>
           <option value="sans">Sans</option>
           <option value="mono">Mono</option>
@@ -250,6 +258,9 @@
         <span id="waiting" title="The file is being rebuilt" hidden>
           <span class="dot"></span>
         </span>
+        <button id="settingsToggle" type="button" title="Settings (Ctrl+,)" aria-label="Settings" aria-pressed="false">
+          <svg class="icon"><use href="#i-settings"/></svg>
+        </button>
         <button id="update" type="button" title="Check for updates" aria-label="Check for updates">
           <svg class="icon"><use href="#i-update"/></svg>
         </button>
@@ -308,6 +319,48 @@
           </select></label>
         </div>
         <div id="reviewList"></div>
+      </aside>
+
+      <aside id="settingsPanel" hidden aria-label="Settings">
+        <div class="settings-head">
+          <span>Settings</span>
+          <button id="settingsClose" type="button" title="Close (Esc)" aria-label="Close settings">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <section>
+          <h3>Markdown</h3>
+          <label>Font <select id="setFont" data-mirror="mdFont"></select></label>
+          <label>Text size <select id="setSize" data-mirror="mdSize"></select></label>
+          <label>Column width <select id="setWidth" data-mirror="mdWidth"></select></label>
+          <label class="check"><input id="setDirectEdits" type="checkbox" />
+            Edit the file in place</label>
+        </section>
+        <section>
+          <h3>Window</h3>
+          <label>Interface font <select id="setUiFont">
+            <option value="system">System</option>
+            <option value="mm-sans">mm Sans</option>
+            <option value="weft">mm Weft</option>
+          </select></label>
+          <label>Check for changes <select id="setPoll" data-mirror="poll"></select></label>
+        </section>
+        <section class="about">
+          <h3>About</h3>
+          <div class="about-name">
+            <svg class="mm-mark" viewBox="0 0 30 30" aria-hidden="true">
+              <rect x="1" y="1" width="8" height="8"/><rect x="11" y="1" width="8" height="8"/><rect x="21" y="1" width="8" height="8"/>
+              <rect x="1" y="11" width="8" height="8"/><rect class="mm-centre" x="11" y="11" width="8" height="8"/><rect x="21" y="11" width="8" height="8"/>
+              <rect x="1" y="21" width="8" height="8"/><rect x="11" y="21" width="8" height="8"/><rect x="21" y="21" width="8" height="8"/>
+            </svg>
+            <span><strong>pdf-next</strong> by machine-made<br /><span id="aboutVersion" class="dim"></span></span>
+          </div>
+          <p class="dim">A PDF, image and Markdown viewer for the compile loop, made in the machine-made lab. MIT licence.</p>
+          <div class="about-links">
+            <button id="aboutUpdate" type="button">Check for updates</button>
+            <button id="aboutSource" type="button">Source code</button>
+          </div>
+        </section>
       </aside>
 
       <div id="noteBox" hidden>
