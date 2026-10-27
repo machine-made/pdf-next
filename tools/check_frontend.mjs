@@ -326,7 +326,7 @@ function appFunction(name, next, context, source = app) {
   const stage = { scrollHeight: 1000, scrollTop: 0, scrollLeft: 0 };
   const texts = Array(4000).fill('new');
   const show = appFunction('showMarkdown', '/// `_review.json`', {
-    state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
+    state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage }, markFigures() {},
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
     embedMarkdownImages() {}, colourCode() {},
@@ -704,7 +704,7 @@ for (const kind of ['markdown', 'pdf']) {
     loadReviews() {},
   };
   context.paintReviewMarks = appFunction('paintReviewMarks', 'function reviewFromEvent', context);
-  const show = appFunction('showMarkdown', '/// `_review.json`', context);
+  const show = appFunction('showMarkdown', '/// `_review.json`', { markFigures() {}, ...context });
   const apply = appFunction('applyReviewStore', 'async function loadReviews(', context);
   for (const round of ['first open', 'reload with identical reviews']) {
     await show(state.file, { top: 0, left: 0, scale: 1 }, 1, false);
@@ -3092,6 +3092,50 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
   assert.equal(stored.get('pdf-next.ui-font'), 'weft');
   apply('comic');
   assert.equal(root.dataset.uiFont, undefined, 'An unknown interface font falls back to the system one.');
+}
+
+// Figures: an image alone in its paragraph gets the figure class and, with
+// captions on, its alt text as a caption the reader (and a review) can see.
+{
+  const made = [];
+  const element = (tag, props = {}) => ({
+    tag, className: '', textContent: '', children: [], attributes: {},
+    classList: { names: new Set(), add(...n) { n.forEach((x) => this.names.add(x)); } },
+    matches(selector) { return selector === tag || (selector === 'span.src' && props.src); },
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    append(child) { this.children.push(child); },
+    ...props,
+  });
+  const figure = (alt, text = '') => {
+    const image = element('img', { attributes: { alt } });
+    const paragraph = element('p', { textContent: text });
+    paragraph.children = [element('span', { src: true }), image];
+    return paragraph;
+  };
+  const alone = figure('Wake behind the cylinder');
+  const silent = figure('');
+  const inline = figure('icon', 'Press the button');
+  let caption = 'numbered';
+  const context = {
+    figureSetting: () => caption,
+    document: { createElement: (tag) => { const node = element(tag); made.push(node); return node; } },
+  };
+  const mark = appFunction('markFigures', '/// The HTML arrives already sanitized', context);
+  mark({ querySelectorAll: () => [alone, silent, inline] });
+  assert.ok(alone.classList.names.has('md-figure') && alone.classList.names.has('has-caption'));
+  assert.equal(alone.children.at(-1).textContent, 'Wake behind the cylinder', 'The alt text is the caption.');
+  assert.ok(silent.classList.names.has('md-figure') && !silent.classList.names.has('has-caption'),
+    'A figure without alt text has no caption and takes no number.');
+  assert.equal(inline.classList.names.size, 0, 'An image inside text is not a figure.');
+  caption = 'off';
+  const bare = figure('Wake');
+  mark({ querySelectorAll: () => [bare] });
+  assert.equal(bare.children.length, 2, 'Captions off adds no text.');
+  assert.match(styles, /#markdown\[data-fig-caption="numbered"\] \.md-caption::before \{\s*content: "Figure " counter\(figure\) "\. ";/);
+  assert.match(styles, /#markdown\[data-fig-width="75"\] p\.md-figure > img:not\(\[width\]\)/,
+    'A size written in the Markdown wins over the Settings width.');
+  assert.match(app, /closest\('img\[data-doc\]'\)[\s\S]*?isCollapsed[\s\S]*?openPath\(image\.dataset\.doc\)/,
+    'A plain click opens a figure in its own tab; a selection does not.');
 }
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
