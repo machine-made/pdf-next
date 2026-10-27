@@ -118,6 +118,8 @@ const ui = {
   noteAction: el('noteAction'),
   noteText: el('noteText'),
   noteSave: el('noteSave'),
+  noteCancel: el('noteCancel'),
+  noteClose: el('noteClose'),
   reviewPane: el('reviewPane'),
   reviewList: el('reviewList'),
   reviewCount: el('reviewCount'),
@@ -262,16 +264,84 @@ function setTitle(name) {
 
 // ── Status ────────────────────────────────────────────────────────────────
 
-function setStatus(message, { error = false, sticky = false } = {}) {
+/// Show a short message. `action` adds one button to it, such as Undo; a
+/// message with a button stays up longer, long enough to reach it.
+function setStatus(message, { error = false, sticky = false, action = null } = {}) {
   window.clearTimeout(state.statusTimer);
   ui.status.textContent = message;
+  if (message && action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'status-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      ui.status.classList.remove('on', 'actionable');
+      action.run();
+    });
+    ui.status.append(button);
+  }
   ui.status.classList.toggle('on', Boolean(message));
+  ui.status.classList.toggle('actionable', Boolean(message && action));
   ui.status.classList.toggle('error', error);
   if (message && !sticky) {
     state.statusTimer = window.setTimeout(() => {
-      ui.status.classList.remove('on');
-    }, 2200);
+      ui.status.classList.remove('on', 'actionable');
+    }, action ? 10_000 : 2200);
   }
+}
+
+// ── Undo ──────────────────────────────────────────────────────────────────
+// One stack per window for changes made through the app: a removed review,
+// and later a direct edit to a Markdown file. Each entry knows its file, and
+// Ctrl+Z undoes the newest entry for the file on screen.
+
+const UNDO_LIMIT = 20;
+const undoStack = [];
+
+function pushUndo(entry) {
+  undoStack.push(entry);
+  if (undoStack.length > UNDO_LIMIT) {
+    undoStack.splice(0, undoStack.length - UNDO_LIMIT);
+  }
+}
+
+/// Undo the newest change made to the file on screen. True when there was one.
+async function undoLast() {
+  const path = state.file?.path;
+  let index = -1;
+  for (let at = undoStack.length - 1; at >= 0; at -= 1) {
+    if (undoStack[at].path === path) {
+      index = at;
+      break;
+    }
+  }
+  if (index < 0) {
+    return false;
+  }
+  const [entry] = undoStack.splice(index, 1);
+  try {
+    await entry.run();
+  } catch (error) {
+    if (state.file?.path === path) {
+      setStatus(`Could not undo ${entry.label}: ${String(error)}`, { error: true });
+    }
+  }
+  return true;
+}
+
+/// Put a removed review back exactly as it was: same ID, same fields, same
+/// place in the list. An unsaved comment draft comes back with it.
+async function restoreRemovedReview(path, record, draft) {
+  const store = await invoke('restore_review', { document: path, review: record });
+  if (state.file?.path !== path) {
+    return;
+  }
+  if (draft) {
+    pendingComments.set(commentDraftKey(path, record.id), draft);
+  }
+  applyReviewStore(store, { authoritative: true });
+  selectReview(record.id);
+  setStatus(`Review ${record.id} restored`);
 }
 
 // ── View state, preserved across reloads ──────────────────────────────────
@@ -2737,6 +2807,16 @@ function placeNoteBox(rect) {
   placeFloating(ui.noteBox, Math.max(8, window.innerWidth / 2 - 130), Math.max(8, window.innerHeight / 3));
 }
 
+/// Close the review composer without saving. Esc, the × in its corner, Cancel
+/// and a click outside an empty composer all end here.
+function closeNoteBox() {
+  hideReviewChrome();
+  ui.noteBox.hidden = true;
+  ui.noteText.value = '';
+  state.pendingNote = null;
+  state.pendingNotePdf = null;
+}
+
 let noteSaveInFlight = false;
 
 async function saveNote() {
@@ -3361,11 +3441,10 @@ async function updateReviewComment(pending, { quiet = false } = {}) {
   return true;
 }
 
+/// Remove a review at once, with no question asked: the toast and Ctrl+Z can
+/// put it back, which beats a dialog that is clicked through anyway.
 async function deleteReview(id) {
   if (!state.file) {
-    return;
-  }
-  if (!window.confirm('Remove this review? This only removes the review task.')) {
     return;
   }
   const path = state.file.path;
@@ -3376,12 +3455,23 @@ async function deleteReview(id) {
     if (state.generation !== generation || state.file?.path !== path) {
       return;
     }
-    pendingComments.delete(commentDraftKey(path, id));
+    const draftKey = commentDraftKey(path, id);
+    const draft = pendingComments.get(draftKey) ?? null;
+    pendingComments.delete(draftKey);
     applyReviewStore(store);
     if (state.selectedReviewId === id) {
       state.selectedReviewId = null;
     }
-    setStatus('Review removed');
+    if (expectedRecord) {
+      pushUndo({
+        path,
+        label: `review ${id}`,
+        run: () => restoreRemovedReview(path, expectedRecord, draft),
+      });
+    }
+    setStatus(`Review ${id} removed`, {
+      action: expectedRecord ? { label: 'Undo', run: () => void undoLast() } : null,
+    });
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(String(error), { error: true });
@@ -4348,6 +4438,11 @@ document.addEventListener('pointerdown', (event) => {
     return;
   }
   hideReviewMenu();
+  // A click elsewhere closes a composer you have not typed in. One with text
+  // stays, so a stray click cannot lose a comment.
+  if (!ui.noteBox.hidden && !ui.noteText.value.trim()) {
+    closeNoteBox();
+  }
 });
 
 // A link in a markdown file must not leave the page. A relative one —
@@ -4531,17 +4626,12 @@ ui.noteText.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
     void saveNote();
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    hideReviewChrome();
-    ui.noteBox.hidden = true;
-    ui.noteText.value = '';
-    state.pendingNote = null;
-    state.pendingNotePdf = null;
   }
 });
 
 ui.noteSave.addEventListener('click', () => void saveNote());
+ui.noteCancel.addEventListener('click', () => closeNoteBox());
+ui.noteClose.addEventListener('click', () => closeNoteBox());
 
 
 eventBus.on('textlayerrendered', () => {
@@ -4581,6 +4671,13 @@ window.addEventListener('keydown', (event) => {
     event.target instanceof HTMLSelectElement;
   const key = event.key.toLowerCase();
 
+  // Esc closes the composer wherever focus went: its action menu, the page,
+  // the review panel. Before anything else, so no other Esc use takes it.
+  if (key === 'escape' && !ui.noteBox.hidden) {
+    event.preventDefault();
+    closeNoteBox();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key === 'o') {
     event.preventDefault();
     ui.open.click();
@@ -4681,6 +4778,15 @@ window.addEventListener('keydown', (event) => {
     return;
   }
   if (typing) {
+    return;
+  }
+  // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.
+  // In a text field it stays the field's own undo, by the return above.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'z') {
+    event.preventDefault();
+    void undoLast().then((done) => {
+      if (!done) setStatus('Nothing to undo');
+    });
     return;
   }
   // Delete, or Cmd+Backspace as in the macOS Finder.
