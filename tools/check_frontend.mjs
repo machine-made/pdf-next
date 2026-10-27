@@ -3138,4 +3138,7 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
     'A plain click opens a figure in its own tab; a selection does not.');
 }
 
+assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, ' '\)\.trim\(\);/,
+  'A saved quote holds no newlines: the store and the agent view stay one line per item.');
+
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);

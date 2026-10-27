@@ -2773,7 +2773,9 @@ function describeSelection({ context = false } = {}) {
   if (!selection || selection.isCollapsed) {
     return null;
   }
-  const quote = selection.toString().trim();
+  // Matching collapses whitespace anyway, so the store keeps the quote on one
+  // line: an equation read out of MathML puts a newline between glyphs.
+  const quote = selection.toString().replace(/\s+/g, ' ').trim();
   if (!quote) {
     return null;
   }
