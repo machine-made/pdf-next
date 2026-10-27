@@ -1507,6 +1507,147 @@ fn name_headings(events: &mut [OffsetEvent<'_>]) {
 /// Bare web addresses in prose become links, as on GitHub: `http://`,
 /// `https://` and `www.` runs, never inside code, math or an existing link.
 /// Trailing punctuation and an unmatched `)` stay outside the link.
+/// A size written after an image, `{width=60%}`, as an HTML size: a percent,
+/// or whole pixels. Absolute units are converted at 96 pixels per inch.
+fn figure_size(value: &str) -> Option<String> {
+    let value = value.trim_matches(|c| c == '"' || c == '\'');
+    let split = value
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let amount: f64 = number
+        .parse()
+        .ok()
+        .filter(|n: &f64| n.is_finite() && *n > 0.0)?;
+    let pixels = |scale: f64| {
+        let px = (amount * scale).round();
+        (1.0..=20_000.0).contains(&px).then(|| format!("{px}"))
+    };
+    match unit {
+        "%" => (amount <= 100.0).then(|| format!("{}%", amount.round().max(1.0))),
+        "" | "px" => pixels(1.0),
+        "cm" => pixels(96.0 / 2.54),
+        "mm" => pixels(96.0 / 25.4),
+        "in" => pixels(96.0),
+        "pt" => pixels(96.0 / 72.0),
+        _ => None,
+    }
+}
+
+/// `{width=60% height=4cm .left}` read the way Pandoc and Quarto read it:
+/// `key=value` pairs and `.class` / `#id` words. Only `width`, `height` and
+/// the classes `.left`, `.right` and `.center` mean something here; anything
+/// that is not shaped like an attribute block leaves the text alone.
+fn figure_attributes(block: &str) -> Option<Vec<(&'static str, String)>> {
+    let inner = block.strip_prefix('{')?.strip_suffix('}')?;
+    if inner.contains(['\n', '{', '}', '<', '>']) || inner.trim().is_empty() {
+        return None;
+    }
+    let mut found = Vec::new();
+    for word in inner.split_whitespace() {
+        if let Some(class) = word.strip_prefix('.') {
+            if let Some(align) = ["left", "right", "center"]
+                .into_iter()
+                .find(|a| *a == class)
+            {
+                found.push(("align", align.to_string()));
+            }
+        } else if word.starts_with('#') {
+            // An identifier is for cross-references elsewhere; nothing to draw.
+        } else if let Some((key, value)) = word.split_once('=') {
+            match key {
+                "width" | "height" => {
+                    if let Some(size) = figure_size(value) {
+                        found.push((if key == "width" { "width" } else { "height" }, size));
+                    }
+                }
+                _ if key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {}
+                _ => return None,
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(found)
+}
+
+/// Images written with Pandoc attributes, `![Wake](fig.png){width=60% .left}`,
+/// become a raw `<img>` with those attributes, which then goes through the
+/// sanitizer and the image judge like any other. The attribute text is
+/// removed from the page.
+fn image_attributes(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
+    let mut out: Vec<OffsetEvent<'_>> = Vec::with_capacity(events.len());
+    let mut index = 0;
+    while index < events.len() {
+        let (event, range) = &events[index];
+        let Event::Start(Tag::Image {
+            dest_url, title, ..
+        }) = event
+        else {
+            out.push(events[index].clone());
+            index += 1;
+            continue;
+        };
+        let Some(end) = events[index..]
+            .iter()
+            .position(|(event, _)| matches!(event, Event::End(TagEnd::Image)))
+            .map(|offset| index + offset)
+        else {
+            out.push(events[index].clone());
+            index += 1;
+            continue;
+        };
+        let attributes = match events.get(end + 1) {
+            Some((Event::Text(text), _)) if text.starts_with('{') => text
+                .find('}')
+                .and_then(|close| figure_attributes(&text[..=close]).map(|found| (close, found))),
+            _ => None,
+        };
+        let Some((close, found)) = attributes else {
+            out.extend(events[index..=end].iter().cloned());
+            index = end + 1;
+            continue;
+        };
+        let alt: String = events[index + 1..end]
+            .iter()
+            .filter_map(|(event, _)| match event {
+                Event::Text(text) | Event::Code(text) => Some(text.as_ref()),
+                Event::SoftBreak | Event::HardBreak => Some(" "),
+                _ => None,
+            })
+            .collect();
+        let mut tag = format!(
+            r#"<img src="{}" alt="{}""#,
+            escape_attribute(dest_url),
+            escape_attribute(&alt)
+        );
+        if !title.is_empty() {
+            tag.push_str(&format!(r#" title="{}""#, escape_attribute(title)));
+        }
+        for (name, value) in found {
+            tag.push_str(&format!(r#" {name}="{value}""#));
+        }
+        tag.push('>');
+        out.push((Event::InlineHtml(CowStr::from(tag)), range.clone()));
+        let (Event::Text(text), after) = &events[end + 1] else {
+            unreachable!("checked above");
+        };
+        let rest = &text[close + 1..];
+        if !rest.is_empty() {
+            let start = after.start + close + 1;
+            out.push((
+                Event::Text(CowStr::from(rest.to_string())),
+                start.min(after.end)..after.end,
+            ));
+        }
+        index = end + 2;
+    }
+    out
+}
+
 fn link_bare_urls(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
     use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
     let mut out = Vec::with_capacity(events.len());
@@ -1634,7 +1775,7 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     )
     .collect();
     name_headings(&mut merged);
-    let events_with_offset = link_bare_urls(math_fences(merged));
+    let events_with_offset = image_attributes(link_bare_urls(math_fences(merged)));
     let mut math_budget = MathBudget::default();
     let mut converter = math_converter();
 
@@ -2001,6 +2142,10 @@ fn image_markup(tag: &str, verdicts: &[ImageVerdict]) -> String {
     if let Some(title) = get("title") {
         markup.push_str(&format!(r#" title="{title}""#));
     }
+    if let Some(align) = get("align").filter(|a| matches!(a.as_str(), "left" | "right" | "center"))
+    {
+        markup.push_str(&format!(r#" data-align="{align}""#));
+    }
     for name in ["width", "height"] {
         let plain = get(name).filter(|value| {
             let digits = value.strip_suffix('%').unwrap_or(value);
@@ -2048,6 +2193,129 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
         digest: text_sha256(&raw),
         raw,
     })
+}
+
+/// Largest text one direct edit may put into a Markdown file.
+const MARKDOWN_EDIT_LIMIT: usize = 1024 * 1024;
+
+/// Replace `expected` at UTF-16 offset `start` of `raw` with `replacement`.
+///
+/// Offsets come from the webview, which counts in UTF-16 units; they are
+/// turned into byte offsets here, on character boundaries only, and the text
+/// found there must be exactly `expected`, or nothing is changed.
+fn splice_utf16(
+    raw: &str,
+    start: usize,
+    expected: &str,
+    replacement: &str,
+) -> Result<String, String> {
+    let mut units = 0usize;
+    let mut begin = None;
+    for (index, character) in raw.char_indices() {
+        if units == start {
+            begin = Some(index);
+            break;
+        }
+        if units > start {
+            break;
+        }
+        units += character.len_utf16();
+    }
+    if begin.is_none() && units == start {
+        begin = Some(raw.len());
+    }
+    let begin = begin.ok_or_else(|| "edit position is outside the file".to_string())?;
+    let end = begin + expected.len();
+    if raw.get(begin..end) != Some(expected) {
+        return Err("the text to edit is not where it was; reload and try again".into());
+    }
+    let mut out = String::with_capacity(raw.len() - expected.len() + replacement.len());
+    out.push_str(&raw[..begin]);
+    out.push_str(replacement);
+    out.push_str(&raw[end..]);
+    Ok(out)
+}
+
+/// Write `text` over `path` atomically, keeping the file's permissions.
+fn replace_text_file(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let permissions = std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    rename_with_retry(
+        || {
+            let mut temp =
+                tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
+            temp.write_all(text.as_bytes())?;
+            temp.as_file().set_permissions(permissions.clone())?;
+            temp.as_file().sync_all()?;
+            temp.persist(path).map(|_| ()).map_err(|error| error.error)
+        },
+        |error| cfg!(windows) && is_windows_replace_contention(error),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Apply one direct edit to the Markdown file the reader has open.
+///
+/// The edit is made against the text that was shown: the file's digest must
+/// still be `expected_digest` and the text at `start` must still be
+/// `expected`. Anything else, an agent's write in between for one, refuses
+/// the edit rather than merging it. Returns the new digest, which the undo of
+/// this edit then expects.
+fn edit_markdown_file(
+    canonical: &Path,
+    expected_digest: &str,
+    start: usize,
+    expected: &str,
+    replacement: &str,
+) -> Result<String, String> {
+    if kind_for(canonical) != "markdown" {
+        return Err("not a markdown file".into());
+    }
+    if replacement.len() > MARKDOWN_EDIT_LIMIT || expected.len() > MARKDOWN_EDIT_LIMIT {
+        return Err("edit is larger than 1 MB".into());
+    }
+    let metadata = std::fs::metadata(canonical).map_err(|error| error.to_string())?;
+    if metadata.len() > MARKDOWN_LIMIT {
+        return Err("markdown file is larger than 10 MB".into());
+    }
+    let raw = std::fs::read_to_string(canonical).map_err(|error| error.to_string())?;
+    if text_sha256(&raw) != expected_digest {
+        return Err("the file changed since it was shown; try again".into());
+    }
+    let edited = splice_utf16(&raw, start, expected, replacement)?;
+    if edited.len() as u64 > MARKDOWN_LIMIT {
+        return Err("markdown file would be larger than 10 MB".into());
+    }
+    replace_text_file(canonical, &edited)?;
+    Ok(text_sha256(&edited))
+}
+
+#[tauri::command]
+fn edit_markdown(
+    path: String,
+    expected_digest: String,
+    start: usize,
+    expected_text: String,
+    replacement: String,
+    watched: State<'_, Watched>,
+) -> Result<String, String> {
+    let canonical =
+        std::fs::canonicalize(PathBuf::from(path)).map_err(|error| error.to_string())?;
+    {
+        let state = watched.0.lock().map_err(|error| error.to_string())?;
+        if !state.allowed.contains(&canonical) {
+            return Err("file was never opened".into());
+        }
+    }
+    edit_markdown_file(
+        &canonical,
+        &expected_digest,
+        start,
+        &expected_text,
+        &replacement,
+    )
 }
 
 /// Raw text of an allowed `_review.json`. The sidecar is not Markdown, so it
@@ -2860,6 +3128,12 @@ fn review_basename(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != ".." && name != "."
 }
 
+/// What a review asks of the agent. Improve carries its instruction in
+/// `comment`; the others are complete on their own, a comment optional.
+const REVIEW_ACTIONS: &[&str] = &[
+    "improve", "polish", "shorten", "expand", "check", "bold", "italic", "delete",
+];
+
 fn validate_review(review: &Review) -> Result<(), String> {
     if review.quote.len() > 20_000 {
         return Err("quote is too long (max 20 000 chars)".into());
@@ -2905,8 +3179,11 @@ fn validate_review(review: &Review) -> Result<(), String> {
     {
         return Err("review record is too large (max 64 000 bytes)".into());
     }
-    if !matches!(review.action.as_str(), "improve" | "delete") {
-        return Err("action must be improve or delete".into());
+    if !REVIEW_ACTIONS.contains(&review.action.as_str()) {
+        return Err(format!(
+            "action must be one of {}",
+            REVIEW_ACTIONS.join(", ")
+        ));
     }
     if !matches!(review.status.as_str(), "open" | "applied" | "resolved") {
         return Err("status must be open, applied, or resolved".into());
@@ -3666,6 +3943,72 @@ fn remove_review_cas(
     Ok(reviews_for_file(store, &basename))
 }
 
+/// Put back a review that was removed: the same record, with the same ID.
+///
+/// IDs are never reused, so this is not a new review taking an old number;
+/// it is the removed task returning. The ID must be one this store issued
+/// (below `nextId`) and must be free. With `expected_revision`, the store must
+/// still be at that revision.
+fn restore_review_record(
+    document: &str,
+    review: Review,
+    expected_revision: Option<u64>,
+    allowed: &AllowedDocuments,
+) -> Result<ReviewFile, String> {
+    let number = review
+        .id
+        .strip_prefix('r')
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .filter(|number| *number >= 1 && review.id == format!("r{number}"))
+        .ok_or_else(|| "review id must look like r12".to_string())?;
+    let doc_path = open_review_document(document, allowed)?;
+    let basename = document_basename(&doc_path)?;
+    if review.file != basename {
+        return Err("review belongs to another document".into());
+    }
+    let sidecar_path = doc_path.sidecar();
+    let _lock = ReviewLock::acquire(&sidecar_path)?;
+    let (sidecar, mut store) = load_store(&doc_path)?;
+    if let Some(revision) = expected_revision {
+        if revision != store.revision {
+            return Err(format!(
+                "review conflict: revision changed (expected {revision}, found {})",
+                store.revision
+            ));
+        }
+    }
+    if number >= store.next_id {
+        return Err(format!(
+            "{} was never issued by this review store",
+            review.id
+        ));
+    }
+    if store
+        .reviews
+        .iter()
+        .any(|existing| existing.id == review.id)
+    {
+        return Err(format!("{} already exists", review.id));
+    }
+    validate_review(&review)?;
+    let mut review = review;
+    drop_redundant_end(&mut review);
+    let index = store
+        .reviews
+        .iter()
+        .position(|existing| {
+            existing
+                .id
+                .strip_prefix('r')
+                .and_then(|rest| rest.parse::<u64>().ok())
+                .is_some_and(|other| other > number)
+        })
+        .unwrap_or(store.reviews.len());
+    store.reviews.insert(index, review);
+    save_store(&sidecar, &mut store)?;
+    Ok(reviews_for_file(store, &basename))
+}
+
 fn patch_review_record(
     document: &str,
     id: &str,
@@ -3675,6 +4018,7 @@ fn patch_review_record(
     dry_run: bool,
 ) -> Result<ReviewFile, String> {
     const PATCHABLE: &[&str] = &[
+        "quote",
         "action",
         "status",
         "resolution",
@@ -3844,6 +4188,18 @@ fn delete_review(
     watched: State<'_, Watched>,
 ) -> Result<ReviewFile, String> {
     let store = remove_review_cas(&document, &id, &expected_record, &allowed_set(&watched)?)?;
+    note_sidecar_written(&watched, &document);
+    Ok(store)
+}
+
+/// Undo a removal: put the removed record back under its own ID.
+#[tauri::command]
+fn restore_review(
+    document: String,
+    review: Review,
+    watched: State<'_, Watched>,
+) -> Result<ReviewFile, String> {
+    let store = restore_review_record(&document, review, None, &allowed_set(&watched)?)?;
     note_sidecar_written(&watched, &document);
     Ok(store)
 }
@@ -4524,7 +4880,9 @@ fn main() {
             read_reviews,
             update_review,
             delete_review,
+            restore_review,
             patch_review,
+            edit_markdown,
             review_source_hint,
             reduce_pdf
         ])
@@ -4608,8 +4966,8 @@ mod tests {
         is_windows_replace_contention, list_reviews, natural_key, next_review_id, open_download,
         open_link, parse_cli, parse_store, patch_review_record,
         read_snapshot as read_bound_snapshot, reduced_pdf_path, remove_review, remove_review_cas,
-        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, trash_target,
-        write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
+        rename_with_retry, render_markdown, restore_review_record, shrink_pdf_bytes, sidecar_ready,
+        trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
@@ -4721,6 +5079,41 @@ mod tests {
         assert!(shown.contains(&canonical(absolute)));
         assert!(shown.contains(&canonical(doc.join("figs/my pic.PNG"))));
         assert_eq!(shown.len(), 3, "{shown:?}");
+    }
+
+    #[test]
+    fn pandoc_attributes_size_and_place_an_image() {
+        let (_dir, doc) = image_tree();
+        let (html, shown) = shown_in(
+            "![Wake](figs/a.png){width=60% .left}\n\n![Two](figs/a.png \"t\"){width=5cm height=40} after\n\n\
+             ![Kept](figs/a.png){not an attribute}\n\n![Odd](figs/a.png){width=12parsecs}",
+            &doc,
+        );
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(
+            html.contains(r#"alt="Wake" data-align="left" width="60%""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"title="t" width="189" height="40""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("> after"),
+            "text after the block stays: {html}"
+        );
+        assert!(!html.contains("{width"), "the block is removed: {html}");
+        assert!(
+            html.contains("{not an attribute}"),
+            "other braces stay text: {html}"
+        );
+        assert!(
+            !html.contains("parsecs"),
+            "an unknown unit is ignored: {html}"
+        );
+        assert_eq!(super::figure_size("120%"), None);
+        assert_eq!(super::figure_size("2in").as_deref(), Some("192"));
+        assert_eq!(super::figure_size("x"), None);
     }
 
     fn refused(source: &str, base: &std::path::Path) -> String {
@@ -6959,6 +7352,127 @@ mod tests {
         assert!(super::write_reduced_copy(&source, b"replacement").is_err());
         assert_eq!(std::fs::read(&dest).unwrap(), b"reduced");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn splice_utf16_edits_on_character_boundaries_only() {
+        let raw = "naïve 🌊 wake\r\nnext";
+        // "🌊" is two UTF-16 units; "wake" starts at unit 9.
+        let edited = super::splice_utf16(raw, 9, "wake", "**wake**").unwrap();
+        assert_eq!(edited, "naïve 🌊 **wake**\r\nnext");
+        assert!(
+            super::splice_utf16(raw, 9, "wade", "x").is_err(),
+            "text must match"
+        );
+        assert!(
+            super::splice_utf16(raw, 7, "x", "y").is_err(),
+            "inside a surrogate pair"
+        );
+        assert!(super::splice_utf16(raw, 999, "", "y").is_err());
+        assert_eq!(super::splice_utf16("ab", 2, "", "c").unwrap(), "abc");
+    }
+
+    #[test]
+    fn edit_markdown_file_refuses_a_changed_file_and_round_trips() {
+        let dir = scratch("md_edit");
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "The wake is long.\n").unwrap();
+        let digest = super::text_sha256("The wake is long.\n");
+        let next = super::edit_markdown_file(&md, &digest, 4, "wake", "**wake**").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&md).unwrap(),
+            "The **wake** is long.\n"
+        );
+        let stale = super::edit_markdown_file(&md, &digest, 4, "wake", "x").unwrap_err();
+        assert!(stale.contains("changed"), "{stale}");
+        super::edit_markdown_file(&md, &next, 4, "**wake**", "wake").unwrap();
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "The wake is long.\n");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+        assert!(super::edit_markdown_file(&pdf, &digest, 0, "", "x").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn direct_edit_formats_survive_the_sanitizer() {
+        let html = render_markdown(
+            "**b** *i* <u>u</u> ~~s~~ `c`",
+            std::path::Path::new("/nonexistent"),
+        )
+        .html;
+        for tag in ["<strong>", "<em>", "<u>", "<del>", "<code>"] {
+            assert!(html.contains(tag), "{tag} missing from {html}");
+        }
+    }
+
+    #[test]
+    fn review_actions_accept_the_request_kinds() {
+        for action in ["polish", "shorten", "expand", "check", "bold", "italic"] {
+            let mut review = markdown_review();
+            review.action = action.into();
+            assert!(super::validate_review(&review).is_ok(), "{action}");
+        }
+        let mut review = markdown_review();
+        review.action = "rewrite-everything".into();
+        assert!(super::validate_review(&review).is_err());
+    }
+
+    #[test]
+    fn restore_review_puts_the_removed_record_back_in_place() {
+        let dir = scratch("review_restore");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+        let path = md.display().to_string();
+
+        for quote in ["first passage", "second passage", "third passage"] {
+            let mut review = markdown_review();
+            review.quote = quote.into();
+            write_review(&path, review, &allowed).unwrap();
+        }
+        let before = list_reviews(&path, &allowed).unwrap();
+        let removed = before.reviews[1].clone();
+        remove_review(&path, "r2", &allowed).unwrap();
+
+        let restored = restore_review_record(&path, removed.clone(), None, &allowed).unwrap();
+        let ids: Vec<_> = restored
+            .reviews
+            .iter()
+            .map(|review| review.id.as_str())
+            .collect();
+        assert_eq!(ids, ["r1", "r2", "r3"], "the record returns to its place");
+        assert_eq!(restored.reviews[1], removed, "the record returns unchanged");
+        assert_eq!(
+            restored.next_id, before.next_id,
+            "no ID is issued by a restore"
+        );
+
+        let again = restore_review_record(&path, removed.clone(), None, &allowed).unwrap_err();
+        assert!(again.contains("already exists"), "{again}");
+
+        let mut unissued = removed.clone();
+        unissued.id = "r9".into();
+        let error = restore_review_record(&path, unissued, None, &allowed).unwrap_err();
+        assert!(error.contains("never issued"), "{error}");
+
+        let mut foreign = removed.clone();
+        foreign.file = "other.md".into();
+        let error = restore_review_record(&path, foreign, None, &allowed).unwrap_err();
+        assert!(error.contains("another document"), "{error}");
+
+        remove_review(&path, "r2", &allowed).unwrap();
+        let stale = restore_review_record(&path, removed.clone(), Some(0), &allowed).unwrap_err();
+        assert!(stale.contains("revision changed"), "{stale}");
+        let added = write_review(&path, markdown_review(), &allowed).unwrap();
+        assert_eq!(
+            added.reviews.last().unwrap().id,
+            "r4",
+            "a removed ID is never reused"
+        );
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

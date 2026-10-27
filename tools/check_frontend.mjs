@@ -6,8 +6,9 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
+import { blockSpan, formatEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
@@ -325,7 +326,7 @@ function appFunction(name, next, context, source = app) {
   const stage = { scrollHeight: 1000, scrollTop: 0, scrollLeft: 0 };
   const texts = Array(4000).fill('new');
   const show = appFunction('showMarkdown', '/// `_review.json`', {
-    state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage },
+    state, ui: { markdown: {}, markdownRaw: {}, markdownStage: stage }, markFigures() {},
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
     embedMarkdownImages() {}, colourCode() {},
@@ -529,16 +530,18 @@ for (const kind of ['markdown', 'pdf']) {
     patchReview: async (review, patch) => patches.push(patch),
     setStatus() {},
   });
-  await reattach({ id: 'r1', quote: 'the quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
+  await reattach({ id: 'r1', quote: 'an older quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
   assert.equal(patches.length, 1, `${kind} reattach patches the review.`);
   const [patch] = patches;
   assert.equal(patch.anchor.documentRevision, kind === 'pdf' ? 'sha256:pdf' : 'sha256:now',
     `${kind} reattach stamps the digest of the file shown.`);
+  assert.equal(patch.quote, picked.quote, `${kind} reattach takes the selected text, even when it differs.`);
+  assert.equal(patch.anchor.original.quote, 'an older quote', 'The first quote is kept.');
   if (kind === 'markdown') {
     assert.deepEqual(patch.at, { line: 9, end: 11 }, 'Markdown reattach moves the lines with the context.');
     assert.deepEqual(patch.anchor.original.at, { line: 2 }, 'The first place is kept.');
   } else {
-    assert.equal('at' in patch, false, 'PDF reattach leaves its page alone.');
+    assert.deepEqual(patch.at, { page: 4 }, 'PDF reattach moves to the page of the selection.');
   }
 }
 
@@ -602,7 +605,7 @@ for (const kind of ['markdown', 'pdf']) {
       document: { activeElement: null, createElement: element, createTextNode: (text) => text },
       draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
       reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
-      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS,
       scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
       patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
       reviewRowById: () => null, HTMLTextAreaElement: class {},
@@ -612,14 +615,14 @@ for (const kind of ['markdown', 'pdf']) {
     return {
       older: found.includes('Made on an earlier version of this file'),
       lines: found.some((text) => text.startsWith('Placed by its line range')),
-      unlocated: found.includes('Unlocated · not highlighted'),
-      reattach: found.includes('Reattach selection'),
+      unlocated: found.includes('Unlocated · not highlighted · Reattach to pin it'),
+      reattach: found.includes('Reattach'),
       dimmed: row.classList.added.includes('unlocated'),
     };
   };
   const old = { id: 'r1', status: 'open', quote: 'q', anchor: { documentRevision: 'sha256:old' } };
   assert.deepEqual(render(old, 'located'),
-    { older: false, lines: false, unlocated: false, reattach: false, dimmed: false },
+    { older: false, lines: false, unlocated: false, reattach: true, dimmed: false },
     'A review located on the text shown needs no flag, whichever version it was made on.');
   assert.deepEqual(render(old, 'unlocated'),
     { older: true, lines: false, unlocated: true, reattach: true, dimmed: true },
@@ -647,6 +650,8 @@ for (const kind of ['markdown', 'pdf']) {
     markdownBadgeHost: () => null,
     paintMarkdownByLines: (review) => { calls.push(['lines', review.id]); return null; },
     placeMarkdownBadge() {},
+    contextAt, atRange: (line) => ({ line }), lineNear: () => 1,
+    window: { setTimeout() {}, clearTimeout() {} },
   };
   const paint = appFunction('paintMarkdownMarks', 'function paintReviewMarks', context);
   const at = { line: 1 };
@@ -699,7 +704,7 @@ for (const kind of ['markdown', 'pdf']) {
     loadReviews() {},
   };
   context.paintReviewMarks = appFunction('paintReviewMarks', 'function reviewFromEvent', context);
-  const show = appFunction('showMarkdown', '/// `_review.json`', context);
+  const show = appFunction('showMarkdown', '/// `_review.json`', { markFigures() {}, ...context });
   const apply = appFunction('applyReviewStore', 'async function loadReviews(', context);
   for (const round of ['first open', 'reload with identical reviews']) {
     await show(state.file, { top: 0, left: 0, scale: 1 }, 1, false);
@@ -933,7 +938,7 @@ for (const kind of ['markdown', 'pdf']) {
   const note = { file: 'a.pdf', quote: 'selected text' };
   const state = { file: { path: 'a.pdf' }, generation: 1, pendingNote: note };
   const ui = {
-    noteBox: { hidden: false }, noteText: { value: 'unsaved comment' },
+    noteBox: { hidden: false }, noteText: { value: 'unsaved comment' }, editBox: { hidden: false },
     image: { removeAttribute() {} }, markdown: {}, markdownRaw: {},
   };
   const open = appFunction('openFile', 'async function openPath(', {
@@ -999,25 +1004,46 @@ for (const pauseAt of ['save', 'close']) {
 }
 
 {
-  const draft = { id: 'r1', comment: 'unsaved edit' };
-  const pendingComments = new Map([['a.pdf\u0000r1', { ...draft, path: 'a.pdf' }]]);
+  // Remove asks nothing; it offers Undo, which puts the record and its
+  // unsaved draft back. A failed removal keeps the draft and offers no Undo.
+  const record = { id: 'r1', file: 'a.pdf', comment: 'saved' };
+  const draft = { id: 'r1', path: 'a.pdf', comment: 'unsaved edit' };
+  const pendingComments = new Map([['a.pdf\u0000r1', draft]]);
+  const undo = [];
+  const statuses = [];
+  const calls = [];
   const context = {
-    state: { file: { path: 'a.pdf' }, generation: 1, reviews: [draft] },
+    state: { file: { path: 'a.pdf' }, generation: 1, reviews: [record], selectedReviewId: 'r1' },
     pendingComments,
     commentDraftKey: (path, id) => `${path}\u0000${id}`,
-    window: { confirm: () => false, clearTimeout() {} },
-    invoke: async () => { assert.fail('Canceled deletion must not write.'); },
+    window: { confirm: () => assert.fail('Removal must not ask a question.'), clearTimeout() {} },
+    invoke: async (name, args) => { calls.push([name, args]); return { reviews: [] }; },
     applyReviewStore() {},
-    setStatus() {},
+    pushUndo: (entry) => undo.push(entry),
+    undoLast: async () => true,
+    restoreRemovedReview: async (...args) => { calls.push(['restore', ...args]); },
+    setStatus: (message, options) => statuses.push([message, options]),
   };
   const remove = appFunction('deleteReview', 'async function jumpToReview(', context);
   await remove('r1');
-  assert.equal(pendingComments.size, 1, 'Canceling removal preserves the pending edit.');
-  context.window.confirm = () => true;
+  assert.equal(JSON.stringify(calls[0]),
+    JSON.stringify(['delete_review', { document: 'a.pdf', id: 'r1', expectedRecord: record }]));
+  assert.equal(pendingComments.size, 0);
+  assert.equal(context.state.selectedReviewId, null);
+  assert.equal(undo.length, 1, 'A removal can be undone.');
+  assert.equal(undo[0].path, 'a.pdf');
+  assert.equal(statuses[0][1].action.label, 'Undo', 'The toast offers Undo.');
+  await undo[0].run();
+  assert.equal(calls[1][1], 'a.pdf');
+  assert.equal(calls[1][2], record, 'Undo restores the exact record.');
+  assert.equal(calls[1][3], draft, 'Undo restores the unsaved draft.');
+
+  pendingComments.set('a.pdf\u0000r1', draft);
+  context.state.reviews = [record];
   context.invoke = async () => { throw new Error('permission denied'); };
-  context.setStatus = () => {};
   await remove('r1');
   assert.equal(pendingComments.size, 1, 'Failed removal preserves the pending edit.');
+  assert.equal(undo.length, 1, 'A failed removal offers no Undo.');
 }
 
 {
@@ -1087,7 +1113,7 @@ for (const pauseAt of ['save', 'close']) {
   let applied = false;
   let appended;
   let statusMessage = '';
-  const save = appFunction('saveNote', 'async function optionalSourceHint(', {
+  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS,
     state,
     noteSaveInFlight: false,
     structuredClone: (value) => JSON.parse(JSON.stringify(value)),
@@ -1582,8 +1608,8 @@ assert.match(
 );
 assert.match(
   app,
-  /function onDocumentContextMenu\(event\)[\s\S]*?if \(!state\.reviewOpen\) \{\s*return;\s*\}[\s\S]*?event\.preventDefault\(\)/,
-  'Outside review mode the system context menu, with Copy, must stay.',
+  /function onDocumentContextMenu\(event\)[\s\S]*?if \(!state\.reviewOpen && !edits\) \{\s*return;\s*\}[\s\S]*?event\.preventDefault\(\)[\s\S]*?ui\.reviewMenuCopy\.hidden = state\.reviewOpen;/,
+  'Outside review mode the system context menu stays, unless a Markdown edit menu replaces it with its own Copy.',
 );
 assert.match(
   app,
@@ -1943,6 +1969,13 @@ for (const file of [
   'math-core/NewCMMath-Book.woff2',
   'math-core/GUST-FONT-LICENSE.txt',
   'latin-modern/lmroman12-regular.woff2',
+  'machine-made-type/MachineMadeWeft-Variable.woff2',
+  'machine-made-type/MachineMadeSans-Variable.woff2',
+  'machine-made-type/MachineMadeSans-Italic-Variable.woff2',
+  'machine-made-type/MachineMadeHeddle-Variable.woff2',
+  'machine-made-type/OFL-Weft.txt',
+  'machine-made-type/OFL-Sans.txt',
+  'machine-made-type/OFL-Heddle.txt',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -2097,8 +2130,8 @@ assert.match(app, /reviewsCount=\$\{reviews\.length\}/,
   'Native readiness reports how many review rows were loaded.');
 assert.match(app, /uniqueRowIds=\$\{rowIds\.size\}; uniqueTints=\$\{tints\.size\}; serializedIds=\$\{serializedIds\.size\}; agentExtensions=\$\{agentExtensions\.length\}; nextId=\$\{state\.nextId\}/,
   'Dense native readiness reports stable row IDs, all tints, preserved extensions, and next ID.');
-assert.match(app, /textContent = 'Reattach selection'[\s\S]*?pointerdown'[\s\S]*?preventDefault\(\)[\s\S]*?sameReviewQuote/,
-  'Manual reattachment keeps the PDF text selection and accepts only the original quote.');
+assert.match(app, /'Cancel reattach' : 'Reattach'[\s\S]*?pointerdown'[\s\S]*?preventDefault\(\)/,
+  'Reattach keeps the text selection, so a selection made first is taken at once.');
 assert.match(app, /textContent = 'Use disk'[\s\S]*?textContent = 'Save my draft'[\s\S]*?expectedComment: String\(current\.comment \|\| ''\)/,
   'Same-field conflicts require an explicit choice before the user draft is rebased.');
 assert.match(app, /textContent = 'Copy draft'[\s\S]*?textContent = 'Discard draft'/,
@@ -2860,6 +2893,249 @@ assert.equal(rustVersion, config.version, 'Rust and bundle versions must agree.'
 const releaseTag = process.env.GITHUB_REF?.match(/^refs\/tags\/v(.+)$/)?.[1];
 if (releaseTag) {
   assert.equal(releaseTag, config.version, 'The release tag must match the built version.');
+}
+
+// The review composer closes from anywhere: Esc whatever has focus, the ×,
+// Cancel, and a click outside it while it is empty.
+{
+  const state = { pendingNote: { quote: 'q' }, pendingNotePdf: {} };
+  const ui = { noteBox: { hidden: false }, noteText: { value: 'draft' } };
+  let chromeHidden = false;
+  let released = null;
+  const close = appFunction('closeNoteBox', 'let noteSaveInFlight', {
+    state, ui, hideReviewChrome: () => { chromeHidden = true; }, releaseFocus: (box) => { released = box; },
+  });
+  close();
+  assert.equal(ui.noteBox.hidden, true);
+  assert.equal(ui.noteText.value, '');
+  assert.equal(state.pendingNote, null);
+  assert.equal(state.pendingNotePdf, null);
+  assert.ok(chromeHidden);
+  assert.equal(released, ui.noteBox, 'Closing gives the focus back, so the next shortcut works.');
+  const keydown = app.slice(app.indexOf("window.addEventListener('keydown'"));
+  const escape = keydown.indexOf("key === 'escape' && !ui.noteBox.hidden");
+  assert.ok(escape > 0 && escape < keydown.indexOf('const dockKeys'),
+    'Esc must close the composer before any other key handling, even from a menu.');
+  assert.match(app, /ui\.noteCancel\.addEventListener\('click', \(\) => closeNoteBox\(\)\)/);
+  assert.match(app, /ui\.noteClose\.addEventListener\('click', \(\) => closeNoteBox\(\)\)/);
+  assert.match(app, /!ui\.noteBox\.hidden && !ui\.noteText\.value\.trim\(\)\) \{\n\s*closeNoteBox\(\);/,
+    'A click outside closes only an empty composer.');
+  assert.match(page, /id="noteClose"[^>]*aria-label="Close without saving"/);
+  assert.match(page, /<button id="noteCancel" type="button">Cancel<\/button>/);
+}
+
+// Ctrl+Z undoes the newest change to the file on screen, and only that file's.
+{
+  const ran = [];
+  const context = {
+    state: { file: { path: 'a.md' } },
+    undoStack: [
+      { path: 'a.md', label: 'one', run: async () => ran.push('a1') },
+      { path: 'b.md', label: 'two', run: async () => ran.push('b1') },
+      { path: 'a.md', label: 'three', run: async () => { ran.push('a2'); throw new Error('gone'); } },
+    ],
+    statuses: [],
+  };
+  context.setStatus = (message) => context.statuses.push(message);
+  const undo = appFunction('undoLast', '/// Put a removed review back', context);
+  assert.equal(await undo(), true);
+  assert.deepEqual(ran, ['a2']);
+  assert.match(context.statuses[0], /Could not undo three/);
+  assert.equal(await undo(), true);
+  assert.deepEqual(ran, ['a2', 'a1']);
+  assert.equal(await undo(), false, 'Another file’s change is not undone here.');
+  assert.equal(context.undoStack.length, 1);
+  const limited = { undoStack: [], UNDO_LIMIT: 2 };
+  const push = appFunction('pushUndo', '/// Undo the newest change', limited);
+  for (const label of ['x', 'y', 'z']) push({ path: 'a.md', label });
+  assert.deepEqual(limited.undoStack.map((entry) => entry.label), ['y', 'z'],
+    'The stack keeps the newest entries.');
+}
+
+// An agent fixes reviews one by one and edits the text around the others.
+// Every open review must still be found afterwards, at its own text.
+{
+  const before = normalizeReviewText(`
+    The boundary layer separates early because the adverse pressure gradient is strong.
+    We measure the wall shear stress with hot-film sensors at twelve stations.
+    The wake is long and the vortex shedding frequency matches the Strouhal number.
+    Results agree with the direct numerical simulation within five percent.
+    The appendix lists every sensor and its calibration.`);
+  const review = (quote) => {
+    const start = before.indexOf(quote);
+    return { quote, anchor: contextAt(before, start, start + quote.length) };
+  };
+  const shear = review('wall shear stress');
+  const wake = review('the vortex shedding frequency');
+  const agree = review('within five percent');
+  const sensor = review('every sensor');
+  const after = normalizeReviewText(`
+    # A heading the agent added
+    The boundary layer separates early: the adverse pressure gradient is very strong here.
+    We measure the wall shear stress using calibrated hot-film sensors at twelve stations.
+    The wake is long, and the vortex shedding frequency matches the Strouhal number.
+    Results agree with the DNS of Smith et al. within five percent.
+    The appendix lists each sensor and its calibration.`);
+  for (const [name, item, quote] of [['shear', shear, 'wall shear stress'],
+    ['wake', wake, 'the vortex shedding frequency'], ['agree', agree, 'within five percent']]) {
+    const found = resolveMarkdownReview(after, item, { normalized: true });
+    assert.equal(found.status, 'located', `${name}: edits around a quote must not lose it.`);
+    assert.equal(after.slice(found.start, found.end), quote, `${name}: the mark is on its own text.`);
+    assert.equal(found.moved, true, `${name}: a drifted review is flagged for healing.`);
+    const healed = { quote, anchor: contextAt(after, found.start, found.end) };
+    const again = resolveMarkdownReview(after, healed, { normalized: true });
+    assert.equal(again.status, 'located');
+    assert.equal(again.moved, undefined, `${name}: once healed, the context matches in full.`);
+  }
+  const changed = resolveMarkdownReview(after, sensor, { normalized: true });
+  assert.equal(changed.status, 'changed', 'An edited quote is found between its old neighbours.');
+  assert.equal(after.slice(changed.start, changed.end), 'each sensor');
+  const repeated = 'see the figure above. see the figure below. and more text';
+  const short = { quote: 'the figure', anchor: { prefix: 'nothing alike at all', suffix: 'nor here either' } };
+  assert.equal(resolveMarkdownReview(repeated, short).status, 'ambiguous',
+    'A repeated quote with no deciding context stays ambiguous.');
+  const leaning = { quote: 'the figure', anchor: { prefix: 'please see', suffix: 'below. and more' } };
+  const chosen = resolveMarkdownReview(repeated, leaning);
+  assert.equal(chosen.status, 'located', 'The candidate whose context clearly agrees best wins.');
+  assert.equal(chosen.start, repeated.lastIndexOf('the figure'));
+  assert.equal(resolveReviewAnchor([{ page: 1, text: 'only ab here' }], 'ab', { prefix: 'wrong' }).status,
+    'unlocated', 'A short quote needs agreeing context before it is taken.');
+}
+
+// A drifted open review is rewritten to where its quote stands now.
+{
+  const joined = 'new heading. the boundary layer separates early. the wake is long.';
+  const start = joined.indexOf('separates early');
+  const found = { start, end: start + 'separates early'.length };
+  const context = {
+    state: { markdownDigest: 'sha256:now' },
+    ui: { markdown: {} },
+    reviewStatus, contextAt, atRange: (lo, hi) => (lo === hi ? { line: lo } : { line: lo, end: hi }),
+    lineNear: (node) => node.line,
+  };
+  const heal = appFunction('markdownHealPatch', 'let reviewHealTimer', context);
+  const review = { id: 'r3', status: 'open', at: { line: 2 }, anchor: { prefix: 'old', suffix: 'old', documentRevision: 'sha256:then' } };
+  const result = heal(review, joined, found, { line: 4 }, { line: 4 });
+  assert.equal(result.id, 'r3');
+  assert.deepEqual({ ...result.patch.at }, { line: 4 }, 'The lines follow the quote.');
+  assert.equal(result.patch.anchor.prefix, 'new heading. the boundary layer');
+  assert.equal(result.patch.anchor.documentRevision, 'sha256:now');
+  assert.equal(result.expected.anchor, review.anchor, 'The write is a compare-and-swap on what was read.');
+  assert.equal(result.expected.at, review.at);
+  const settled = { ...review, at: { line: 4 }, anchor: { ...result.patch.anchor } };
+  assert.equal(heal(settled, joined, found, { line: 4 }, { line: 4 }), null, 'A review in place is not rewritten.');
+  assert.equal(heal({ ...review, status: 'applied' }, joined, found, { line: 4 }, { line: 4 }), null,
+    'Only open reviews are healed; applied and resolved ones keep their record.');
+}
+
+// Direct edits map a rendered selection back to its Markdown source.
+{
+  const raw = '# Title\r\n\r\nThe wake is long and the\r\nwake is slow.\r\n\r\nA [link to the wake](x.md) here.\r\n';
+  const lines = (n) => n;
+  const span = sourceSpan(raw, lines(3), lines(3), 'long and the wake');
+  assert.equal(raw.slice(span.start, span.end), 'long and the\r\nwake', 'A quote across a line break maps whole.');
+  assert.equal(sourceSpan(raw, 3, 3, 'wake').error, 'repeated', 'A repeat within the paragraph is refused.');
+  assert.equal(sourceSpan(raw, 6, 6, 'link to the wake here').error, 'markup', 'A quote across a link is refused.');
+  const block = blockSpan(raw, 3, 3);
+  assert.deepEqual([block.line, block.endLine], [3, 4], 'The paragraph runs to the next blank line.');
+  assert.equal(raw.slice(block.start, block.end), 'The wake is long and the\r\nwake is slow.');
+  const bold = formatEdit(raw, span, 'bold');
+  assert.equal(bold.replacement, '**long and the\r\nwake**');
+  const boldRaw = raw.slice(0, bold.start) + bold.replacement + raw.slice(bold.start + bold.expected.length);
+  const inner = { start: bold.start + 2, end: bold.start + 2 + span.end - span.start };
+  const unbold = formatEdit(boldRaw, inner, 'bold');
+  assert.equal(unbold.removed, true, 'Bold on bold text removes it.');
+  assert.equal(unbold.replacement, 'long and the\r\nwake');
+  const italic = formatEdit(boldRaw, inner, 'italic');
+  assert.equal(italic.removed, false, 'A star that is half of a bold pair is not italic.');
+  assert.equal(formatEdit('a `b` c', { start: 3, end: 4 }, 'code').removed, true);
+  assert.equal(formatEdit('a b c', { start: 2, end: 3 }, 'underline').replacement, '<u>b</u>');
+  assert.throws(() => formatEdit('a', { start: 0, end: 1 }, 'blink'));
+  const smart = 'It\'s -- here... "x"';
+  const typographic = sourceSpan(smart, 1, 1, 'It’s – here… “x”');
+  assert.equal(smart.slice(typographic.start, typographic.end), smart,
+    'Smart quotes, dashes and ellipses map back to their source characters.');
+}
+assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
+assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
+  'Undoing a direct edit writes the inverse against the digest the edit produced.');
+
+// machine-made type: every face the menus offer is declared, and Settings
+// mirrors the toolbar menus and keeps its own preferences.
+for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machine-made Sans'], ['heddle', 'machine-made Heddle']]) {
+  assert.match(page, new RegExp(`<option value="${value}">`), `${value} is in the font menu.`);
+  assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "${family}"`));
+  assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "${family}";`), `${family} has a font face.`);
+}
+assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
+assert.match(page, /<strong>pdf-next<\/strong> by machine-made/, 'About names the maker.');
+assert.match(page, /<summary>Details: what pdf-next is built with<\/summary>/, 'About lists what pdf-next is built with.');
+assert.ok(page.includes(`PDF.js ${vendored}`),
+  'The PDF.js version in About is the vendored one.');
+for (const name of ['Tauri', 'pulldown-cmark', 'ammonia', 'math-core', 'highlight.js', 'lopdf', 'picamatl']) {
+  assert.match(readme, new RegExp(`\\[?${name.replace('.', '\\.')}`), `The README lists ${name}.`);
+}
+assert.equal(config.bundle.publisher, 'machine-made', 'machine-made publishes pdf-next.');
+assert.equal(config.identifier, 'dev.frantz.pdf-next', 'The bundle identifier stays, so installs keep their settings.');
+assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{PRODUCTNAME\}" ""/,
+  'An upgrade still finds the folder an older publisher recorded.');
+{
+  const root = { dataset: {} };
+  const stored = new Map();
+  const apply = appFunction('applyUiFont', 'function syncSettings', {
+    UI_FONTS: ['system', 'mm-sans', 'weft'], ui: { setUiFont: { value: '' } },
+    document: { documentElement: root },
+    localStorage: { setItem: (key, value) => stored.set(key, value) },
+  });
+  apply('weft');
+  assert.equal(root.dataset.uiFont, 'weft');
+  assert.equal(stored.get('pdf-next.ui-font'), 'weft');
+  apply('comic');
+  assert.equal(root.dataset.uiFont, undefined, 'An unknown interface font falls back to the system one.');
+}
+
+// Figures: an image alone in its paragraph gets the figure class and, with
+// captions on, its alt text as a caption the reader (and a review) can see.
+{
+  const made = [];
+  const element = (tag, props = {}) => ({
+    tag, className: '', textContent: '', children: [], attributes: {},
+    classList: { names: new Set(), add(...n) { n.forEach((x) => this.names.add(x)); } },
+    matches(selector) { return selector === tag || (selector === 'span.src' && props.src); },
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    append(child) { this.children.push(child); },
+    ...props,
+  });
+  const figure = (alt, text = '') => {
+    const image = element('img', { attributes: { alt } });
+    const paragraph = element('p', { textContent: text });
+    paragraph.children = [element('span', { src: true }), image];
+    return paragraph;
+  };
+  const alone = figure('Wake behind the cylinder');
+  const silent = figure('');
+  const inline = figure('icon', 'Press the button');
+  let caption = 'numbered';
+  const context = {
+    figureSetting: () => caption,
+    document: { createElement: (tag) => { const node = element(tag); made.push(node); return node; } },
+  };
+  const mark = appFunction('markFigures', '/// The HTML arrives already sanitized', context);
+  mark({ querySelectorAll: () => [alone, silent, inline] });
+  assert.ok(alone.classList.names.has('md-figure') && alone.classList.names.has('has-caption'));
+  assert.equal(alone.children.at(-1).textContent, 'Wake behind the cylinder', 'The alt text is the caption.');
+  assert.ok(silent.classList.names.has('md-figure') && !silent.classList.names.has('has-caption'),
+    'A figure without alt text has no caption and takes no number.');
+  assert.equal(inline.classList.names.size, 0, 'An image inside text is not a figure.');
+  caption = 'off';
+  const bare = figure('Wake');
+  mark({ querySelectorAll: () => [bare] });
+  assert.equal(bare.children.length, 2, 'Captions off adds no text.');
+  assert.match(styles, /#markdown\[data-fig-caption="numbered"\] \.md-caption::before \{\s*content: "Figure " counter\(figure\) "\. ";/);
+  assert.match(styles, /#markdown\[data-fig-width="75"\] p\.md-figure > img:not\(\[width\]\)/,
+    'A size written in the Markdown wins over the Settings width.');
+  assert.match(app, /closest\('img\[data-doc\]'\)[\s\S]*?isCollapsed[\s\S]*?openPath\(image\.dataset\.doc\)/,
+    'A plain click opens a figure in its own tab; a selection does not.');
 }
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);

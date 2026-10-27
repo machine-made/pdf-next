@@ -730,6 +730,15 @@ mark.review,
   -webkit-user-select: none;
 }
 
+/* The quote was edited since the review: the text between its old
+   neighbours is marked, with a dashed line under it. */
+mark.review.changed,
+.textLayer review-q.changed {
+  text-decoration: underline dashed var(--review-line);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .textLayer review-q[data-review-action='delete'],
 mark.review[data-review-action='delete'] {
   text-decoration: line-through;
@@ -782,6 +791,78 @@ mark.review[data-review-action='delete'] {
   width: 100%;
   justify-content: flex-start;
   padding: 0 10px;
+}
+
+#reviewMenu .menu-group[hidden] {
+  display: none;
+}
+
+#reviewMenu kbd {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.menu-rule {
+  margin: 4px 2px;
+  border: 0;
+  border-top: 1px solid var(--widget-border);
+}
+
+#editBox {
+  position: fixed;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 6px;
+  background: var(--widget);
+  box-shadow: 0 4px 16px var(--shadow);
+  font-size: var(--review-size, 12px);
+}
+
+#editBox[hidden] {
+  display: none;
+}
+
+#editRef {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+#editText {
+  width: min(440px, calc(100vw - 32px));
+  min-height: 5em;
+  padding: 4px 6px;
+  border: 1px solid var(--widget-border);
+  border-radius: 2px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 0.95em;
+  resize: vertical;
+}
+
+.edit-hint {
+  margin-right: auto;
+  align-self: center;
+  font-size: 0.85em;
+}
+
+#editSave,
+#editCancel {
+  padding: 2px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 2px;
+  background: var(--widget);
+  cursor: pointer;
+}
+
+#editSave:hover,
+#editCancel:hover {
+  background: var(--widget-hover);
 }
 
 #viewerContainer {
@@ -995,7 +1076,41 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
   border-radius: 2px;
 }
 
-#noteSave {
+.note-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#noteClose {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+#noteClose:hover {
+  background: var(--widget-hover);
+  color: inherit;
+}
+
+.note-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+#noteSave,
+#noteCancel {
   padding: 2px 8px;
   border: 1px solid var(--widget-border);
   border-radius: 2px;
@@ -1003,7 +1118,8 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
   cursor: pointer;
 }
 
-#noteSave:hover {
+#noteSave:hover,
+#noteCancel:hover {
   background: var(--widget-hover);
 }
 /* ── Status and empty state ──────────────────────────────────────────── */
@@ -1035,6 +1151,27 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
 
 #status.error {
   color: var(--error);
+}
+
+/* A message with a button (Undo) takes clicks while it shows. */
+#status.on.actionable {
+  pointer-events: auto;
+}
+
+.status-action {
+  margin-left: 10px;
+  padding: 0 6px;
+  border: 1px solid var(--widget-border);
+  border-radius: 3px;
+  background: var(--widget);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-action:hover {
+  background: var(--widget-hover);
 }
 
 #empty {
@@ -1114,6 +1251,46 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
   font-display: swap;
 }
 
+
+/* machine-made type (github.com/machine-made/type), OFL 1.1, variable. */
+@font-face {
+  font-family: "machine-made Weft";
+  src: url('./vendor/machine-made-type/MachineMadeWeft-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Sans";
+  src: url('./vendor/machine-made-type/MachineMadeSans-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Sans";
+  src: url('./vendor/machine-made-type/MachineMadeSans-Italic-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "machine-made Heddle";
+  src: url('./vendor/machine-made-type/MachineMadeHeddle-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-stretch: 70% 140%;
+  font-display: swap;
+}
+
+/* The interface font, chosen in Settings. */
+:root[data-ui-font="mm-sans"] {
+  --ui-font: "machine-made Sans", "Segoe UI", -apple-system, "Ubuntu", system-ui, sans-serif;
+}
+
+:root[data-ui-font="weft"] {
+  --ui-font: "machine-made Weft", "Segoe UI", -apple-system, "Ubuntu", system-ui, sans-serif;
+}
 
 /* ── Markdown ────────────────────────────────────────────────────────── */
 /* The prose sits on a page, like a PDF does: white in every theme, recoloured
@@ -1256,6 +1433,18 @@ body.mode-sepia #markdownStage {
 
 #markdown[data-font="sans"] {
   --article-font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+#markdown[data-font="weft"] {
+  --article-font: "machine-made Weft", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#markdown[data-font="mm-sans"] {
+  --article-font: "machine-made Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#markdown[data-font="heddle"] {
+  --article-font: "machine-made Heddle", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 #markdown[data-font="mono"] {
@@ -1442,9 +1631,101 @@ body.pages-on #mdWidth {
   height: auto;
 }
 
-#markdown p > img:only-child {
+#markdown p > img:only-child,
+#markdown p.md-figure > img {
   display: block;
   margin: 0 auto;
+}
+
+/* Figures: an image alone in its paragraph. Settings sets the data-fig-*
+   attributes; sizes written in the Markdown ({width=60%}) win over them. */
+#markdown {
+  counter-reset: figure;
+}
+
+#markdown p.md-figure {
+  margin: 1.2em 0;
+  text-align: center;
+}
+
+#markdown img[data-doc] {
+  cursor: zoom-in;
+}
+
+#markdown[data-fig-width="column"] p.md-figure > img:not([width]) {
+  width: 100%;
+}
+
+#markdown[data-fig-width="75"] p.md-figure > img:not([width]) {
+  width: 75%;
+}
+
+#markdown[data-fig-width="50"] p.md-figure > img:not([width]) {
+  width: 50%;
+}
+
+#markdown[data-fig-height="screen"] p.md-figure > img:not([height]) {
+  max-height: 85vh;
+  object-fit: contain;
+}
+
+#markdown[data-fig-height="half"] p.md-figure > img:not([height]) {
+  max-height: 50vh;
+  object-fit: contain;
+}
+
+#markdown[data-fig-align="left"] p.md-figure {
+  text-align: left;
+}
+
+#markdown[data-fig-align="left"] p.md-figure > img,
+#markdown p.md-figure > img[data-align="left"] {
+  margin: 0 auto 0 0;
+}
+
+#markdown p.md-figure > img[data-align="right"] {
+  margin: 0 0 0 auto;
+}
+
+#markdown p.md-figure > img[data-align="center"] {
+  margin: 0 auto;
+}
+
+/* An image inside text that asks for a side floats there. */
+#markdown p:not(.md-figure) > img[data-align="left"] {
+  float: left;
+  margin: 0.2em 1em 0.5em 0;
+}
+
+#markdown p:not(.md-figure) > img[data-align="right"] {
+  float: right;
+  margin: 0.2em 0 0.5em 1em;
+}
+
+#markdown .md-caption {
+  display: block;
+  margin-top: 0.5em;
+  font-size: 0.9em;
+  line-height: 1.4;
+  color: var(--md-dim);
+}
+
+#markdown p.md-figure:has(> img[data-align="left"]) .md-caption {
+  text-align: left;
+}
+
+#markdown p.md-figure:has(> img[data-align="right"]) .md-caption {
+  text-align: right;
+}
+
+#markdown[data-fig-caption="numbered"] p.md-figure.has-caption {
+  counter-increment: figure;
+}
+
+#markdown[data-fig-caption="numbered"] .md-caption::before {
+  content: "Figure " counter(figure) ". ";
+  font-weight: 600;
+  color: var(--md-fg);
 }
 
 #markdown .md-image-refused {
@@ -1508,7 +1789,9 @@ body.pages-on #mdWidth {
   }
 
   #reviewPane,
+  #settingsPanel,
   #noteBox,
+  #editBox,
   #reviewChip,
   #reviewMenu {
     display: none !important;
@@ -1731,4 +2014,156 @@ body.pages-on #mdWidth {
 
 #markdown .changed.changed-fade {
   background: transparent;
+}
+
+/* Reattach is waiting for a selection: the text cursor says so. */
+body.reattach-picking #markdown,
+body.reattach-picking .textLayer {
+  cursor: crosshair;
+}
+
+.review-picking {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Settings ────────────────────────────────────────────────────────── */
+#settingsPanel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(300px, calc(100vw - 16px));
+  max-height: calc(100% - 16px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--widget-border);
+  border-radius: 8px;
+  background: var(--widget);
+  box-shadow: 0 8px 24px var(--shadow);
+  font-family: var(--ui-font);
+  font-size: 12px;
+}
+
+#settingsPanel[hidden] {
+  display: none;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+#settingsClose {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+#settingsPanel section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#settingsPanel h3 {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#settingsPanel label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#settingsPanel label.check {
+  justify-content: flex-start;
+}
+
+#settingsPanel select {
+  flex: none;
+  width: 9.5em;
+}
+
+#settingsPanel p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+#settingsPanel .settings-note code {
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
+}
+
+.about-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.35;
+}
+
+.mm-mark {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  fill: currentColor;
+}
+
+.mm-mark .mm-centre {
+  fill: #d7261e;
+}
+
+.about-details summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.about-details dl {
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+
+.about-details dt {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.about-details dd {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
+.about-links {
+  display: flex;
+  gap: 6px;
+}
+
+.about-links button {
+  padding: 2px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 3px;
+  background: var(--widget);
+  cursor: pointer;
+}
+
+.about-links button:hover {
+  background: var(--widget-hover);
 }

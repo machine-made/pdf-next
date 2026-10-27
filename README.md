@@ -1,5 +1,7 @@
 # pdf-next
 
+*pdf-next by machine-made.*
+
 A small, fast PDF, image and markdown viewer that **reloads the moment the file changes** —
 built for the LaTeX and Typst compile loop, where you rebuild and want to see the result
 without touching anything.
@@ -84,10 +86,10 @@ that survives a build deleting and recreating the file mid-compile.
   or exceeds the rendering limits is shown as escaped TeX source; an unknown command is marked in
   red and the rest of the equation still renders. A `\eqref` to an equation further down the file
   shows `(??)`.
-- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, Serif, Sans, Mono), the text size (14 px to 24 px) and the column width (Narrow, Normal, Wide, Full); each choice is remembered. Zoom reflows the text rather than scaling it.
+- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono), the text size (14 px to 24 px) and the column width (Narrow, Normal, Wide, Full); each choice is remembered. Zoom reflows the text rather than scaling it.
 - **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
-- **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a Delete or Improve request. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Not available for images.
+- **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
 - **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
 - **Reduce a PDF** with the toolbar button next to Print. A pure-Rust pass (no Ghostscript) writes `{stem}_reduced.pdf` beside the original when it can shrink the file; the original stays untouched and the smaller copy opens as a tab.
 - **Changed blocks light up on reload:** When a Markdown file rewrites, changed and new paragraphs, headings, list items, tables and equations fade from a highlight over a few seconds. The comparison is by content: adding a paragraph marks only that one. Scroll position is kept.
@@ -119,7 +121,7 @@ that survives a build deleting and recreating the file mid-compile.
   sheets as text, and an image gets a sheet to itself. A document whose pages are not all the
   same size follows the first one, as it does in every other viewer. If the machine has nothing
   to print to — no printer, or a stopped print service — it says so rather than opening nothing.
-- **The title says which build you are running** — `paper.pdf — pdf-next 0.15.1` — so a bug report
+- **The title says which build you are running** — `paper.pdf — pdf-next 0.15.2` — so a bug report
   can name a version without hunting for an about box.
 - **Tells you when there is a newer version.** A few seconds after launch the app asks
   GitHub for the latest release, once; if it is newer, the last toolbar button lights up and a
@@ -127,9 +129,19 @@ that survives a build deleting and recreating the file mid-compile.
   browser, from the repo's own Releases page. Pressing the button checks again on demand.
   Nothing polls: that one request at launch is the only network access the app makes on its
   own, downloads only ever happen on a press, and GitHub is the only host it can reach.
+- **Figures in Markdown.** An image alone on its line is a figure: its alt text becomes the
+  caption, numbered Figure 1, 2, … down the file. Size and place one in the Markdown itself with the
+  attribute syntax Pandoc and Quarto use: `![Wake behind the cylinder](wake.png){width=60%}`,
+  `{width=8cm}` (also `mm`, `in`, `pt`, `px`), `{height=300}`, and `.left`, `.right` or `.center`
+  (inside a line of text, `.left` and `.right` float the image). Settings sets the defaults for
+  figures that give no size: natural size, the column width, 75% or 50% of it; no height limit,
+  the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
+  open it full size in a tab of its own, with zoom and the folder walk.
+- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
+- **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
-  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Ctrl+Shift+R` Review panel,
+  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Esc` close the review box without saving, `Ctrl+B`/`Ctrl+I`/`Ctrl+E` bold, italic or edit a Markdown selection, `Ctrl+Z` undo a removed review or an edit, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+F` fit window to content,
   `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
 ## Install
@@ -369,6 +381,9 @@ pdf-next reviews list paper.pdf
 pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8
 ```
 
+A record removed by mistake goes back with `restore`, under its own ID, from the record exactly
+as `list` printed it: `pdf-next reviews restore paper.pdf --record r12.json --expected-revision 9`.
+
 Use the `revision` printed by `list` for `--expected-revision`. A concurrent update causes a
 conflict; reread the store and prepare the patch again instead of overwriting it. `--dry-run`
 checks a patch and prints the proposed JSON without saving it. The source field uses the
@@ -383,11 +398,19 @@ Use the CLI mutation command instead of editing the JSON directly. A raw writer 
 IDs and unknown fields, write atomically, and check the sidecar revision; writers that skip
 that protocol can overwrite concurrent changes.
 
+The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
+`polish` (better wording, same meaning), `shorten`, `expand`, `check` (verify the fact, number or
+equation and fix it only if wrong), `bold`, `italic` (format the passage in the source) and
+`delete` (remove the passage). For the actions other than `improve`, `comment` is an optional note.
+
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
 hyphenation, equations and included files can change how text appears. Check the surrounding
 source before editing; an equation symbol needs its equation context and position, so do not
 copy a symbol in isolation. Record the source file that actually changed. A disappeared quote
 does not prove that a Delete request succeeded, and completing a task never removes its record.
+Do not delete records from the sidecar to mark them done: set `applied`. While pdf-next shows the
+file, it keeps the open reviews pinned to their text as you edit, and `list` then prints their
+current lines.
 
 ## Security
 
@@ -406,6 +429,11 @@ every byte of it.
   Markdown file shows — an allowlist in our own Rust code, populated only by the open path and
   the Markdown renderer. Review commands also access the adjacent review sidecar and query an optional
   local SyncTeX mapping; source hints must point to `.tex` files inside the PDF folder.
+- **The one file the app writes is a Markdown file you opened, and only when you edit it.** Direct
+  edits go through one Rust command that accepts only a `.md` from the set you opened, refuses
+  the write unless the file's digest is still the one on screen and the text at the edit is still
+  the text you selected, and replaces the file atomically with its permissions kept. A PDF is
+  never written.
 - **Markdown is sanitized before it exists as HTML.** A `.md` is parsed and scrubbed by
   ammonia on the Rust side; scripts, event handlers and `javascript:` URLs never cross into
   the window, only local image files are loaded (never web or network paths), and the CSP forbids
@@ -503,12 +531,67 @@ every machine, so a change to them is a change someone made.
 All three run on Windows, macOS and Linux for every push, and a release stays a draft until
 each platform's bundle has opened a document.
 
+## What it is built with
+
+Every part pdf-next is made of, what it does here, and its licence. Versions are the ones this
+release ships; the frontend libraries are vendored under `src/vendor/`, each with a `VERSION`
+file that records its source and checksum.
+
+**The app shell (Rust)**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [Rust](https://www.rust-lang.org) | 1.96 or newer | The native side: files, watching, reviews, Markdown, PDF reduction, printing. | MIT / Apache-2.0 |
+| [Tauri](https://tauri.app) | 2.11.5 | The window, the bridge between Rust and the page, bundles and installers. | MIT / Apache-2.0 |
+| [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao) | 0.55 / 0.35 | Tauri's webview and window layers: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. | MIT / Apache-2.0 |
+| tauri-plugin-dialog | 2.7.2 | The system Open dialog. | MIT / Apache-2.0 |
+| tauri-plugin-single-instance | 2.4.3 | A second `pdf-next file.pdf` opens a tab in the running window. | MIT / Apache-2.0 |
+| [serde](https://serde.rs), serde_json | 1.0 | Reads and writes the review sidecar and every message to the page. | MIT / Apache-2.0 |
+| [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | The `sha256:` digests that tell one version of a file from another. | MIT / Apache-2.0 |
+| [tempfile](https://github.com/Stebalien/tempfile) | 3.27 | Atomic writes: the sidecar, a reduced PDF, a Markdown edit. | MIT / Apache-2.0 |
+| [cap-std](https://github.com/bytecodealliance/cap-std) | 3.4.6 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
+| [open](https://github.com/Byron/open-rs) | 5.4.1 | Hands a checked web link to the default browser. | MIT |
+| percent-encoding | 2.3.2 | Encodes local paths for the document protocol. | MIT / Apache-2.0 |
+| gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.18 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
+
+**Markdown and TeX**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) | 0.13.4 | Parses Markdown: CommonMark plus tables, task lists, footnotes, strikethrough, smart punctuation and `$…$` math. | MIT |
+| [ammonia](https://github.com/rust-ammonia/ammonia) | 4.1.4 | Sanitizes the HTML before it reaches the page: no scripts, no event handlers. | MIT / Apache-2.0 |
+| [math-core](https://github.com/tmke8/math-core) | 0.9.0 (pinned) | Turns TeX equations into MathML Core, drawn by the webview itself. | MIT |
+| New Computer Modern Math | in `vendor/math-core` | The equation font. | GUST Font License |
+| Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
+| [highlight.js](https://highlightjs.org) | 11.12.0 | Colours code blocks: Bash, C, C++, CMake, diff, Fortran, INI, JavaScript, JSON, Julia, LaTeX, Makefile, MATLAB, Python, Rust, shell, YAML. | BSD 3-Clause |
+| [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
+
+**PDF**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [PDF.js](https://mozilla.github.io/pdf.js/) (`pdfjs-dist`) | 6.3.289 | Parses and renders PDFs in a worker, with find and the text layer for reviews. Patched (see `vendor/PDFJS_VERSION`): smaller page cache, sharper zoomed crops, bounded stream decoding. | Apache-2.0 |
+| [lopdf](https://github.com/J-F-Liu/lopdf) | 0.44 | Reads PDF structure on the Rust side, with limits on stream decompression. | MIT |
+| [picamatl](https://github.com/xcheljd/picamatl) | 0.4.4 | Reduce PDF: writes a smaller `{name}_reduced.pdf` in pure Rust, no Ghostscript. | MIT / Apache-2.0 |
+| SyncTeX | from your TeX install | When a `.synctex.gz` sits next to a PDF and the `synctex` program from your TeX distribution is on the PATH, a review can carry a hint of the `.tex` line. pdf-next ships no SyncTeX of its own; without it the hint is simply left out. | (TeX distribution) |
+
+**Building and checking**
+
+| Part | What it does | Licence |
+| --- | --- | --- |
+| [Tauri CLI](https://tauri.app) 2.11.4, run with [Bun](https://bun.sh) | Builds the app and its installers. | MIT / Apache-2.0 |
+| NSIS (Windows), DMG (macOS), deb, rpm and AppImage (Linux) | The installers Tauri makes. | zlib / various |
+| Node.js | Runs `tools/check_frontend.mjs` and the smoke test. | MIT |
+
+The page itself is plain JavaScript modules, HTML and CSS: no framework and no build step.
+
 ## Scope
 
-A viewer, not an editor. No annotations, no forms, no editing, no cloud. It opens a file, keeps
-it current, and gets out of the way.
+A viewer first. No annotations, no forms, no cloud. It opens a file, keeps it current, and gets
+out of the way. The one exception is small, deliberate edits to a Markdown file you are reading
+(bold, italic, a reworded sentence), each one checked against the file on disk and undoable.
 
-MIT licensed. Built on [Mozilla PDF.js](https://github.com/mozilla/pdf.js) and
+pdf-next is made by machine-made, a lab for software built with AI agents. MIT licensed. Built on [Mozilla PDF.js](https://github.com/mozilla/pdf.js) and
 [Tauri](https://tauri.app).
 
 ## Disclaimer
@@ -521,5 +604,7 @@ for following the laws and rules that apply to you. The full terms are in
 
 pdf-next is not affiliated with or endorsed by Mozilla. PDF.js is © Mozilla and
 contributors, under the Apache License 2.0.
+
+The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https://github.com/machine-made/type) under the SIL Open Font License 1.1; their licences are in `src/vendor/machine-made-type/`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.

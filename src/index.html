@@ -80,6 +80,11 @@
         <path d="M4.5 11.5H3C2.45 11.5 2 11.05 2 10.5V7C2 6.45 2.45 6 3 6H13C13.55 6 14 6.45 14 7V10.5C14 11.05 13.55 11.5 13 11.5H11.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
         <rect x="4.5" y="9.5" width="7" height="4" rx="0.6" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
       </symbol>
+      <symbol id="i-settings" viewBox="0 0 16 16" fill="none">
+        <path d="M2.5 4.5H8.5M11.5 4.5H13.5M2.5 11.5H4.5M7.5 11.5H13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="10" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="6" cy="11.5" r="1.6" stroke="currentColor" stroke-width="1.5"/>
+      </symbol>
       <symbol id="i-close" viewBox="0 0 16 16" fill="none">
         <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </symbol>
@@ -183,6 +188,9 @@
         </button>
         <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
           <option value="latin-modern" selected>Latin Modern</option>
+          <option value="weft">mm Weft</option>
+          <option value="mm-sans">mm Sans</option>
+          <option value="heddle">mm Heddle</option>
           <option value="serif">Serif</option>
           <option value="sans">Sans</option>
           <option value="mono">Mono</option>
@@ -250,6 +258,9 @@
         <span id="waiting" title="The file is being rebuilt" hidden>
           <span class="dot"></span>
         </span>
+        <button id="settingsToggle" type="button" title="Settings (Ctrl+,)" aria-label="Settings" aria-pressed="false">
+          <svg class="icon"><use href="#i-settings"/></svg>
+        </button>
         <button id="update" type="button" title="Check for updates" aria-label="Check for updates">
           <svg class="icon"><use href="#i-update"/></svg>
         </button>
@@ -299,7 +310,9 @@
         </div>
         <div class="review-filters">
           <label>Action <select id="reviewActionFilter" aria-label="Filter reviews by action">
-            <option value="all">All</option><option value="delete">Delete</option><option value="improve">Improve</option>
+            <option value="all">All</option><option value="improve">Improve</option><option value="polish">Polish</option>
+            <option value="shorten">Shorten</option><option value="expand">Expand</option><option value="check">Check</option>
+            <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
           </select></label>
           <label>Status <select id="reviewStatusFilter" aria-label="Filter reviews by status">
             <option value="all">All</option><option value="open">Open</option><option value="applied">Applied</option><option value="resolved">Resolved</option>
@@ -308,24 +321,149 @@
         <div id="reviewList"></div>
       </aside>
 
+      <aside id="settingsPanel" hidden aria-label="Settings">
+        <div class="settings-head">
+          <span>Settings</span>
+          <button id="settingsClose" type="button" title="Close (Esc)" aria-label="Close settings">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <section>
+          <h3>Markdown</h3>
+          <label>Font <select id="setFont" data-mirror="mdFont"></select></label>
+          <label>Text size <select id="setSize" data-mirror="mdSize"></select></label>
+          <label>Column width <select id="setWidth" data-mirror="mdWidth"></select></label>
+          <label class="check"><input id="setDirectEdits" type="checkbox" />
+            Edit the file in place</label>
+        </section>
+        <section>
+          <h3>Figures</h3>
+          <label>Width <select id="setFigWidth" data-figure="width">
+            <option value="natural">Natural size</option>
+            <option value="column">Column width</option>
+            <option value="75">75% of column</option>
+            <option value="50">50% of column</option>
+          </select></label>
+          <label>Height <select id="setFigHeight" data-figure="height">
+            <option value="none">No limit</option>
+            <option value="screen">Fit the window</option>
+            <option value="half">Half the window</option>
+          </select></label>
+          <label>Place <select id="setFigAlign" data-figure="align">
+            <option value="center">Centred</option>
+            <option value="left">Left</option>
+          </select></label>
+          <label>Captions <select id="setFigCaption" data-figure="caption">
+            <option value="numbered">Figure 1, 2, …</option>
+            <option value="plain">Without number</option>
+            <option value="off">None</option>
+          </select></label>
+          <p class="dim settings-note">In the file: <code>![Caption](fig.png){width=60% .left}</code>. Click a figure to open it full size.</p>
+        </section>
+        <section>
+          <h3>Window</h3>
+          <label>Interface font <select id="setUiFont">
+            <option value="system">System</option>
+            <option value="mm-sans">mm Sans</option>
+            <option value="weft">mm Weft</option>
+          </select></label>
+          <label>Check for changes <select id="setPoll" data-mirror="poll"></select></label>
+        </section>
+        <section class="about">
+          <h3>About</h3>
+          <div class="about-name">
+            <svg class="mm-mark" viewBox="0 0 30 30" aria-hidden="true">
+              <rect x="1" y="1" width="8" height="8"/><rect x="11" y="1" width="8" height="8"/><rect x="21" y="1" width="8" height="8"/>
+              <rect x="1" y="11" width="8" height="8"/><rect class="mm-centre" x="11" y="11" width="8" height="8"/><rect x="21" y="11" width="8" height="8"/>
+              <rect x="1" y="21" width="8" height="8"/><rect x="11" y="21" width="8" height="8"/><rect x="21" y="21" width="8" height="8"/>
+            </svg>
+            <span><strong>pdf-next</strong> by machine-made<br /><span id="aboutVersion" class="dim"></span></span>
+          </div>
+          <p class="dim">A PDF, image and Markdown viewer for the compile loop, made in the machine-made lab. MIT licence.</p>
+          <details class="about-details">
+            <summary>Details: what pdf-next is built with</summary>
+            <dl>
+              <dt>App shell</dt>
+              <dd>Rust and Tauri 2 (window, installers), with the system webview: WebView2, WKWebView or WebKitGTK. serde, sha2, tempfile and cap-std keep the review file and edits safe.</dd>
+              <dt>PDF</dt>
+              <dd>Mozilla PDF.js 6.3.289 renders and searches. lopdf and picamatl (pure Rust) make Reduce PDF. SyncTeX hints use the <code>synctex</code> program of your TeX install, when present.</dd>
+              <dt>Markdown</dt>
+              <dd>pulldown-cmark parses, ammonia sanitizes, highlight.js 11.12 colours code.</dd>
+              <dt>TeX equations</dt>
+              <dd>math-core 0.9 turns TeX into MathML, set in New Computer Modern Math.</dd>
+              <dt>Fonts</dt>
+              <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1.</dd>
+              <dt>Licences</dt>
+              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; fonts GUST and SIL OFL. Full list in the README.</dd>
+            </dl>
+          </details>
+          <div class="about-links">
+            <button id="aboutUpdate" type="button">Check for updates</button>
+            <button id="aboutSource" type="button">Source code</button>
+          </div>
+        </section>
+      </aside>
+
       <div id="noteBox" hidden>
-        <div id="noteRef"></div>
+        <div class="note-head">
+          <div id="noteRef"></div>
+          <button id="noteClose" type="button" title="Close (Esc)" aria-label="Close without saving">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
         <div id="noteQuote" class="note-quote" aria-label="Selected text"></div>
         <label class="note-action-label">Action
           <select id="noteAction" aria-label="Review action">
-            <option value="improve">Improve</option><option value="delete">Delete selection</option>
+            <option value="improve">Improve</option>
+            <option value="polish">Polish (wording only)</option>
+            <option value="shorten">Shorten</option>
+            <option value="expand">Expand</option>
+            <option value="check">Check (fact, number, equation)</option>
+            <option value="bold">Make bold</option>
+            <option value="italic">Make italic</option>
+            <option value="delete">Delete selection</option>
           </select>
         </label>
         <input id="noteText" type="text" placeholder="Comment (Enter to save, Esc to cancel)" />
-        <button id="noteSave" type="button">Save</button>
+        <div class="note-buttons">
+          <button id="noteCancel" type="button">Cancel</button>
+          <button id="noteSave" type="button">Save</button>
+        </div>
       </div>
 
       <button id="reviewChip" type="button" hidden title="Add a review (Enter)" aria-label="Add a review">
         <svg class="icon"><use href="#i-add-review"/></svg>
       </button>
       <div id="reviewMenu" hidden role="menu">
-        <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
-        <button id="reviewMenuDelete" type="button" role="menuitem">Delete selection</button>
+        <button id="reviewMenuCopy" type="button" role="menuitem">Copy</button>
+        <div id="reviewMenuReview" class="menu-group">
+          <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
+          <button id="reviewMenuDelete" type="button" role="menuitem">Delete selection</button>
+        </div>
+        <div id="reviewMenuEdit" class="menu-group" role="group" aria-label="Edit the Markdown file">
+          <hr class="menu-rule" />
+          <button type="button" role="menuitem" data-format="bold">Bold <kbd>Ctrl+B</kbd></button>
+          <button type="button" role="menuitem" data-format="italic">Italic <kbd>Ctrl+I</kbd></button>
+          <button type="button" role="menuitem" data-format="underline">Underline</button>
+          <button type="button" role="menuitem" data-format="strike">Strikethrough</button>
+          <button type="button" role="menuitem" data-format="code">Code</button>
+          <button id="reviewMenuEditText" type="button" role="menuitem">Edit text… <kbd>Ctrl+E</kbd></button>
+        </div>
+      </div>
+
+      <div id="editBox" hidden>
+        <div class="note-head">
+          <div id="editRef"></div>
+          <button id="editClose" type="button" title="Close (Esc)" aria-label="Close without saving">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <textarea id="editText" rows="5" spellcheck="true" aria-label="Markdown source"></textarea>
+        <div class="note-buttons">
+          <span class="dim edit-hint">Ctrl+Enter saves</span>
+          <button id="editCancel" type="button">Cancel</button>
+          <button id="editSave" type="button">Save to file</button>
+        </div>
       </div>
 
       <div id="empty">
