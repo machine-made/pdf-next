@@ -1969,6 +1969,13 @@ for (const file of [
   'math-core/NewCMMath-Book.woff2',
   'math-core/GUST-FONT-LICENSE.txt',
   'latin-modern/lmroman12-regular.woff2',
+  'machine-made-type/MachineMadeWeft-Variable.woff2',
+  'machine-made-type/MachineMadeSans-Variable.woff2',
+  'machine-made-type/MachineMadeSans-Italic-Variable.woff2',
+  'machine-made-type/MachineMadeHeddle-Variable.woff2',
+  'machine-made-type/OFL-Weft.txt',
+  'machine-made-type/OFL-Sans.txt',
+  'machine-made-type/OFL-Heddle.txt',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -2894,8 +2901,9 @@ if (releaseTag) {
   const state = { pendingNote: { quote: 'q' }, pendingNotePdf: {} };
   const ui = { noteBox: { hidden: false }, noteText: { value: 'draft' } };
   let chromeHidden = false;
+  let released = null;
   const close = appFunction('closeNoteBox', 'let noteSaveInFlight', {
-    state, ui, hideReviewChrome: () => { chromeHidden = true; },
+    state, ui, hideReviewChrome: () => { chromeHidden = true; }, releaseFocus: (box) => { released = box; },
   });
   close();
   assert.equal(ui.noteBox.hidden, true);
@@ -2903,6 +2911,7 @@ if (releaseTag) {
   assert.equal(state.pendingNote, null);
   assert.equal(state.pendingNotePdf, null);
   assert.ok(chromeHidden);
+  assert.equal(released, ui.noteBox, 'Closing gives the focus back, so the next shortcut works.');
   const keydown = app.slice(app.indexOf("window.addEventListener('keydown'"));
   const escape = keydown.indexOf("key === 'escape' && !ui.noteBox.hidden");
   assert.ok(escape > 0 && escape < keydown.indexOf('const dockKeys'),
@@ -3050,5 +3059,33 @@ if (releaseTag) {
 assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
 assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
   'Undoing a direct edit writes the inverse against the digest the edit produced.');
+
+// machine-made type: every face the menus offer is declared, and Settings
+// mirrors the toolbar menus and keeps its own preferences.
+for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machine-made Sans'], ['heddle', 'machine-made Heddle']]) {
+  assert.match(page, new RegExp(`<option value="${value}">`), `${value} is in the font menu.`);
+  assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "${family}"`));
+  assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "${family}";`), `${family} has a font face.`);
+}
+assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
+assert.match(page, /<strong>pdf-next<\/strong> by machine-made/, 'About names the maker.');
+assert.equal(config.bundle.publisher, 'machine-made', 'machine-made publishes pdf-next.');
+assert.equal(config.identifier, 'dev.frantz.pdf-next', 'The bundle identifier stays, so installs keep their settings.');
+assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{PRODUCTNAME\}" ""/,
+  'An upgrade still finds the folder an older publisher recorded.');
+{
+  const root = { dataset: {} };
+  const stored = new Map();
+  const apply = appFunction('applyUiFont', 'function syncSettings', {
+    UI_FONTS: ['system', 'mm-sans', 'weft'], ui: { setUiFont: { value: '' } },
+    document: { documentElement: root },
+    localStorage: { setItem: (key, value) => stored.set(key, value) },
+  });
+  apply('weft');
+  assert.equal(root.dataset.uiFont, 'weft');
+  assert.equal(stored.get('pdf-next.ui-font'), 'weft');
+  apply('comic');
+  assert.equal(root.dataset.uiFont, undefined, 'An unknown interface font falls back to the system one.');
+}
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);

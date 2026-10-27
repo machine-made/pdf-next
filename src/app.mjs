@@ -142,6 +142,18 @@ const ui = {
   editSave: el('editSave'),
   editCancel: el('editCancel'),
   editClose: el('editClose'),
+  settingsToggle: el('settingsToggle'),
+  settingsPanel: el('settingsPanel'),
+  settingsClose: el('settingsClose'),
+  setFont: el('setFont'),
+  setSize: el('setSize'),
+  setWidth: el('setWidth'),
+  setPoll: el('setPoll'),
+  setDirectEdits: el('setDirectEdits'),
+  setUiFont: el('setUiFont'),
+  aboutVersion: el('aboutVersion'),
+  aboutUpdate: el('aboutUpdate'),
+  aboutSource: el('aboutSource'),
 };
 
 const state = {
@@ -2831,9 +2843,17 @@ function updateNotePlaceholder() {
     : 'Optional note (Enter to save)';
 }
 
+/// A box about to hide must not keep the focus: a hidden field that still
+/// has it makes the next shortcut look like typing, and it is ignored.
+function releaseFocus(box) {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && box.contains(active)) active.blur();
+}
+
 /// Close the review composer without saving. Esc, the × in its corner, Cancel
 /// and a click outside an empty composer all end here.
 function closeNoteBox() {
+  releaseFocus(ui.noteBox);
   hideReviewChrome();
   ui.noteBox.hidden = true;
   ui.noteText.value = '';
@@ -4464,6 +4484,7 @@ function openEditBox() {
 }
 
 function closeEditBox() {
+  releaseFocus(ui.editBox);
   ui.editBox.hidden = true;
   ui.editText.value = '';
   state.pendingEdit = null;
@@ -4484,7 +4505,75 @@ async function saveEditBox() {
   await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────
+// One place for the preferences. The Markdown and reload menus in the toolbar
+// stay as shortcuts; the panel mirrors them and drives the same setters.
+
+const UI_FONTS = ['system', 'mm-sans', 'weft'];
+const SETTINGS_MIRRORS = [['setFont', 'mdFont'], ['setSize', 'mdSize'], ['setWidth', 'mdWidth'], ['setPoll', 'poll']];
+
+function applyUiFont(value, { persist = true } = {}) {
+  const chosen = UI_FONTS.includes(value) ? value : 'system';
+  if (chosen === 'system') {
+    delete document.documentElement.dataset.uiFont;
+  } else {
+    document.documentElement.dataset.uiFont = chosen;
+  }
+  if (ui.setUiFont) ui.setUiFont.value = chosen;
+  if (!persist) return;
+  try {
+    localStorage.setItem('pdf-next.ui-font', chosen);
+  } catch {
+    // Preference only.
+  }
+}
+
+function syncSettings() {
+  for (const [mine, theirs] of SETTINGS_MIRRORS) {
+    const select = ui[mine];
+    if (!select.options.length) {
+      for (const option of ui[theirs].options) select.append(new Option(option.textContent, option.value));
+    }
+    select.value = ui[theirs].value;
+  }
+  ui.setDirectEdits.checked = directEditsEnabled();
+  ui.aboutVersion.textContent = state.version ? `Version ${state.version}` : '';
+}
+
+function toggleSettings(open = ui.settingsPanel.hidden) {
+  if (open) syncSettings();
+  else releaseFocus(ui.settingsPanel);
+  ui.settingsPanel.hidden = !open;
+  ui.settingsToggle.setAttribute('aria-pressed', String(open));
+}
+
 // ── Wiring ────────────────────────────────────────────────────────────────
+
+ui.settingsToggle.addEventListener('click', () => toggleSettings());
+ui.settingsClose.addEventListener('click', () => toggleSettings(false));
+for (const [mine, theirs] of SETTINGS_MIRRORS) {
+  ui[mine].addEventListener('change', () => {
+    const select = ui[theirs];
+    if (select.dataset.md) {
+      setMarkdownStyle(select, ui[mine].value);
+    } else {
+      select.value = ui[mine].value;
+      select.dispatchEvent(new Event('change'));
+    }
+  });
+}
+ui.setDirectEdits.addEventListener('change', () => {
+  try {
+    localStorage.setItem('pdf-next.direct-edits', ui.setDirectEdits.checked ? '1' : '0');
+  } catch {
+    // Preference only.
+  }
+});
+ui.setUiFont.addEventListener('change', () => applyUiFont(ui.setUiFont.value));
+ui.aboutUpdate.addEventListener('click', () => ui.update.click());
+ui.aboutSource.addEventListener('click', () => {
+  void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
+});
 
 ui.open.addEventListener('click', async () => {
   const picked = await invoke('pick_file');
@@ -4768,6 +4857,9 @@ document.addEventListener('pointerdown', (event) => {
     return;
   }
   hideReviewMenu();
+  if (!ui.settingsPanel.hidden && target instanceof Element && !target.closest('#settingsPanel, #settingsToggle')) {
+    toggleSettings(false);
+  }
   // A click elsewhere closes a composer you have not typed in. One with text
   // stays, so a stray click cannot lose a comment.
   if (!ui.noteBox.hidden && !ui.noteText.value.trim()) {
@@ -5006,6 +5098,16 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape' && !ui.noteBox.hidden) {
     event.preventDefault();
     closeNoteBox();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {
+    event.preventDefault();
+    toggleSettings();
+    return;
+  }
+  if (key === 'escape' && !ui.settingsPanel.hidden) {
+    event.preventDefault();
+    toggleSettings(false);
     return;
   }
   if (key === 'escape' && !ui.editBox.hidden) {
@@ -5389,6 +5491,11 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
     // Preference only.
   }
   setMarkdownStyle(select, saved, { persist: false });
+}
+try {
+  applyUiFont(localStorage.getItem('pdf-next.ui-font'), { persist: false });
+} catch {
+  applyUiFont('system', { persist: false });
 }
 
 for (const key of ['pdf', 'md']) {

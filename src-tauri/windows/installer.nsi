@@ -1,7 +1,9 @@
 Unicode true
 ; pdf-next copy of tauri-bundler's installer.nsi from @tauri-apps/cli-v2.11.4.
 ; Re-copy when the CLI is upgraded. Edits on top of that template:
-; - ResolvePreviousInstallDir: 0.9.0 stored the path under Software\frantz.
+; - ResolvePreviousInstallDir: 0.9.0 stored the path under Software\frantz,
+;   and 0.9.1 to 0.15.1 under Software\Ricardo Frantz (the publisher is
+;   machine-made from 0.15.2); the install removes that older key.
 ;   A later publisher looked in a different key, ran uninstall.exe with `_?=`
 ;   empty, and the setup said "Unable to uninstall!".
 ; - Passive by default: a double-click shows the copy progress, then opens
@@ -718,6 +720,12 @@ Section Install
 
   ; Save $INSTDIR in registry for future installations
   WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
+  ; 0.15.2 moved the publisher to machine-made: the key an older publisher
+  ; wrote is read once by ResolvePreviousInstallDir, then removed here.
+  !if "${MANUFACTURER}" != "Ricardo Frantz"
+    DeleteRegKey SHCTX "Software\Ricardo Frantz\${PRODUCTNAME}"
+    DeleteRegKey /ifempty SHCTX "Software\Ricardo Frantz"
+  !endif
 
   !if "${INSTALLMODE}" == "both"
     ; Save install mode to be selected by default for the next installation such as updating

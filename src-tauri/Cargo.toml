@@ -1,8 +1,8 @@
 [package]
 name = "pdf-next"
-version = "0.15.1"
+version = "0.15.2"
 description = "Tiny, fast PDF, image and markdown viewer that reloads when the file changes"
-authors = ["Ricardo Frantz"]
+authors = ["machine-made"]
 license = "MIT"
 repository = "https://github.com/machine-made/pdf-next"
 edition = "2021"
