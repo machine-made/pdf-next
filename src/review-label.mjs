@@ -53,8 +53,23 @@ export function reviewLabel(review, reviews) {
   return String(review?.id || 'review');
 }
 
+/// What a review asks of the agent. Improve needs an instruction; the others
+/// say what to do by themselves. Unknown actions read as Improve.
+export const REVIEW_ACTIONS = ['improve', 'polish', 'shorten', 'expand', 'check', 'bold', 'italic', 'delete'];
+
+export const ACTION_LABELS = {
+  improve: 'Improve',
+  polish: 'Polish',
+  shorten: 'Shorten',
+  expand: 'Expand',
+  check: 'Check',
+  bold: 'Make bold',
+  italic: 'Make italic',
+  delete: 'Delete selection',
+};
+
 export function reviewAction(review) {
-  return review?.action === 'delete' ? 'delete' : 'improve';
+  return REVIEW_ACTIONS.includes(review?.action) ? review.action : 'improve';
 }
 
 export function reviewStatus(review) {

@@ -1,10 +1,11 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
+import { FORMAT_LABELS, blockSpan, formatEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -131,6 +132,16 @@ const ui = {
   reviewMenu: el('reviewMenu'),
   reviewMenuAdd: el('reviewMenuAdd'),
   reviewMenuDelete: el('reviewMenuDelete'),
+  reviewMenuCopy: el('reviewMenuCopy'),
+  reviewMenuReview: el('reviewMenuReview'),
+  reviewMenuEdit: el('reviewMenuEdit'),
+  reviewMenuEditText: el('reviewMenuEditText'),
+  editBox: el('editBox'),
+  editRef: el('editRef'),
+  editText: el('editText'),
+  editSave: el('editSave'),
+  editCancel: el('editCancel'),
+  editClose: el('editClose'),
 };
 
 const state = {
@@ -977,6 +988,7 @@ async function showMarkdown(file, view, generation, fit) {
   colourCode(ui.markdown);
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
+  state.markdownSource = doc.raw;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
 
@@ -1571,6 +1583,8 @@ async function openFile(
     ui.noteText.value = '';
     state.reattachReviewId = null;
     document.body.classList.remove('reattach-picking');
+    ui.editBox.hidden = true;
+    state.pendingEdit = null;
   }
   state.file = file;
   state.natural = null;
@@ -2787,9 +2801,9 @@ function openNoteBox(action = 'improve') {
     : null;
   ui.noteRef.textContent = formatSelection(picked);
   ui.noteQuote.textContent = picked.quote;
-  ui.noteAction.value = action === 'delete' ? 'delete' : 'improve';
+  ui.noteAction.value = REVIEW_ACTIONS.includes(action) ? action : 'improve';
   ui.noteText.value = '';
-  ui.noteText.placeholder = 'Instruction (optional comment for Delete)';
+  updateNotePlaceholder();
   ui.noteText.hidden = false;
   ui.noteBox.hidden = false;
   placeNoteBox(rect);
@@ -2810,6 +2824,13 @@ function placeNoteBox(rect) {
   placeFloating(ui.noteBox, Math.max(8, window.innerWidth / 2 - 130), Math.max(8, window.innerHeight / 3));
 }
 
+/// Improve needs an instruction; every other action stands on its own.
+function updateNotePlaceholder() {
+  ui.noteText.placeholder = ui.noteAction.value === 'improve'
+    ? 'Instruction (Enter to save)'
+    : 'Optional note (Enter to save)';
+}
+
 /// Close the review composer without saving. Esc, the × in its corner, Cancel
 /// and a click outside an empty composer all end here.
 function closeNoteBox() {
@@ -2827,7 +2848,7 @@ async function saveNote() {
     return;
   }
   if (noteSaveInFlight) return;
-  const action = ui.noteAction.value === 'delete' ? 'delete' : 'improve';
+  const action = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
   const comment = ui.noteText.value.trim();
   if (action === 'improve' && !comment) {
     setStatus('Add an instruction for this improvement');
@@ -3098,7 +3119,7 @@ function renderReviewList() {
     }
   }
   const visible = records.filter((review) =>
-    (state.reviewActionFilter === 'all' || (review.action || 'improve') === state.reviewActionFilter) &&
+    (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
   if (!visible.length) {
@@ -3132,7 +3153,7 @@ function renderReviewList() {
     loc.className = 'review-loc';
     const action = document.createElement('span');
     action.className = 'review-action-label';
-    action.textContent = reviewAction(review) === 'delete' ? 'Delete selection' : 'Improve';
+    action.textContent = ACTION_LABELS[reviewAction(review)];
     loc.append(makeReviewBadge(review), action, document.createTextNode(formatSelection(review)));
     row.append(loc);
 
@@ -4240,7 +4261,7 @@ function selectionInDocument() {
   if (!(el instanceof Element)) {
     return null;
   }
-  if (el.closest('#reviewPane, #noteBox, #reviewChip, #reviewMenu, #bar, #find, #tabs')) {
+  if (el.closest('#reviewPane, #noteBox, #editBox, #reviewChip, #reviewMenu, #bar, #find, #tabs')) {
     return null;
   }
   if (!el.closest('#markdown, #markdownRaw, #viewer, #viewerContainer, #markdownStage')) {
@@ -4303,8 +4324,10 @@ function onDocumentContextMenu(event) {
   if (state.file?.kind !== 'markdown' && state.file?.kind !== 'pdf') {
     return;
   }
-  // Outside review mode the system menu stays, with its Copy.
-  if (!state.reviewOpen) {
+  const edits = Boolean(markdownEditTarget());
+  // Outside review mode, and with nothing to edit, the system menu stays,
+  // with its Copy.
+  if (!state.reviewOpen && !edits) {
     return;
   }
   if (!reviewFromSelection()) {
@@ -4312,8 +4335,153 @@ function onDocumentContextMenu(event) {
   }
   event.preventDefault();
   hideReviewChip();
+  ui.reviewMenuReview.hidden = !state.reviewOpen;
+  ui.reviewMenuCopy.hidden = state.reviewOpen;
+  ui.reviewMenuEdit.hidden = !edits;
   ui.reviewMenu.hidden = false;
   placeFloating(ui.reviewMenu, event.clientX, event.clientY);
+}
+
+// ── Direct edits to Markdown ──────────────────────────────────────────────
+// Bold, italic and the rest write the .md itself, through Rust, which first
+// checks that the file is still the one on screen. Each edit can be undone.
+// On by default; Settings turns it off.
+
+function directEditsEnabled() {
+  try {
+    return localStorage.getItem('pdf-next.direct-edits') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/// The selection, when it can be edited in place: rendered Markdown (not the
+/// raw view), on a source line, with direct edits on.
+function markdownEditTarget() {
+  if (state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
+      typeof state.markdownSource !== 'string') {
+    return null;
+  }
+  const range = selectionInDocument();
+  if (!range || !ui.markdown.contains(range.commonAncestorContainer)) return null;
+  const picked = describeSelection();
+  if (!picked?.at?.line || !picked.quote) return null;
+  return { range, picked };
+}
+
+async function applyDirectFormat(format) {
+  hideReviewChrome();
+  const target = markdownEditTarget();
+  if (!target) {
+    setStatus(state.file?.kind === 'markdown'
+      ? 'Select text in the rendered Markdown to format it'
+      : 'Formatting edits Markdown files only; add a review instead');
+    return;
+  }
+  const node = target.range.commonAncestorContainer;
+  const element = node.nodeType === 3 ? node.parentElement : node;
+  if (element?.closest('pre, code, math')) {
+    setStatus('Formatting does not apply inside code or equations', { error: true });
+    return;
+  }
+  const raw = state.markdownSource;
+  const span = sourceSpan(raw, target.picked.at.line, target.picked.at.end, target.picked.quote);
+  if (span.error) {
+    setStatus(span.error === 'repeated'
+      ? 'That text appears more than once in its paragraph: select a longer passage'
+      : 'The selection crosses formatting or a link: use Edit text… (Ctrl+E)', { error: true });
+    return;
+  }
+  const edit = formatEdit(raw, span, format);
+  await writeMarkdownEdit(edit, `${FORMAT_LABELS[format]}${edit.removed ? ' removed' : ''}`);
+}
+
+/// Write one edit, then show the file as it now is. Undo writes the inverse,
+/// against the digest this edit produced, so it never undoes over a change
+/// made since.
+async function writeMarkdownEdit({ start, expected, replacement }, label) {
+  const file = state.file;
+  if (!file || expected === replacement) return;
+  const path = file.path;
+  try {
+    const next = await invoke('edit_markdown', {
+      path, expectedDigest: state.markdownDigest, start, expectedText: expected, replacement,
+    });
+    pushUndo({
+      path,
+      label: label.toLowerCase(),
+      run: async () => {
+        await invoke('edit_markdown', {
+          path, expectedDigest: next, start, expectedText: replacement, replacement: expected,
+        });
+        if (state.file?.path === path) {
+          await openFile(state.file, { preserveView: true });
+          setStatus(`Undone: ${label}`);
+        }
+      },
+    });
+    if (state.file?.path === path) {
+      await openFile(state.file, { preserveView: true });
+    }
+    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void undoLast() } });
+  } catch (error) {
+    if (state.file?.path === path) {
+      setStatus(`Could not edit the file: ${String(error)}`, { error: true });
+    }
+  }
+}
+
+/// Edit text: the source of the selection, or of its whole paragraph when the
+/// selection crosses markup, in a small editor.
+function openEditBox() {
+  hideReviewChrome();
+  const target = markdownEditTarget();
+  if (!target) {
+    setStatus(state.file?.kind === 'markdown'
+      ? 'Select text in the rendered Markdown to edit it'
+      : 'Edit text works on Markdown files only');
+    return;
+  }
+  const raw = state.markdownSource;
+  const { line, end } = target.picked.at;
+  let span = sourceSpan(raw, line, end, target.picked.quote);
+  let where = 'selection';
+  if (span.error) {
+    span = blockSpan(raw, line, end);
+    where = span.endLine > span.line ? `lines ${span.line}–${span.endLine}` : `line ${span.line}`;
+  }
+  const expected = raw.slice(span.start, span.end);
+  state.pendingEdit = { path: state.file.path, digest: state.markdownDigest, start: span.start, expected };
+  ui.editRef.textContent = `${state.file.name} · ${where}`;
+  ui.editText.value = expected;
+  ui.editText.rows = Math.min(14, Math.max(3, expected.split('\n').length + 1));
+  ui.editBox.hidden = false;
+  const rect = target.range.getBoundingClientRect();
+  const height = ui.editBox.offsetHeight || 160;
+  const below = rect.bottom + 8;
+  placeFloating(ui.editBox, rect.left, below + height <= window.innerHeight - 8 ? below : Math.max(8, rect.top - height - 8));
+  ui.editText.focus({ preventScroll: true });
+}
+
+function closeEditBox() {
+  ui.editBox.hidden = true;
+  ui.editText.value = '';
+  state.pendingEdit = null;
+}
+
+async function saveEditBox() {
+  const pending = state.pendingEdit;
+  if (!pending || state.file?.path !== pending.path) {
+    closeEditBox();
+    return;
+  }
+  if (pending.digest !== state.markdownDigest) {
+    setStatus('The file changed while you were editing; select the text again', { error: true });
+    return;
+  }
+  const replacement = ui.editText.value;
+  closeEditBox();
+  await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
 }
 
 // ── Wiring ────────────────────────────────────────────────────────────────
@@ -4545,11 +4713,7 @@ ui.reviewStatusFilter.addEventListener('change', () => {
   state.reviewStatusFilter = ui.reviewStatusFilter.value;
   renderReviewList();
 });
-ui.noteAction.addEventListener('change', () => {
-  ui.noteText.placeholder = ui.noteAction.value === 'delete'
-    ? 'Optional reason (Enter to save)'
-    : 'Instruction (Enter to save)';
-});
+ui.noteAction.addEventListener('change', updateNotePlaceholder);
 ui.reviewChip.addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });
@@ -4560,6 +4724,32 @@ ui.reviewMenuAdd.addEventListener('pointerdown', (event) => {
 ui.reviewMenuAdd.addEventListener('click', () => openNoteBox());
 ui.reviewMenuDelete.addEventListener('pointerdown', (event) => event.preventDefault());
 ui.reviewMenuDelete.addEventListener('click', () => openNoteBox('delete'));
+for (const button of [ui.reviewMenuCopy, ui.reviewMenuEditText, ...ui.reviewMenuEdit.querySelectorAll('[data-format]')]) {
+  // Keep the selection: these act on it.
+  button.addEventListener('pointerdown', (event) => event.preventDefault());
+}
+ui.reviewMenuCopy.addEventListener('click', async () => {
+  const text = window.getSelection()?.toString() ?? '';
+  hideReviewMenu();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    setStatus('Clipboard refused the text', { error: true });
+  }
+});
+for (const button of ui.reviewMenuEdit.querySelectorAll('[data-format]')) {
+  button.addEventListener('click', () => void applyDirectFormat(button.dataset.format));
+}
+ui.reviewMenuEditText.addEventListener('click', () => openEditBox());
+ui.editSave.addEventListener('click', () => void saveEditBox());
+ui.editCancel.addEventListener('click', () => closeEditBox());
+ui.editClose.addEventListener('click', () => closeEditBox());
+ui.editText.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void saveEditBox();
+  }
+});
 document.addEventListener('selectionchange', scheduleReviewChip);
 // A selection is finished when the button or the Shift key is let go.
 document.addEventListener('pointerup', () => {
@@ -4574,7 +4764,7 @@ ui.container.addEventListener('scroll', hideReviewChrome, { passive: true });
 ui.markdownStage.addEventListener('scroll', hideReviewChrome, { passive: true });
 document.addEventListener('pointerdown', (event) => {
   const target = event.target;
-  if (target instanceof Element && target.closest('#reviewChip, #reviewMenu, #noteBox')) {
+  if (target instanceof Element && target.closest('#reviewChip, #reviewMenu, #noteBox, #editBox')) {
     return;
   }
   hideReviewMenu();
@@ -4818,6 +5008,11 @@ window.addEventListener('keydown', (event) => {
     closeNoteBox();
     return;
   }
+  if (key === 'escape' && !ui.editBox.hidden) {
+    event.preventDefault();
+    closeEditBox();
+    return;
+  }
   if (key === 'escape' && state.reattachReviewId) {
     event.preventDefault();
     cancelReattach();
@@ -4923,6 +5118,14 @@ window.addEventListener('keydown', (event) => {
     return;
   }
   if (typing) {
+    return;
+  }
+  // Ctrl+B, Ctrl+I and Ctrl+E edit a Markdown selection in place.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
+      (key === 'b' || key === 'i' || key === 'e') && markdownEditTarget()) {
+    event.preventDefault();
+    if (key === 'e') openEditBox();
+    else void applyDirectFormat(key === 'b' ? 'bold' : 'italic');
     return;
   }
   // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.

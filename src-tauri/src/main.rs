@@ -2050,6 +2050,129 @@ fn read_markdown(path: String, watched: State<'_, Watched>) -> Result<MarkdownDo
     })
 }
 
+/// Largest text one direct edit may put into a Markdown file.
+const MARKDOWN_EDIT_LIMIT: usize = 1024 * 1024;
+
+/// Replace `expected` at UTF-16 offset `start` of `raw` with `replacement`.
+///
+/// Offsets come from the webview, which counts in UTF-16 units; they are
+/// turned into byte offsets here, on character boundaries only, and the text
+/// found there must be exactly `expected`, or nothing is changed.
+fn splice_utf16(
+    raw: &str,
+    start: usize,
+    expected: &str,
+    replacement: &str,
+) -> Result<String, String> {
+    let mut units = 0usize;
+    let mut begin = None;
+    for (index, character) in raw.char_indices() {
+        if units == start {
+            begin = Some(index);
+            break;
+        }
+        if units > start {
+            break;
+        }
+        units += character.len_utf16();
+    }
+    if begin.is_none() && units == start {
+        begin = Some(raw.len());
+    }
+    let begin = begin.ok_or_else(|| "edit position is outside the file".to_string())?;
+    let end = begin + expected.len();
+    if raw.get(begin..end) != Some(expected) {
+        return Err("the text to edit is not where it was; reload and try again".into());
+    }
+    let mut out = String::with_capacity(raw.len() - expected.len() + replacement.len());
+    out.push_str(&raw[..begin]);
+    out.push_str(replacement);
+    out.push_str(&raw[end..]);
+    Ok(out)
+}
+
+/// Write `text` over `path` atomically, keeping the file's permissions.
+fn replace_text_file(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let permissions = std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    rename_with_retry(
+        || {
+            let mut temp =
+                tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
+            temp.write_all(text.as_bytes())?;
+            temp.as_file().set_permissions(permissions.clone())?;
+            temp.as_file().sync_all()?;
+            temp.persist(path).map(|_| ()).map_err(|error| error.error)
+        },
+        |error| cfg!(windows) && is_windows_replace_contention(error),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Apply one direct edit to the Markdown file the reader has open.
+///
+/// The edit is made against the text that was shown: the file's digest must
+/// still be `expected_digest` and the text at `start` must still be
+/// `expected`. Anything else, an agent's write in between for one, refuses
+/// the edit rather than merging it. Returns the new digest, which the undo of
+/// this edit then expects.
+fn edit_markdown_file(
+    canonical: &Path,
+    expected_digest: &str,
+    start: usize,
+    expected: &str,
+    replacement: &str,
+) -> Result<String, String> {
+    if kind_for(canonical) != "markdown" {
+        return Err("not a markdown file".into());
+    }
+    if replacement.len() > MARKDOWN_EDIT_LIMIT || expected.len() > MARKDOWN_EDIT_LIMIT {
+        return Err("edit is larger than 1 MB".into());
+    }
+    let metadata = std::fs::metadata(canonical).map_err(|error| error.to_string())?;
+    if metadata.len() > MARKDOWN_LIMIT {
+        return Err("markdown file is larger than 10 MB".into());
+    }
+    let raw = std::fs::read_to_string(canonical).map_err(|error| error.to_string())?;
+    if text_sha256(&raw) != expected_digest {
+        return Err("the file changed since it was shown; try again".into());
+    }
+    let edited = splice_utf16(&raw, start, expected, replacement)?;
+    if edited.len() as u64 > MARKDOWN_LIMIT {
+        return Err("markdown file would be larger than 10 MB".into());
+    }
+    replace_text_file(canonical, &edited)?;
+    Ok(text_sha256(&edited))
+}
+
+#[tauri::command]
+fn edit_markdown(
+    path: String,
+    expected_digest: String,
+    start: usize,
+    expected_text: String,
+    replacement: String,
+    watched: State<'_, Watched>,
+) -> Result<String, String> {
+    let canonical =
+        std::fs::canonicalize(PathBuf::from(path)).map_err(|error| error.to_string())?;
+    {
+        let state = watched.0.lock().map_err(|error| error.to_string())?;
+        if !state.allowed.contains(&canonical) {
+            return Err("file was never opened".into());
+        }
+    }
+    edit_markdown_file(
+        &canonical,
+        &expected_digest,
+        start,
+        &expected_text,
+        &replacement,
+    )
+}
+
 /// Raw text of an allowed `_review.json`. The sidecar is not Markdown, so it
 /// does not go through the renderer.
 #[tauri::command]
@@ -2860,6 +2983,12 @@ fn review_basename(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != ".." && name != "."
 }
 
+/// What a review asks of the agent. Improve carries its instruction in
+/// `comment`; the others are complete on their own, a comment optional.
+const REVIEW_ACTIONS: &[&str] = &[
+    "improve", "polish", "shorten", "expand", "check", "bold", "italic", "delete",
+];
+
 fn validate_review(review: &Review) -> Result<(), String> {
     if review.quote.len() > 20_000 {
         return Err("quote is too long (max 20 000 chars)".into());
@@ -2905,8 +3034,11 @@ fn validate_review(review: &Review) -> Result<(), String> {
     {
         return Err("review record is too large (max 64 000 bytes)".into());
     }
-    if !matches!(review.action.as_str(), "improve" | "delete") {
-        return Err("action must be improve or delete".into());
+    if !REVIEW_ACTIONS.contains(&review.action.as_str()) {
+        return Err(format!(
+            "action must be one of {}",
+            REVIEW_ACTIONS.join(", ")
+        ));
     }
     if !matches!(review.status.as_str(), "open" | "applied" | "resolved") {
         return Err("status must be open, applied, or resolved".into());
@@ -4605,6 +4737,7 @@ fn main() {
             delete_review,
             restore_review,
             patch_review,
+            edit_markdown,
             review_source_hint,
             reduce_pdf
         ])
@@ -7039,6 +7172,69 @@ mod tests {
         assert!(super::write_reduced_copy(&source, b"replacement").is_err());
         assert_eq!(std::fs::read(&dest).unwrap(), b"reduced");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn splice_utf16_edits_on_character_boundaries_only() {
+        let raw = "naïve 🌊 wake\r\nnext";
+        // "🌊" is two UTF-16 units; "wake" starts at unit 9.
+        let edited = super::splice_utf16(raw, 9, "wake", "**wake**").unwrap();
+        assert_eq!(edited, "naïve 🌊 **wake**\r\nnext");
+        assert!(
+            super::splice_utf16(raw, 9, "wade", "x").is_err(),
+            "text must match"
+        );
+        assert!(
+            super::splice_utf16(raw, 7, "x", "y").is_err(),
+            "inside a surrogate pair"
+        );
+        assert!(super::splice_utf16(raw, 999, "", "y").is_err());
+        assert_eq!(super::splice_utf16("ab", 2, "", "c").unwrap(), "abc");
+    }
+
+    #[test]
+    fn edit_markdown_file_refuses_a_changed_file_and_round_trips() {
+        let dir = scratch("md_edit");
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "The wake is long.\n").unwrap();
+        let digest = super::text_sha256("The wake is long.\n");
+        let next = super::edit_markdown_file(&md, &digest, 4, "wake", "**wake**").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&md).unwrap(),
+            "The **wake** is long.\n"
+        );
+        let stale = super::edit_markdown_file(&md, &digest, 4, "wake", "x").unwrap_err();
+        assert!(stale.contains("changed"), "{stale}");
+        super::edit_markdown_file(&md, &next, 4, "**wake**", "wake").unwrap();
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "The wake is long.\n");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+        assert!(super::edit_markdown_file(&pdf, &digest, 0, "", "x").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn direct_edit_formats_survive_the_sanitizer() {
+        let html = render_markdown(
+            "**b** *i* <u>u</u> ~~s~~ `c`",
+            std::path::Path::new("/nonexistent"),
+        )
+        .html;
+        for tag in ["<strong>", "<em>", "<u>", "<del>", "<code>"] {
+            assert!(html.contains(tag), "{tag} missing from {html}");
+        }
+    }
+
+    #[test]
+    fn review_actions_accept_the_request_kinds() {
+        for action in ["polish", "shorten", "expand", "check", "bold", "italic"] {
+            let mut review = markdown_review();
+            review.action = action.into();
+            assert!(super::validate_review(&review).is_ok(), "{action}");
+        }
+        let mut review = markdown_review();
+        review.action = "rewrite-everything".into();
+        assert!(super::validate_review(&review).is_err());
     }
 
     #[test]
