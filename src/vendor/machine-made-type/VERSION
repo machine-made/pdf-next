@@ -1,0 +1,10 @@
+machine-made Weft 0.1.0, machine-made Sans 0.1.0 and machine-made Heddle 0.1.0 (variable WOFF2),
+SIL Open Font License 1.1 (OFL-Weft.txt, OFL-Sans.txt, OFL-Heddle.txt). Unmodified; files renamed only.
+Source: https://github.com/machine-made/type at b65903ebd0212691b817b288c6df0f83be7a4aaf (tags weft-v0.1.0, sans-v0.1.0, heddle-v0.1.0), fonts/*/webfonts/
+Used for the Markdown body text when chosen, and for the interface when chosen in Settings.
+Update with: tools/update_mm_fonts.sh <path to a machine-made/type checkout>
+SHA-256:
+  d3be256069a71736df735830e1fda2fdb9c36db4c39bacb823806321af95a316  MachineMadeHeddle-Variable.woff2
+  66e591bf044ee78cfdd511e7bb946846d363664f015728e80f3c49840cb3bd93  MachineMadeSans-Italic-Variable.woff2
+  e6ade95a2919f0f0a84612b31e90d54ecf36924891808bfc55d28c7cba6f66d1  MachineMadeSans-Variable.woff2
+  b689e9eb8b2265405f337133341aec3d0d1d81feb25c378d59e0ce4db87a36c2  MachineMadeWeft-Variable.woff2

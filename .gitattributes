@@ -8,3 +8,4 @@
 # nothing. The file then fails to open on one platform and not the others.
 *.pdf binary
 *.png binary
+*.woff2 binary
