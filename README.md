@@ -129,7 +129,15 @@ that survives a build deleting and recreating the file mid-compile.
   browser, from the repo's own Releases page. Pressing the button checks again on demand.
   Nothing polls: that one request at launch is the only network access the app makes on its
   own, downloads only ever happen on a press, and GitHub is the only host it can reach.
-- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
+- **Figures in Markdown.** An image alone on its line is a figure: its alt text becomes the
+  caption, numbered Figure 1, 2, … down the file. Size and place one in the Markdown itself with the
+  attribute syntax Pandoc and Quarto use: `![Wake behind the cylinder](wake.png){width=60%}`,
+  `{width=8cm}` (also `mm`, `in`, `pt`, `px`), `{height=300}`, and `.left`, `.right` or `.center`
+  (inside a line of text, `.left` and `.right` float the image). Settings sets the defaults for
+  figures that give no size: natural size, the column width, 75% or 50% of it; no height limit,
+  the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
+  open it full size in a tab of its own, with zoom and the folder walk.
+- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
 - **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,

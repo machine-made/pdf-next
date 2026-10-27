@@ -154,6 +154,7 @@ const ui = {
   aboutVersion: el('aboutVersion'),
   aboutUpdate: el('aboutUpdate'),
   aboutSource: el('aboutSource'),
+  figureSelects: document.querySelectorAll('#settingsPanel select[data-figure]'),
 };
 
 const state = {
@@ -985,6 +986,55 @@ function embedMarkdownImages(root, revision) {
   }
 }
 
+// ── Figures ───────────────────────────────────────────────────────────────
+// An image alone in its paragraph is a figure, as in Pandoc: its alt text is
+// the caption, numbered when Settings says so. The paragraph stays the block
+// it was, so line anchors, pages and reviews work on it unchanged, and the
+// caption is text a review can quote.
+
+const FIGURE_SETTINGS = {
+  width: { key: 'pdf-next.fig-width', values: ['natural', 'column', '75', '50'], fallback: 'natural' },
+  height: { key: 'pdf-next.fig-height', values: ['none', 'screen', 'half'], fallback: 'none' },
+  align: { key: 'pdf-next.fig-align', values: ['center', 'left'], fallback: 'center' },
+  caption: { key: 'pdf-next.fig-caption', values: ['numbered', 'plain', 'off'], fallback: 'numbered' },
+};
+
+function figureSetting(name) {
+  const { key, values, fallback } = FIGURE_SETTINGS[name];
+  let saved = null;
+  try {
+    saved = localStorage.getItem(key);
+  } catch {
+    // Preference only.
+  }
+  return values.includes(saved) ? saved : fallback;
+}
+
+/// Put the figure preferences on the article, where the stylesheet reads them.
+function applyFigureSettings() {
+  for (const name of Object.keys(FIGURE_SETTINGS)) {
+    ui.markdown.dataset[`fig${name[0].toUpperCase()}${name.slice(1)}`] = figureSetting(name);
+  }
+}
+
+function markFigures(root) {
+  const captions = figureSetting('caption') !== 'off';
+  for (const paragraph of root.querySelectorAll('p')) {
+    const elements = [...paragraph.children].filter((child) => !child.matches('span.src'));
+    if (elements.length !== 1 || !elements[0].matches('img') || paragraph.textContent.trim()) continue;
+    const image = elements[0];
+    paragraph.classList.add('md-figure');
+    const alt = image.getAttribute('alt')?.trim();
+    if (captions && alt) {
+      const caption = document.createElement('span');
+      caption.className = 'md-caption';
+      caption.textContent = alt;
+      paragraph.classList.add('has-caption');
+      paragraph.append(caption);
+    }
+  }
+}
+
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
 /// assigning innerHTML here does not hand the document a script surface, and
 /// the CSP forbids inline script besides.
@@ -998,6 +1048,7 @@ async function showMarkdown(file, view, generation, fit) {
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   colourCode(ui.markdown);
+  markFigures(ui.markdown);
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
   state.markdownSource = doc.raw;
@@ -4537,6 +4588,7 @@ function syncSettings() {
     select.value = ui[theirs].value;
   }
   ui.setDirectEdits.checked = directEditsEnabled();
+  for (const select of ui.figureSelects) select.value = figureSetting(select.dataset.figure);
   ui.aboutVersion.textContent = state.version ? `Version ${state.version}` : '';
 }
 
@@ -4570,6 +4622,21 @@ ui.setDirectEdits.addEventListener('change', () => {
   }
 });
 ui.setUiFont.addEventListener('change', () => applyUiFont(ui.setUiFont.value));
+for (const select of ui.figureSelects) {
+  select.addEventListener('change', () => {
+    const name = select.dataset.figure;
+    try {
+      localStorage.setItem(FIGURE_SETTINGS[name].key, select.value);
+    } catch {
+      // Preference only.
+    }
+    applyFigureSettings();
+    // Captions are text in the article: adding or removing them re-renders.
+    if (name === 'caption' && state.file?.kind === 'markdown') {
+      void openFile(state.file, { preserveView: true });
+    }
+  });
+}
 ui.aboutUpdate.addEventListener('click', () => ui.update.click());
 ui.aboutSource.addEventListener('click', () => {
   void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
@@ -4865,6 +4932,15 @@ document.addEventListener('pointerdown', (event) => {
   if (!ui.noteBox.hidden && !ui.noteText.value.trim()) {
     closeNoteBox();
   }
+});
+
+// A figure opens full size in a tab of its own, with zoom and the folder
+// walk. Only a plain click: a drag that selects text is left alone.
+ui.markdown.addEventListener('click', (event) => {
+  const image = event.target instanceof Element ? event.target.closest('img[data-doc]') : null;
+  if (!image || event.button !== 0 || !window.getSelection()?.isCollapsed || state.reattachReviewId) return;
+  event.preventDefault();
+  void openPath(image.dataset.doc);
 });
 
 // A link in a markdown file must not leave the page. A relative one —
@@ -5497,6 +5573,7 @@ try {
 } catch {
   applyUiFont('system', { persist: false });
 }
+applyFigureSettings();
 
 for (const key of ['pdf', 'md']) {
   let saved = null;

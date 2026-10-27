@@ -1631,9 +1631,101 @@ body.pages-on #mdWidth {
   height: auto;
 }
 
-#markdown p > img:only-child {
+#markdown p > img:only-child,
+#markdown p.md-figure > img {
   display: block;
   margin: 0 auto;
+}
+
+/* Figures: an image alone in its paragraph. Settings sets the data-fig-*
+   attributes; sizes written in the Markdown ({width=60%}) win over them. */
+#markdown {
+  counter-reset: figure;
+}
+
+#markdown p.md-figure {
+  margin: 1.2em 0;
+  text-align: center;
+}
+
+#markdown img[data-doc] {
+  cursor: zoom-in;
+}
+
+#markdown[data-fig-width="column"] p.md-figure > img:not([width]) {
+  width: 100%;
+}
+
+#markdown[data-fig-width="75"] p.md-figure > img:not([width]) {
+  width: 75%;
+}
+
+#markdown[data-fig-width="50"] p.md-figure > img:not([width]) {
+  width: 50%;
+}
+
+#markdown[data-fig-height="screen"] p.md-figure > img:not([height]) {
+  max-height: 85vh;
+  object-fit: contain;
+}
+
+#markdown[data-fig-height="half"] p.md-figure > img:not([height]) {
+  max-height: 50vh;
+  object-fit: contain;
+}
+
+#markdown[data-fig-align="left"] p.md-figure {
+  text-align: left;
+}
+
+#markdown[data-fig-align="left"] p.md-figure > img,
+#markdown p.md-figure > img[data-align="left"] {
+  margin: 0 auto 0 0;
+}
+
+#markdown p.md-figure > img[data-align="right"] {
+  margin: 0 0 0 auto;
+}
+
+#markdown p.md-figure > img[data-align="center"] {
+  margin: 0 auto;
+}
+
+/* An image inside text that asks for a side floats there. */
+#markdown p:not(.md-figure) > img[data-align="left"] {
+  float: left;
+  margin: 0.2em 1em 0.5em 0;
+}
+
+#markdown p:not(.md-figure) > img[data-align="right"] {
+  float: right;
+  margin: 0.2em 0 0.5em 1em;
+}
+
+#markdown .md-caption {
+  display: block;
+  margin-top: 0.5em;
+  font-size: 0.9em;
+  line-height: 1.4;
+  color: var(--md-dim);
+}
+
+#markdown p.md-figure:has(> img[data-align="left"]) .md-caption {
+  text-align: left;
+}
+
+#markdown p.md-figure:has(> img[data-align="right"]) .md-caption {
+  text-align: right;
+}
+
+#markdown[data-fig-caption="numbered"] p.md-figure.has-caption {
+  counter-increment: figure;
+}
+
+#markdown[data-fig-caption="numbered"] .md-caption::before {
+  content: "Figure " counter(figure) ". ";
+  font-weight: 600;
+  color: var(--md-fg);
 }
 
 #markdown .md-image-refused {
@@ -2014,6 +2106,11 @@ body.reattach-picking .textLayer {
 #settingsPanel p {
   margin: 0;
   line-height: 1.4;
+}
+
+#settingsPanel .settings-note code {
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
 }
 
 .about-name {
