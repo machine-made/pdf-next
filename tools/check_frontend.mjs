@@ -999,25 +999,46 @@ for (const pauseAt of ['save', 'close']) {
 }
 
 {
-  const draft = { id: 'r1', comment: 'unsaved edit' };
-  const pendingComments = new Map([['a.pdf\u0000r1', { ...draft, path: 'a.pdf' }]]);
+  // Remove asks nothing; it offers Undo, which puts the record and its
+  // unsaved draft back. A failed removal keeps the draft and offers no Undo.
+  const record = { id: 'r1', file: 'a.pdf', comment: 'saved' };
+  const draft = { id: 'r1', path: 'a.pdf', comment: 'unsaved edit' };
+  const pendingComments = new Map([['a.pdf\u0000r1', draft]]);
+  const undo = [];
+  const statuses = [];
+  const calls = [];
   const context = {
-    state: { file: { path: 'a.pdf' }, generation: 1, reviews: [draft] },
+    state: { file: { path: 'a.pdf' }, generation: 1, reviews: [record], selectedReviewId: 'r1' },
     pendingComments,
     commentDraftKey: (path, id) => `${path}\u0000${id}`,
-    window: { confirm: () => false, clearTimeout() {} },
-    invoke: async () => { assert.fail('Canceled deletion must not write.'); },
+    window: { confirm: () => assert.fail('Removal must not ask a question.'), clearTimeout() {} },
+    invoke: async (name, args) => { calls.push([name, args]); return { reviews: [] }; },
     applyReviewStore() {},
-    setStatus() {},
+    pushUndo: (entry) => undo.push(entry),
+    undoLast: async () => true,
+    restoreRemovedReview: async (...args) => { calls.push(['restore', ...args]); },
+    setStatus: (message, options) => statuses.push([message, options]),
   };
   const remove = appFunction('deleteReview', 'async function jumpToReview(', context);
   await remove('r1');
-  assert.equal(pendingComments.size, 1, 'Canceling removal preserves the pending edit.');
-  context.window.confirm = () => true;
+  assert.equal(JSON.stringify(calls[0]),
+    JSON.stringify(['delete_review', { document: 'a.pdf', id: 'r1', expectedRecord: record }]));
+  assert.equal(pendingComments.size, 0);
+  assert.equal(context.state.selectedReviewId, null);
+  assert.equal(undo.length, 1, 'A removal can be undone.');
+  assert.equal(undo[0].path, 'a.pdf');
+  assert.equal(statuses[0][1].action.label, 'Undo', 'The toast offers Undo.');
+  await undo[0].run();
+  assert.equal(calls[1][1], 'a.pdf');
+  assert.equal(calls[1][2], record, 'Undo restores the exact record.');
+  assert.equal(calls[1][3], draft, 'Undo restores the unsaved draft.');
+
+  pendingComments.set('a.pdf\u0000r1', draft);
+  context.state.reviews = [record];
   context.invoke = async () => { throw new Error('permission denied'); };
-  context.setStatus = () => {};
   await remove('r1');
   assert.equal(pendingComments.size, 1, 'Failed removal preserves the pending edit.');
+  assert.equal(undo.length, 1, 'A failed removal offers no Undo.');
 }
 
 {
@@ -2860,6 +2881,61 @@ assert.equal(rustVersion, config.version, 'Rust and bundle versions must agree.'
 const releaseTag = process.env.GITHUB_REF?.match(/^refs\/tags\/v(.+)$/)?.[1];
 if (releaseTag) {
   assert.equal(releaseTag, config.version, 'The release tag must match the built version.');
+}
+
+// The review composer closes from anywhere: Esc whatever has focus, the ×,
+// Cancel, and a click outside it while it is empty.
+{
+  const state = { pendingNote: { quote: 'q' }, pendingNotePdf: {} };
+  const ui = { noteBox: { hidden: false }, noteText: { value: 'draft' } };
+  let chromeHidden = false;
+  const close = appFunction('closeNoteBox', 'let noteSaveInFlight', {
+    state, ui, hideReviewChrome: () => { chromeHidden = true; },
+  });
+  close();
+  assert.equal(ui.noteBox.hidden, true);
+  assert.equal(ui.noteText.value, '');
+  assert.equal(state.pendingNote, null);
+  assert.equal(state.pendingNotePdf, null);
+  assert.ok(chromeHidden);
+  const keydown = app.slice(app.indexOf("window.addEventListener('keydown'"));
+  const escape = keydown.indexOf("key === 'escape' && !ui.noteBox.hidden");
+  assert.ok(escape > 0 && escape < keydown.indexOf('const dockKeys'),
+    'Esc must close the composer before any other key handling, even from a menu.');
+  assert.match(app, /ui\.noteCancel\.addEventListener\('click', \(\) => closeNoteBox\(\)\)/);
+  assert.match(app, /ui\.noteClose\.addEventListener\('click', \(\) => closeNoteBox\(\)\)/);
+  assert.match(app, /!ui\.noteBox\.hidden && !ui\.noteText\.value\.trim\(\)\) \{\n\s*closeNoteBox\(\);/,
+    'A click outside closes only an empty composer.');
+  assert.match(page, /id="noteClose"[^>]*aria-label="Close without saving"/);
+  assert.match(page, /<button id="noteCancel" type="button">Cancel<\/button>/);
+}
+
+// Ctrl+Z undoes the newest change to the file on screen, and only that file's.
+{
+  const ran = [];
+  const context = {
+    state: { file: { path: 'a.md' } },
+    undoStack: [
+      { path: 'a.md', label: 'one', run: async () => ran.push('a1') },
+      { path: 'b.md', label: 'two', run: async () => ran.push('b1') },
+      { path: 'a.md', label: 'three', run: async () => { ran.push('a2'); throw new Error('gone'); } },
+    ],
+    statuses: [],
+  };
+  context.setStatus = (message) => context.statuses.push(message);
+  const undo = appFunction('undoLast', '/// Put a removed review back', context);
+  assert.equal(await undo(), true);
+  assert.deepEqual(ran, ['a2']);
+  assert.match(context.statuses[0], /Could not undo three/);
+  assert.equal(await undo(), true);
+  assert.deepEqual(ran, ['a2', 'a1']);
+  assert.equal(await undo(), false, 'Another file’s change is not undone here.');
+  assert.equal(context.undoStack.length, 1);
+  const limited = { undoStack: [], UNDO_LIMIT: 2 };
+  const push = appFunction('pushUndo', '/// Undo the newest change', limited);
+  for (const label of ['x', 'y', 'z']) push({ path: 'a.md', label });
+  assert.deepEqual(limited.undoStack.map((entry) => entry.label), ['y', 'z'],
+    'The stack keeps the newest entries.');
 }
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);

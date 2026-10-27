@@ -995,7 +995,41 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
   border-radius: 2px;
 }
 
-#noteSave {
+.note-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#noteClose {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+#noteClose:hover {
+  background: var(--widget-hover);
+  color: inherit;
+}
+
+.note-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+#noteSave,
+#noteCancel {
   padding: 2px 8px;
   border: 1px solid var(--widget-border);
   border-radius: 2px;
@@ -1003,7 +1037,8 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
   cursor: pointer;
 }
 
-#noteSave:hover {
+#noteSave:hover,
+#noteCancel:hover {
   background: var(--widget-hover);
 }
 /* ── Status and empty state ──────────────────────────────────────────── */
@@ -1035,6 +1070,27 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
 
 #status.error {
   color: var(--error);
+}
+
+/* A message with a button (Undo) takes clicks while it shows. */
+#status.on.actionable {
+  pointer-events: auto;
+}
+
+.status-action {
+  margin-left: 10px;
+  padding: 0 6px;
+  border: 1px solid var(--widget-border);
+  border-radius: 3px;
+  background: var(--widget);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-action:hover {
+  background: var(--widget-hover);
 }
 
 #empty {
