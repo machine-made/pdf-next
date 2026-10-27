@@ -121,7 +121,7 @@ that survives a build deleting and recreating the file mid-compile.
   sheets as text, and an image gets a sheet to itself. A document whose pages are not all the
   same size follows the first one, as it does in every other viewer. If the machine has nothing
   to print to — no printer, or a stopped print service — it says so rather than opening nothing.
-- **The title says which build you are running** — `paper.pdf — pdf-next 0.15.2` — so a bug report
+- **The title says which build you are running** — `paper.pdf — pdf-next 0.16.0` — so a bug report
   can name a version without hunting for an about box.
 - **Tells you when there is a newer version.** A few seconds after launch the app asks
   GitHub for the latest release, once; if it is newer, the last toolbar button lights up and a
@@ -346,23 +346,48 @@ Then `which pdf-next`, `pdf-next --help` and `pdf-next report.pdf` all work as a
 agent has a project instructions file, one line — *"open PDFs with `pdf-next <file>`; use
 `open -a pdf-next` on macOS if the shim is missing"* — saves it rediscovering this each time.
 
-#### PDF review tasks for agents
+#### Review tasks for agents
 
-The review sidecar is a task list for editing the project source. The intended loop is:
+The review sidecar is a task list for editing the source. An agent needs three things from it,
+and each has a short form:
 
-1. Read the current tasks with `pdf-next reviews list paper.pdf`.
-2. Find the selected PDF quote in the LaTeX entry point or its included chapter files. Use its
-   quote, surrounding context and PDF position together. An optional SyncTeX source hint is a
-   candidate to check against the actual source.
-3. Edit the relevant `.tex` source, then compile the project's entry point.
-4. After a successful build, record the source path, build result and resolution on the same
-   review ID. Leave failed builds open. Mark the task `applied` only after compilation succeeds.
-5. Leave it `applied` until the reader checks the rendered PDF and marks it `resolved`.
+- **Read the open items** from `{stem}_review.agent.txt`, which pdf-next rewrites after every
+  change to the store, or print the same text with `pdf-next reviews brief notes.md`. One header
+  line, then one line per open item, in reading order:
 
-The same commands work on a Markdown file: `pdf-next reviews list notes.md`. A Markdown review
-quotes the rendered text and gives the source line range in `at`, so edit the `.md` file at
-those lines. There is no build step, so mark the task `applied` once the edit is saved.
+  ```text
+  # notes.md review, revision 12: 3 open, 0 applied, 0 resolved. Close an item: pdf-next reviews done notes.md <id> "<what you changed>", or append "<id> <what you changed>" to notes_review.done
+  r3 L7 improve: move this before the table | "the table below"
+  r1 L12 improve: say this is an ideal value | "the exit speed v ∗ of the gas"
+  r2 L40-42 delete: (no comment) | "the slab burns from both faces at once, so the burning area stays flat until the two fronts meet near the middle of the…"
+  ```
 
+  `L12` and `L40-42` are source lines of the `.md` (`p7` is a PDF page), kept current: while
+  pdf-next shows the file it finds each review again after edits and records where it now is.
+  The quote is shortened and only helps find the place; read the exact text from the file.
+- **Close an item** with `pdf-next reviews done notes.md r1 "stated the ideal-gas assumption"`,
+  which marks it `applied` with that text as its resolution. For a PDF, add the build command
+  that succeeded: `--built "latexmk -pdf paper.tex"`. An agent that can only write files appends
+  the same line, `r1 stated the ideal-gas assumption`, to `{stem}_review.done`; pdf-next applies
+  it while it has the file open, and every `reviews` command applies it first. The inbox is only
+  read, never rewritten; applying it twice changes nothing, the last line for an ID wins, and an
+  item you reopen stays open until a new line for it arrives.
+- **Read one whole item** from the store itself. `{stem}_review.json` holds one item per line,
+  so `grep '"id":"r12"' notes_review.json` prints all of it, and every item has every key
+  (`comment` and `resolution` are `""` when empty).
+
+Agents never write the JSON store directly: a full rewrite races with the reader adding items in
+the app. `done`, the inbox and `update` take the store's lock.
+
+The `applied` items wait for the reader, who checks the result (the recompiled PDF, or the
+Markdown) and marks them `resolved`, or reopens them.
+
+For a PDF, find the quote in the LaTeX entry point or its included chapter files. Use its quote,
+surrounding context and PDF position together; an optional SyncTeX source hint is a candidate
+to check against the actual source. Edit the `.tex`, compile, and close the item only after the
+build succeeds. Leave failed builds open.
+
+For other fields, `pdf-next reviews update` patches one item.
 For example, save this object in `patch.json` after checking the current revision:
 
 ```json
