@@ -730,6 +730,15 @@ mark.review,
   -webkit-user-select: none;
 }
 
+/* The quote was edited since the review: the text between its old
+   neighbours is marked, with a dashed line under it. */
+mark.review.changed,
+.textLayer review-q.changed {
+  text-decoration: underline dashed var(--review-line);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .textLayer review-q[data-review-action='delete'],
 mark.review[data-review-action='delete'] {
   text-decoration: line-through;
@@ -1787,4 +1796,15 @@ body.pages-on #mdWidth {
 
 #markdown .changed.changed-fade {
   background: transparent;
+}
+
+/* Reattach is waiting for a selection: the text cursor says so. */
+body.reattach-picking #markdown,
+body.reattach-picking .textLayer {
+  cursor: crosshair;
+}
+
+.review-picking {
+  color: var(--accent);
+  font-weight: 600;
 }
