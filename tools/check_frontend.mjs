@@ -3069,6 +3069,12 @@ for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machi
 }
 assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
 assert.match(page, /<strong>pdf-next<\/strong> by machine-made/, 'About names the maker.');
+assert.match(page, /<summary>Details: what pdf-next is built with<\/summary>/, 'About lists what pdf-next is built with.');
+assert.ok(page.includes(`PDF.js ${vendored}`),
+  'The PDF.js version in About is the vendored one.');
+for (const name of ['Tauri', 'pulldown-cmark', 'ammonia', 'math-core', 'highlight.js', 'lopdf', 'picamatl']) {
+  assert.match(readme, new RegExp(`\\[?${name.replace('.', '\\.')}`), `The README lists ${name}.`);
+}
 assert.equal(config.bundle.publisher, 'machine-made', 'machine-made publishes pdf-next.');
 assert.equal(config.identifier, 'dev.frantz.pdf-next', 'The bundle identifier stays, so installs keep their settings.');
 assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{PRODUCTNAME\}" ""/,

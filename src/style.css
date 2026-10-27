@@ -2034,6 +2034,26 @@ body.reattach-picking .textLayer {
   fill: #d7261e;
 }
 
+.about-details summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.about-details dl {
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+
+.about-details dt {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.about-details dd {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
 .about-links {
   display: flex;
   gap: 6px;
