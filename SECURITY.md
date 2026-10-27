@@ -22,6 +22,9 @@ published with credit to you unless you ask otherwise.
 
 ## Antivirus warnings
 
-Windows builds are not code-signed, so Microsoft Defender or SmartScreen can warn about a new
-release. Every Windows installer is scanned with Defender before the release is published. If your
-antivirus flags a release, report it the same way and give the detection name and the file's SHA-256.
+Every Windows installer is scanned with Microsoft Defender before the release is published, and a
+release with any detection is not published. Once code signing through the SignPath Foundation is
+in place (see [docs/code-signing.md](docs/code-signing.md)), the application and its installers are
+signed, and the publisher Windows shows is "SignPath Foundation". Until then the builds are
+unsigned, so SmartScreen can warn about a new release. If your antivirus flags a release, report it
+the same way and give the detection name and the file's SHA-256.
