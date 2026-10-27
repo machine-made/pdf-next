@@ -6,7 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { createHash } from 'node:crypto';
@@ -529,16 +529,18 @@ for (const kind of ['markdown', 'pdf']) {
     patchReview: async (review, patch) => patches.push(patch),
     setStatus() {},
   });
-  await reattach({ id: 'r1', quote: 'the quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
+  await reattach({ id: 'r1', quote: 'an older quote', at: kind === 'pdf' ? { page: 1 } : { line: 2 }, anchor: { prefix: 'old' } });
   assert.equal(patches.length, 1, `${kind} reattach patches the review.`);
   const [patch] = patches;
   assert.equal(patch.anchor.documentRevision, kind === 'pdf' ? 'sha256:pdf' : 'sha256:now',
     `${kind} reattach stamps the digest of the file shown.`);
+  assert.equal(patch.quote, picked.quote, `${kind} reattach takes the selected text, even when it differs.`);
+  assert.equal(patch.anchor.original.quote, 'an older quote', 'The first quote is kept.');
   if (kind === 'markdown') {
     assert.deepEqual(patch.at, { line: 9, end: 11 }, 'Markdown reattach moves the lines with the context.');
     assert.deepEqual(patch.anchor.original.at, { line: 2 }, 'The first place is kept.');
   } else {
-    assert.equal('at' in patch, false, 'PDF reattach leaves its page alone.');
+    assert.deepEqual(patch.at, { page: 4 }, 'PDF reattach moves to the page of the selection.');
   }
 }
 
@@ -612,14 +614,14 @@ for (const kind of ['markdown', 'pdf']) {
     return {
       older: found.includes('Made on an earlier version of this file'),
       lines: found.some((text) => text.startsWith('Placed by its line range')),
-      unlocated: found.includes('Unlocated · not highlighted'),
-      reattach: found.includes('Reattach selection'),
+      unlocated: found.includes('Unlocated · not highlighted · Reattach to pin it'),
+      reattach: found.includes('Reattach'),
       dimmed: row.classList.added.includes('unlocated'),
     };
   };
   const old = { id: 'r1', status: 'open', quote: 'q', anchor: { documentRevision: 'sha256:old' } };
   assert.deepEqual(render(old, 'located'),
-    { older: false, lines: false, unlocated: false, reattach: false, dimmed: false },
+    { older: false, lines: false, unlocated: false, reattach: true, dimmed: false },
     'A review located on the text shown needs no flag, whichever version it was made on.');
   assert.deepEqual(render(old, 'unlocated'),
     { older: true, lines: false, unlocated: true, reattach: true, dimmed: true },
@@ -647,6 +649,8 @@ for (const kind of ['markdown', 'pdf']) {
     markdownBadgeHost: () => null,
     paintMarkdownByLines: (review) => { calls.push(['lines', review.id]); return null; },
     placeMarkdownBadge() {},
+    contextAt, atRange: (line) => ({ line }), lineNear: () => 1,
+    window: { setTimeout() {}, clearTimeout() {} },
   };
   const paint = appFunction('paintMarkdownMarks', 'function paintReviewMarks', context);
   const at = { line: 1 };
@@ -2118,8 +2122,8 @@ assert.match(app, /reviewsCount=\$\{reviews\.length\}/,
   'Native readiness reports how many review rows were loaded.');
 assert.match(app, /uniqueRowIds=\$\{rowIds\.size\}; uniqueTints=\$\{tints\.size\}; serializedIds=\$\{serializedIds\.size\}; agentExtensions=\$\{agentExtensions\.length\}; nextId=\$\{state\.nextId\}/,
   'Dense native readiness reports stable row IDs, all tints, preserved extensions, and next ID.');
-assert.match(app, /textContent = 'Reattach selection'[\s\S]*?pointerdown'[\s\S]*?preventDefault\(\)[\s\S]*?sameReviewQuote/,
-  'Manual reattachment keeps the PDF text selection and accepts only the original quote.');
+assert.match(app, /'Cancel reattach' : 'Reattach'[\s\S]*?pointerdown'[\s\S]*?preventDefault\(\)/,
+  'Reattach keeps the text selection, so a selection made first is taken at once.');
 assert.match(app, /textContent = 'Use disk'[\s\S]*?textContent = 'Save my draft'[\s\S]*?expectedComment: String\(current\.comment \|\| ''\)/,
   'Same-field conflicts require an explicit choice before the user draft is rebased.');
 assert.match(app, /textContent = 'Copy draft'[\s\S]*?textContent = 'Discard draft'/,
@@ -2936,6 +2940,82 @@ if (releaseTag) {
   for (const label of ['x', 'y', 'z']) push({ path: 'a.md', label });
   assert.deepEqual(limited.undoStack.map((entry) => entry.label), ['y', 'z'],
     'The stack keeps the newest entries.');
+}
+
+// An agent fixes reviews one by one and edits the text around the others.
+// Every open review must still be found afterwards, at its own text.
+{
+  const before = normalizeReviewText(`
+    The boundary layer separates early because the adverse pressure gradient is strong.
+    We measure the wall shear stress with hot-film sensors at twelve stations.
+    The wake is long and the vortex shedding frequency matches the Strouhal number.
+    Results agree with the direct numerical simulation within five percent.
+    The appendix lists every sensor and its calibration.`);
+  const review = (quote) => {
+    const start = before.indexOf(quote);
+    return { quote, anchor: contextAt(before, start, start + quote.length) };
+  };
+  const shear = review('wall shear stress');
+  const wake = review('the vortex shedding frequency');
+  const agree = review('within five percent');
+  const sensor = review('every sensor');
+  const after = normalizeReviewText(`
+    # A heading the agent added
+    The boundary layer separates early: the adverse pressure gradient is very strong here.
+    We measure the wall shear stress using calibrated hot-film sensors at twelve stations.
+    The wake is long, and the vortex shedding frequency matches the Strouhal number.
+    Results agree with the DNS of Smith et al. within five percent.
+    The appendix lists each sensor and its calibration.`);
+  for (const [name, item, quote] of [['shear', shear, 'wall shear stress'],
+    ['wake', wake, 'the vortex shedding frequency'], ['agree', agree, 'within five percent']]) {
+    const found = resolveMarkdownReview(after, item, { normalized: true });
+    assert.equal(found.status, 'located', `${name}: edits around a quote must not lose it.`);
+    assert.equal(after.slice(found.start, found.end), quote, `${name}: the mark is on its own text.`);
+    assert.equal(found.moved, true, `${name}: a drifted review is flagged for healing.`);
+    const healed = { quote, anchor: contextAt(after, found.start, found.end) };
+    const again = resolveMarkdownReview(after, healed, { normalized: true });
+    assert.equal(again.status, 'located');
+    assert.equal(again.moved, undefined, `${name}: once healed, the context matches in full.`);
+  }
+  const changed = resolveMarkdownReview(after, sensor, { normalized: true });
+  assert.equal(changed.status, 'changed', 'An edited quote is found between its old neighbours.');
+  assert.equal(after.slice(changed.start, changed.end), 'each sensor');
+  const repeated = 'see the figure above. see the figure below. and more text';
+  const short = { quote: 'the figure', anchor: { prefix: 'nothing alike at all', suffix: 'nor here either' } };
+  assert.equal(resolveMarkdownReview(repeated, short).status, 'ambiguous',
+    'A repeated quote with no deciding context stays ambiguous.');
+  const leaning = { quote: 'the figure', anchor: { prefix: 'please see', suffix: 'below. and more' } };
+  const chosen = resolveMarkdownReview(repeated, leaning);
+  assert.equal(chosen.status, 'located', 'The candidate whose context clearly agrees best wins.');
+  assert.equal(chosen.start, repeated.lastIndexOf('the figure'));
+  assert.equal(resolveReviewAnchor([{ page: 1, text: 'only ab here' }], 'ab', { prefix: 'wrong' }).status,
+    'unlocated', 'A short quote needs agreeing context before it is taken.');
+}
+
+// A drifted open review is rewritten to where its quote stands now.
+{
+  const joined = 'new heading. the boundary layer separates early. the wake is long.';
+  const start = joined.indexOf('separates early');
+  const found = { start, end: start + 'separates early'.length };
+  const context = {
+    state: { markdownDigest: 'sha256:now' },
+    ui: { markdown: {} },
+    reviewStatus, contextAt, atRange: (lo, hi) => (lo === hi ? { line: lo } : { line: lo, end: hi }),
+    lineNear: (node) => node.line,
+  };
+  const heal = appFunction('markdownHealPatch', 'let reviewHealTimer', context);
+  const review = { id: 'r3', status: 'open', at: { line: 2 }, anchor: { prefix: 'old', suffix: 'old', documentRevision: 'sha256:then' } };
+  const result = heal(review, joined, found, { line: 4 }, { line: 4 });
+  assert.equal(result.id, 'r3');
+  assert.deepEqual({ ...result.patch.at }, { line: 4 }, 'The lines follow the quote.');
+  assert.equal(result.patch.anchor.prefix, 'new heading. the boundary layer');
+  assert.equal(result.patch.anchor.documentRevision, 'sha256:now');
+  assert.equal(result.expected.anchor, review.anchor, 'The write is a compare-and-swap on what was read.');
+  assert.equal(result.expected.at, review.at);
+  const settled = { ...review, at: { line: 4 }, anchor: { ...result.patch.anchor } };
+  assert.equal(heal(settled, joined, found, { line: 4 }, { line: 4 }), null, 'A review in place is not rewritten.');
+  assert.equal(heal({ ...review, status: 'applied' }, joined, found, { line: 4 }, { line: 4 }), null,
+    'Only open reviews are healed; applied and resolved ones keep their record.');
 }
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);

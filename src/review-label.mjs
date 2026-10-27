@@ -124,9 +124,71 @@ function* occurrences(text, want, loose) {
   }
 }
 
-/// Locate a quote by exact text and captured context. Repeated matches stay
-/// unresolved unless context selects one candidate. A match that ignores
-/// spaces is used only when the quote has no exact occurrence.
+/// How many characters of saved context still agree with the text around a
+/// candidate: the tail of the prefix plus the head of the suffix. Bounded by
+/// the context length, so a repetitive page costs little per candidate.
+function contextScore(text, start, end, { prefix, suffix }, loose = false) {
+  const squeeze = (value) => (loose ? value.replace(/ /g, '') : value);
+  const scale = loose ? 2 : 1;
+  let score = 0;
+  if (prefix) {
+    const before = squeeze(text.slice(Math.max(0, start - prefix.length * scale - 1), start).trimEnd());
+    while (score < prefix.length && score < before.length &&
+      prefix[prefix.length - 1 - score] === before[before.length - 1 - score]) score += 1;
+  }
+  if (suffix) {
+    const after = squeeze(text.slice(end, end + suffix.length * scale + 1).trimStart());
+    let head = 0;
+    while (head < suffix.length && head < after.length && suffix[head] === after[head]) head += 1;
+    score += head;
+  }
+  return score;
+}
+
+/// Agreeing context characters that let a candidate stand without a full
+/// match: about two words on one side.
+const CONTEXT_EVIDENCE = 8;
+/// A quote this long is distinctive on its own: one occurrence of it is
+/// taken even when the text around it has changed.
+const DISTINCT_QUOTE = 12;
+/// Context used to find a quote whose own words were edited.
+const EDGE_CONTEXT = 24;
+
+/// Where a quote stood, when its own words are gone but the text on both
+/// sides of it is still there: the text between them is what it became.
+function changedSpan(list, want, anchor) {
+  const prefix = normalizeReviewText(anchor?.prefix).slice(-EDGE_CONTEXT);
+  const suffix = normalizeReviewText(anchor?.suffix).slice(0, EDGE_CONTEXT);
+  if (prefix.length < DISTINCT_QUOTE || suffix.length < DISTINCT_QUOTE) return null;
+  const reach = Math.max(400, want.length * 4);
+  let found = null;
+  for (const item of list) {
+    for (let from = item.text.indexOf(prefix); from >= 0; from = item.text.indexOf(prefix, from + 1)) {
+      const after = from + prefix.length;
+      const next = item.text.indexOf(suffix, after);
+      if (next < 0 || next - after > reach) continue;
+      if (found) return null;
+      found = { item, start: after, end: next };
+    }
+  }
+  if (!found) return null;
+  let { start, end } = found;
+  const text = found.item.text;
+  while (start < end && text[start] === ' ') start += 1;
+  while (end > start && text[end - 1] === ' ') end -= 1;
+  return end > start ? { ...found, start, end } : null;
+}
+
+/// Locate a quote by exact text and captured context.
+///
+/// A candidate whose saved context matches in full wins, as before. When the
+/// text around a quote has been edited, which is what an agent fixing nearby
+/// reviews does, the candidate is still taken: a single occurrence of a
+/// distinctive quote, or the one candidate whose context clearly agrees best.
+/// Those results carry `moved: true`. A repeated quote with no deciding
+/// context stays ambiguous, and a match that ignores spaces is used only when
+/// the quote has no exact occurrence. When the quote itself is gone but its
+/// neighbours are not, the result is `changed`, spanning what stands between.
 export function resolveReviewAnchor(pages, quote, anchor = {}) {
   const want = normalizeReviewText(quote);
   // `normalized` text is already lower-cased with single spaces: a caller that
@@ -142,25 +204,49 @@ export function resolveReviewAnchor(pages, quote, anchor = {}) {
     prefix: squeeze(normalizeReviewText(anchor?.prefix).slice(-48)),
     suffix: squeeze(normalizeReviewText(anchor?.suffix).slice(0, 48)),
   };
+  // Offsets index the text the caller passed. The map is built only for
+  // the page that holds the match.
+  const located = ({ item, start, end }, extra = {}) => {
+    const map = item.source === null ? null : normalizedIndexMap(item.source);
+    return map
+      ? { status: 'located', page: item.page, start: map[start], end: map[end - 1] + 1, ...extra }
+      : { status: 'located', page: item.page, start, end, ...extra };
+  };
   let count = 0;
   let found = null;
+  let fullMatches = 0;
+  let best = null;
+  let bestScore = -1;
+  let secondScore = -1;
   for (const item of list) {
     for (const { start, end } of occurrences(item.text, want, loose)) {
-      count = Math.min(2, count + 1);
+      count += 1;
       if (matchesContext(item.text, start, end, context, loose)) {
-        if (found) return { status: 'ambiguous' };
+        fullMatches += 1;
         found = { item, start, end };
+        continue;
+      }
+      const score = contextScore(item.text, start, end, context, loose);
+      if (score > bestScore) {
+        secondScore = bestScore;
+        bestScore = score;
+        best = { item, start, end };
+      } else if (score > secondScore) {
+        secondScore = score;
       }
     }
   }
-  if (found) {
-    const { item, start, end } = found;
-    // Offsets index the text the caller passed. The map is built only for
-    // the page that holds the match.
-    const map = item.source === null ? null : normalizedIndexMap(item.source);
-    return map
-      ? { status: 'located', page: item.page, start: map[start], end: map[end - 1] + 1 }
-      : { status: 'located', page: item.page, start, end };
+  if (fullMatches === 1) return located(found);
+  if (fullMatches > 1) return { status: 'ambiguous' };
+  if (count === 1 && (want.replace(/ /g, '').length >= DISTINCT_QUOTE || bestScore >= CONTEXT_EVIDENCE)) {
+    return located(best, { moved: true });
+  }
+  if (count > 1 && bestScore >= CONTEXT_EVIDENCE && bestScore - Math.max(0, secondScore) >= CONTEXT_EVIDENCE) {
+    return located(best, { moved: true });
+  }
+  if (count === 0) {
+    const changed = changedSpan(list, want, anchor);
+    if (changed) return { ...located(changed), status: 'changed' };
   }
   return { status: count > 1 ? 'ambiguous' : 'unlocated' };
 }
@@ -179,10 +265,12 @@ export function selectionContext(before, after) {
 export function resolveMarkdownReview(text, review, { normalized = false } = {}) {
   const anchor = review?.anchor;
   const found = resolveReviewAnchor([{ page: 1, text, normalized }], review?.quote, anchor);
-  if (found.status !== 'located') {
+  if (found.status !== 'located' && found.status !== 'changed') {
     return { status: found.status, legacy: !anchor?.prefix && !anchor?.suffix };
   }
-  return { status: 'located', start: found.start, end: found.end };
+  return {
+    status: found.status, start: found.start, end: found.end, ...(found.moved ? { moved: true } : {}),
+  };
 }
 
 /// An open review whose recorded document digest differs from the file now
@@ -192,4 +280,11 @@ export function madeOnOlderVersion(review, digest, locationStatus) {
   const made = review?.anchor?.documentRevision;
   return Boolean(digest && made && made !== digest && reviewStatus(review) === 'open' &&
     locationStatus !== 'located');
+}
+
+/// The saved context a located review should carry now: the text around its
+/// match. When it differs from what is saved, the review has drifted and the
+/// record is rewritten, so the next edit starts from where the quote is.
+export function contextAt(text, start, end) {
+  return selectionContext(text.slice(Math.max(0, start - 200), start), text.slice(end, end + 200));
 }

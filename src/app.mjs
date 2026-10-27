@@ -1,7 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
@@ -180,6 +180,7 @@ const state = {
   reviewDocumentPath: null,
   reviewConflicts: new Map(),
   reviewLocations: new Map(),
+  reattachReviewId: null,
   reviewActionFilter: 'all',
   reviewStatusFilter: 'all',
   selectedReviewId: null,
@@ -1568,6 +1569,8 @@ async function openFile(
     state.pendingNotePdf = null;
     ui.noteBox.hidden = true;
     ui.noteText.value = '';
+    state.reattachReviewId = null;
+    document.body.classList.remove('reattach-picking');
   }
   state.file = file;
   state.natural = null;
@@ -3117,9 +3120,10 @@ function renderReviewList() {
     if (conflict) row.classList.add('conflict');
     if (review._draftOnly) row.classList.add('draft-only');
     const locationStatus = state.reviewLocations.get(stateKey);
-    if (locationStatus && !['located', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
+    if (locationStatus && !['located', 'changed', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
       row.classList.add('unlocated');
     }
+    if (state.reattachReviewId === review.id) row.classList.add('picking');
     if (review.id === state.selectedReviewId) {
       row.classList.add('on');
     }
@@ -3153,13 +3157,24 @@ function renderReviewList() {
       location.className = 'review-location';
       location.textContent = 'Placed by its line range · select the text and Reattach to pin it';
       row.append(location);
+    } else if (locationStatus === 'changed') {
+      const location = document.createElement('div');
+      location.className = 'review-location';
+      location.textContent = 'Text changed since the review · marked between its old neighbours';
+      row.append(location);
     } else if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
       const location = document.createElement('div');
       location.className = 'review-location';
       location.textContent = locationStatus === 'ambiguous'
-        ? 'Ambiguous match · not highlighted'
-        : 'Unlocated · not highlighted';
+        ? 'Ambiguous match · not highlighted · Reattach to pin it'
+        : 'Unlocated · not highlighted · Reattach to pin it';
       row.append(location);
+    }
+    if (state.reattachReviewId === review.id) {
+      const picking = document.createElement('div');
+      picking.className = 'review-location review-picking';
+      picking.textContent = 'Select the new text in the document… (Esc cancels)';
+      row.append(picking);
     }
     if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest, locationStatus)) {
       const older = document.createElement('div');
@@ -3193,11 +3208,11 @@ function renderReviewList() {
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
-    if (!review._draftOnly &&
-        ['ambiguous', 'unlocated', 'lines'].includes(locationStatus) && reviewStatus(review) === 'open') {
+    if (!review._draftOnly && reviewStatus(review) === 'open') {
       const reattach = document.createElement('button');
       reattach.type = 'button';
-      reattach.textContent = 'Reattach selection';
+      reattach.textContent = state.reattachReviewId === review.id ? 'Cancel reattach' : 'Reattach';
+      reattach.title = 'Pin this review to other text: select it first, or click here and then select it';
       reattach.addEventListener('pointerdown', (event) => event.preventDefault());
       reattach.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -3540,17 +3555,32 @@ async function saveDraftAfterConflict(id) {
   }
 }
 
+/// Reattach pins a review to other text. With text selected it takes that
+/// selection at once; otherwise it waits for the next selection (pick mode).
+/// The new text need not match the old quote: after an edit it rarely can.
 async function reattachReview(review) {
+  const kind = state.file?.kind;
+  if (!state.file?.path || (kind !== 'pdf' && kind !== 'markdown')) return;
+  if (state.reattachReviewId === review.id) {
+    cancelReattach();
+    return;
+  }
+  const picked = describeSelection({ context: true });
+  if (picked && picked.kind === kind && picked.quote) {
+    await pinReviewTo(review, picked);
+    return;
+  }
+  state.reattachReviewId = review.id;
+  document.body.classList.add('reattach-picking');
+  renderReviewList();
+  setStatus(`Select the new text for ${review.id} (Esc cancels)`, { sticky: true });
+}
+
+async function pinReviewTo(review, picked) {
   const path = state.file?.path;
   const generation = state.generation;
   const kind = state.file?.kind;
-  if (!path || (kind !== 'pdf' && kind !== 'markdown')) return;
   const label = kind === 'pdf' ? 'PDF' : 'Markdown';
-  const picked = describeSelection({ context: true });
-  if (!picked || picked.kind !== kind || !sameReviewQuote(review, picked.quote)) {
-    setStatus(`Select the same quoted text in the ${label} before reattaching`, { error: true });
-    return;
-  }
   if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor?.prefix || picked.anchor?.suffix)) {
     setStatus(`The selected text has no ${kind === 'pdf' ? 'PDF position' : 'surrounding text'} to attach to`, { error: true });
     return;
@@ -3560,15 +3590,39 @@ async function reattachReview(review) {
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
     if (digest) nextAnchor.documentRevision = digest;
-    // A Markdown selection can sit on other lines than the review did. A
-    // selection with no source line keeps the review's lines.
-    const patch = kind === 'markdown' && picked.at?.line ? { anchor: nextAnchor, at: picked.at } : { anchor: nextAnchor };
-    await patchReview(review, patch, `Review reattached to the selected ${label} text`);
+    // The review takes the selected text as its quote, and its place: the
+    // page or lines it is on. A selection with no locator keeps the old one.
+    const patch = { anchor: nextAnchor, quote: picked.quote };
+    if (picked.at?.line || picked.at?.page) patch.at = picked.at;
+    await patchReview(review, patch, `Review ${review.id} reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(`Could not reattach review: ${String(error)}`, { error: true });
     }
   }
+}
+
+/// In pick mode, a finished selection completes the reattach.
+async function finishReattachPick() {
+  const id = state.reattachReviewId;
+  if (!id) return;
+  const review = state.reviews.find((item) => item.id === id);
+  if (!review) {
+    cancelReattach();
+    return;
+  }
+  const picked = describeSelection({ context: true });
+  if (!picked || picked.kind !== state.file?.kind || !hasLocator(picked) || !selectionInDocument()) return;
+  cancelReattach({ quiet: true });
+  await pinReviewTo(review, picked);
+}
+
+function cancelReattach({ quiet = false } = {}) {
+  if (!state.reattachReviewId) return;
+  state.reattachReviewId = null;
+  document.body.classList.remove('reattach-picking');
+  renderReviewList();
+  if (!quiet) setStatus('Reattach canceled');
 }
 
 async function jumpToReview(review) {
@@ -3826,9 +3880,9 @@ function wrapQuoteIn(root, quote, id) {
   return wrapQuoteFragments(root, quote, id, { asMark: true });
 }
 
-function markdownReviewMark(id) {
+function markdownReviewMark(id, { changed = false } = {}) {
   const mark = document.createElement('mark');
-  mark.className = 'review';
+  mark.className = changed ? 'review changed' : 'review';
   applyReviewTint(mark, id);
   return mark;
 }
@@ -3890,7 +3944,7 @@ function paintMarkdownMarks() {
       continue;
     }
     const found = resolveMarkdownReview(joined, review, { normalized: true });
-    if (found.status === 'located') {
+    if (found.status === 'located' || found.status === 'changed') {
       located.push({ review, found });
     } else if (found.legacy) {
       byLines.set(review, null);
@@ -3899,10 +3953,13 @@ function paintMarkdownMarks() {
     // `lines`: no context was saved, so the line range stands in for the text.
     locations.set(
       reviewStateKey(state.file.path, review.id),
-      found.status === 'located' ? 'located' : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
+      found.status === 'located' || found.status === 'changed'
+        ? found.status
+        : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
     );
   }
   const hosts = new Map();
+  const heals = [];
   let lowest = Infinity;
   for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
     if (item.found.end > lowest) {
@@ -3910,8 +3967,17 @@ function paintMarkdownMarks() {
       ({ parts } = collectTextParts(ui.markdown, true));
     }
     lowest = item.found.start;
-    const first = wrapSpanParts(ui.markdown, parts, item.found, () => markdownReviewMark(item.review.id));
+    const changed = item.found.status === 'changed';
+    let last = null;
+    const first = wrapSpanParts(ui.markdown, parts, item.found, () => {
+      last = markdownReviewMark(item.review.id, { changed });
+      return last;
+    });
     hosts.set(item.review, first && markdownBadgeHost(first));
+    if (first && !changed) {
+      const heal = markdownHealPatch(item.review, joined, item.found, first, last);
+      if (heal) heals.push(heal);
+    }
   }
   for (const review of byLines.keys()) {
     hosts.set(review, paintMarkdownByLines(review));
@@ -3927,6 +3993,63 @@ function paintMarkdownMarks() {
   if (finding) {
     buildMarkdownFind(true);
   }
+  scheduleReviewHeal(heals);
+}
+
+/// The rewrite an open Markdown review needs after the text around it moved:
+/// fresh context from where its quote stands now, and the source lines it is
+/// on. Null when the record already says so.
+function markdownHealPatch(review, joined, found, first, last) {
+  if (reviewStatus(review) !== 'open' || review._draftOnly) return null;
+  const { prefix, suffix } = contextAt(joined, found.start, found.end);
+  const at = atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line');
+  const anchor = review.anchor ?? {};
+  const contextMoved = (anchor.prefix ?? '') !== prefix || (anchor.suffix ?? '') !== suffix;
+  const linesMoved = at.line != null &&
+    (at.line !== review.at?.line || (at.end ?? null) !== (review.at?.end ?? null));
+  if (!contextMoved && !linesMoved) return null;
+  const patch = {};
+  const expected = {};
+  if (contextMoved) {
+    patch.anchor = {
+      ...anchor, prefix, suffix, ...(state.markdownDigest ? { documentRevision: state.markdownDigest } : {}),
+    };
+    expected.anchor = review.anchor ?? null;
+  }
+  if (linesMoved) {
+    patch.at = { ...review.at, ...at };
+    if (at.end == null) delete patch.at.end;
+    expected.at = review.at ?? null;
+  }
+  return { id: review.id, patch, expected };
+}
+
+let reviewHealTimer = 0;
+
+/// Write healed locations back, after the paint and out of its way. Each
+/// write is a compare-and-swap: a record changed meanwhile (by an agent, or
+/// by you) is left alone, and the next paint looks again.
+function scheduleReviewHeal(heals) {
+  window.clearTimeout(reviewHealTimer);
+  reviewHealTimer = 0;
+  if (!heals.length || state.file?.kind !== 'markdown') return;
+  const path = state.file.path;
+  const generation = state.generation;
+  reviewHealTimer = window.setTimeout(async () => {
+    reviewHealTimer = 0;
+    let store = null;
+    for (const { id, patch, expected } of heals) {
+      if (state.generation !== generation || state.file?.path !== path) return;
+      try {
+        store = await invoke('patch_review', { document: path, id, patch, expected });
+      } catch {
+        // A conflict means someone else wrote first; the next paint retries.
+      }
+    }
+    if (store && state.generation === generation && state.file?.path === path) {
+      applyReviewStore(store);
+    }
+  }, 400);
 }
 
 let pdfReviewTextDocument = null;
@@ -4020,7 +4143,7 @@ async function paintPdfMarks() {
       continue;
     }
     const resolved = resolveReviewAnchor(textPages, review.quote, anchor);
-    if (resolved.status !== 'located') {
+    if (resolved.status !== 'located' && resolved.status !== 'changed') {
       const position = anchor.position;
       const sameRevision = anchor.documentRevision != null && anchor.documentRevision === digest;
       const page = position?.page && ui.viewer.querySelector(`.page[data-page-number="${position.page}"]`);
@@ -4040,9 +4163,14 @@ async function paintPdfMarks() {
       const local = resolveReviewAnchor([{ page: resolved.page, text: collectTextParts(layer).joined }], review.quote, {
         ...anchor, position: { ...anchor.position, page: resolved.page },
       });
-      const first = local.status === 'located'
+      const first = local.status === 'located' || local.status === 'changed'
         ? wrapPdfQuote(layer, review.quote, review.id, { start: local.start, end: local.end })
         : null;
+      if (first && local.status === 'changed') {
+        for (const piece of layer.querySelectorAll(`review-q[data-review-id="${review.id}"]`)) {
+          piece.classList.add('changed');
+        }
+      }
       if (first) {
         placePdfBadge(page, first, review);
         continue;
@@ -4147,6 +4275,11 @@ function scheduleReviewChip() {
   window.clearTimeout(reviewChipTimer);
   reviewChipTimer = 0;
   ui.reviewChip.hidden = true;
+  // Picking text for Reattach: the selection is the answer, not a new review.
+  if (state.reattachReviewId) {
+    hideReviewMenu();
+    return;
+  }
   if (!ui.noteBox.hidden) {
     hideReviewMenu();
     return;
@@ -4428,6 +4561,13 @@ ui.reviewMenuAdd.addEventListener('click', () => openNoteBox());
 ui.reviewMenuDelete.addEventListener('pointerdown', (event) => event.preventDefault());
 ui.reviewMenuDelete.addEventListener('click', () => openNoteBox('delete'));
 document.addEventListener('selectionchange', scheduleReviewChip);
+// A selection is finished when the button or the Shift key is let go.
+document.addEventListener('pointerup', () => {
+  if (state.reattachReviewId) window.setTimeout(() => void finishReattachPick(), 0);
+});
+document.addEventListener('keyup', (event) => {
+  if (state.reattachReviewId && event.key === 'Shift') void finishReattachPick();
+});
 ui.container.addEventListener('contextmenu', onDocumentContextMenu);
 ui.markdownStage.addEventListener('contextmenu', onDocumentContextMenu);
 ui.container.addEventListener('scroll', hideReviewChrome, { passive: true });
@@ -4676,6 +4816,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape' && !ui.noteBox.hidden) {
     event.preventDefault();
     closeNoteBox();
+    return;
+  }
+  if (key === 'escape' && state.reattachReviewId) {
+    event.preventDefault();
+    cancelReattach();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === 'o') {
