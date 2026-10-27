@@ -523,6 +523,60 @@ every machine, so a change to them is a change someone made.
 All three run on Windows, macOS and Linux for every push, and a release stays a draft until
 each platform's bundle has opened a document.
 
+## What it is built with
+
+Every part pdf-next is made of, what it does here, and its licence. Versions are the ones this
+release ships; the frontend libraries are vendored under `src/vendor/`, each with a `VERSION`
+file that records its source and checksum.
+
+**The app shell (Rust)**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [Rust](https://www.rust-lang.org) | 1.96 or newer | The native side: files, watching, reviews, Markdown, PDF reduction, printing. | MIT / Apache-2.0 |
+| [Tauri](https://tauri.app) | 2.11.5 | The window, the bridge between Rust and the page, bundles and installers. | MIT / Apache-2.0 |
+| [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao) | 0.55 / 0.35 | Tauri's webview and window layers: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. | MIT / Apache-2.0 |
+| tauri-plugin-dialog | 2.7.2 | The system Open dialog. | MIT / Apache-2.0 |
+| tauri-plugin-single-instance | 2.4.3 | A second `pdf-next file.pdf` opens a tab in the running window. | MIT / Apache-2.0 |
+| [serde](https://serde.rs), serde_json | 1.0 | Reads and writes the review sidecar and every message to the page. | MIT / Apache-2.0 |
+| [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | The `sha256:` digests that tell one version of a file from another. | MIT / Apache-2.0 |
+| [tempfile](https://github.com/Stebalien/tempfile) | 3.27 | Atomic writes: the sidecar, a reduced PDF, a Markdown edit. | MIT / Apache-2.0 |
+| [cap-std](https://github.com/bytecodealliance/cap-std) | 3.4.6 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
+| [open](https://github.com/Byron/open-rs) | 5.4.1 | Hands a checked web link to the default browser. | MIT |
+| percent-encoding | 2.3.2 | Encodes local paths for the document protocol. | MIT / Apache-2.0 |
+| gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.18 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
+
+**Markdown and TeX**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) | 0.13.4 | Parses Markdown: CommonMark plus tables, task lists, footnotes, strikethrough, smart punctuation and `$…$` math. | MIT |
+| [ammonia](https://github.com/rust-ammonia/ammonia) | 4.1.4 | Sanitizes the HTML before it reaches the page: no scripts, no event handlers. | MIT / Apache-2.0 |
+| [math-core](https://github.com/tmke8/math-core) | 0.9.0 (pinned) | Turns TeX equations into MathML Core, drawn by the webview itself. | MIT |
+| New Computer Modern Math | in `vendor/math-core` | The equation font. | GUST Font License |
+| Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
+| [highlight.js](https://highlightjs.org) | 11.12.0 | Colours code blocks: Bash, C, C++, CMake, diff, Fortran, INI, JavaScript, JSON, Julia, LaTeX, Makefile, MATLAB, Python, Rust, shell, YAML. | BSD 3-Clause |
+| [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
+
+**PDF**
+
+| Part | Version | What it does in pdf-next | Licence |
+| --- | --- | --- | --- |
+| [PDF.js](https://mozilla.github.io/pdf.js/) (`pdfjs-dist`) | 6.3.289 | Parses and renders PDFs in a worker, with find and the text layer for reviews. Patched (see `vendor/PDFJS_VERSION`): smaller page cache, sharper zoomed crops, bounded stream decoding. | Apache-2.0 |
+| [lopdf](https://github.com/J-F-Liu/lopdf) | 0.44 | Reads PDF structure on the Rust side, with limits on stream decompression. | MIT |
+| [picamatl](https://github.com/xcheljd/picamatl) | 0.4.4 | Reduce PDF: writes a smaller `{name}_reduced.pdf` in pure Rust, no Ghostscript. | MIT / Apache-2.0 |
+| SyncTeX | from your TeX install | When a `.synctex.gz` sits next to a PDF and the `synctex` program from your TeX distribution is on the PATH, a review can carry a hint of the `.tex` line. pdf-next ships no SyncTeX of its own; without it the hint is simply left out. | (TeX distribution) |
+
+**Building and checking**
+
+| Part | What it does | Licence |
+| --- | --- | --- |
+| [Tauri CLI](https://tauri.app) 2.11.4, run with [Bun](https://bun.sh) | Builds the app and its installers. | MIT / Apache-2.0 |
+| NSIS (Windows), DMG (macOS), deb, rpm and AppImage (Linux) | The installers Tauri makes. | zlib / various |
+| Node.js | Runs `tools/check_frontend.mjs` and the smoke test. | MIT |
+
+The page itself is plain JavaScript modules, HTML and CSS: no framework and no build step.
+
 ## Scope
 
 A viewer first. No annotations, no forms, no cloud. It opens a file, keeps it current, and gets
