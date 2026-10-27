@@ -1507,6 +1507,147 @@ fn name_headings(events: &mut [OffsetEvent<'_>]) {
 /// Bare web addresses in prose become links, as on GitHub: `http://`,
 /// `https://` and `www.` runs, never inside code, math or an existing link.
 /// Trailing punctuation and an unmatched `)` stay outside the link.
+/// A size written after an image, `{width=60%}`, as an HTML size: a percent,
+/// or whole pixels. Absolute units are converted at 96 pixels per inch.
+fn figure_size(value: &str) -> Option<String> {
+    let value = value.trim_matches(|c| c == '"' || c == '\'');
+    let split = value
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let amount: f64 = number
+        .parse()
+        .ok()
+        .filter(|n: &f64| n.is_finite() && *n > 0.0)?;
+    let pixels = |scale: f64| {
+        let px = (amount * scale).round();
+        (1.0..=20_000.0).contains(&px).then(|| format!("{px}"))
+    };
+    match unit {
+        "%" => (amount <= 100.0).then(|| format!("{}%", amount.round().max(1.0))),
+        "" | "px" => pixels(1.0),
+        "cm" => pixels(96.0 / 2.54),
+        "mm" => pixels(96.0 / 25.4),
+        "in" => pixels(96.0),
+        "pt" => pixels(96.0 / 72.0),
+        _ => None,
+    }
+}
+
+/// `{width=60% height=4cm .left}` read the way Pandoc and Quarto read it:
+/// `key=value` pairs and `.class` / `#id` words. Only `width`, `height` and
+/// the classes `.left`, `.right` and `.center` mean something here; anything
+/// that is not shaped like an attribute block leaves the text alone.
+fn figure_attributes(block: &str) -> Option<Vec<(&'static str, String)>> {
+    let inner = block.strip_prefix('{')?.strip_suffix('}')?;
+    if inner.contains(['\n', '{', '}', '<', '>']) || inner.trim().is_empty() {
+        return None;
+    }
+    let mut found = Vec::new();
+    for word in inner.split_whitespace() {
+        if let Some(class) = word.strip_prefix('.') {
+            if let Some(align) = ["left", "right", "center"]
+                .into_iter()
+                .find(|a| *a == class)
+            {
+                found.push(("align", align.to_string()));
+            }
+        } else if word.starts_with('#') {
+            // An identifier is for cross-references elsewhere; nothing to draw.
+        } else if let Some((key, value)) = word.split_once('=') {
+            match key {
+                "width" | "height" => {
+                    if let Some(size) = figure_size(value) {
+                        found.push((if key == "width" { "width" } else { "height" }, size));
+                    }
+                }
+                _ if key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {}
+                _ => return None,
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(found)
+}
+
+/// Images written with Pandoc attributes, `![Wake](fig.png){width=60% .left}`,
+/// become a raw `<img>` with those attributes, which then goes through the
+/// sanitizer and the image judge like any other. The attribute text is
+/// removed from the page.
+fn image_attributes(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+    use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
+    let mut out: Vec<OffsetEvent<'_>> = Vec::with_capacity(events.len());
+    let mut index = 0;
+    while index < events.len() {
+        let (event, range) = &events[index];
+        let Event::Start(Tag::Image {
+            dest_url, title, ..
+        }) = event
+        else {
+            out.push(events[index].clone());
+            index += 1;
+            continue;
+        };
+        let Some(end) = events[index..]
+            .iter()
+            .position(|(event, _)| matches!(event, Event::End(TagEnd::Image)))
+            .map(|offset| index + offset)
+        else {
+            out.push(events[index].clone());
+            index += 1;
+            continue;
+        };
+        let attributes = match events.get(end + 1) {
+            Some((Event::Text(text), _)) if text.starts_with('{') => text
+                .find('}')
+                .and_then(|close| figure_attributes(&text[..=close]).map(|found| (close, found))),
+            _ => None,
+        };
+        let Some((close, found)) = attributes else {
+            out.extend(events[index..=end].iter().cloned());
+            index = end + 1;
+            continue;
+        };
+        let alt: String = events[index + 1..end]
+            .iter()
+            .filter_map(|(event, _)| match event {
+                Event::Text(text) | Event::Code(text) => Some(text.as_ref()),
+                Event::SoftBreak | Event::HardBreak => Some(" "),
+                _ => None,
+            })
+            .collect();
+        let mut tag = format!(
+            r#"<img src="{}" alt="{}""#,
+            escape_attribute(dest_url),
+            escape_attribute(&alt)
+        );
+        if !title.is_empty() {
+            tag.push_str(&format!(r#" title="{}""#, escape_attribute(title)));
+        }
+        for (name, value) in found {
+            tag.push_str(&format!(r#" {name}="{value}""#));
+        }
+        tag.push('>');
+        out.push((Event::InlineHtml(CowStr::from(tag)), range.clone()));
+        let (Event::Text(text), after) = &events[end + 1] else {
+            unreachable!("checked above");
+        };
+        let rest = &text[close + 1..];
+        if !rest.is_empty() {
+            let start = after.start + close + 1;
+            out.push((
+                Event::Text(CowStr::from(rest.to_string())),
+                start.min(after.end)..after.end,
+            ));
+        }
+        index = end + 2;
+    }
+    out
+}
+
 fn link_bare_urls(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
     use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
     let mut out = Vec::with_capacity(events.len());
@@ -1634,7 +1775,7 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     )
     .collect();
     name_headings(&mut merged);
-    let events_with_offset = link_bare_urls(math_fences(merged));
+    let events_with_offset = image_attributes(link_bare_urls(math_fences(merged)));
     let mut math_budget = MathBudget::default();
     let mut converter = math_converter();
 
@@ -2000,6 +2141,10 @@ fn image_markup(tag: &str, verdicts: &[ImageVerdict]) -> String {
     );
     if let Some(title) = get("title") {
         markup.push_str(&format!(r#" title="{title}""#));
+    }
+    if let Some(align) = get("align").filter(|a| matches!(a.as_str(), "left" | "right" | "center"))
+    {
+        markup.push_str(&format!(r#" data-align="{align}""#));
     }
     for name in ["width", "height"] {
         let plain = get(name).filter(|value| {
@@ -4934,6 +5079,41 @@ mod tests {
         assert!(shown.contains(&canonical(absolute)));
         assert!(shown.contains(&canonical(doc.join("figs/my pic.PNG"))));
         assert_eq!(shown.len(), 3, "{shown:?}");
+    }
+
+    #[test]
+    fn pandoc_attributes_size_and_place_an_image() {
+        let (_dir, doc) = image_tree();
+        let (html, shown) = shown_in(
+            "![Wake](figs/a.png){width=60% .left}\n\n![Two](figs/a.png \"t\"){width=5cm height=40} after\n\n\
+             ![Kept](figs/a.png){not an attribute}\n\n![Odd](figs/a.png){width=12parsecs}",
+            &doc,
+        );
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(
+            html.contains(r#"alt="Wake" data-align="left" width="60%""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"title="t" width="189" height="40""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("> after"),
+            "text after the block stays: {html}"
+        );
+        assert!(!html.contains("{width"), "the block is removed: {html}");
+        assert!(
+            html.contains("{not an attribute}"),
+            "other braces stay text: {html}"
+        );
+        assert!(
+            !html.contains("parsecs"),
+            "an unknown unit is ignored: {html}"
+        );
+        assert_eq!(super::figure_size("120%"), None);
+        assert_eq!(super::figure_size("2in").as_deref(), Some("192"));
+        assert_eq!(super::figure_size("x"), None);
     }
 
     fn refused(source: &str, base: &std::path::Path) -> String {

@@ -337,6 +337,30 @@
             Edit the file in place</label>
         </section>
         <section>
+          <h3>Figures</h3>
+          <label>Width <select id="setFigWidth" data-figure="width">
+            <option value="natural">Natural size</option>
+            <option value="column">Column width</option>
+            <option value="75">75% of column</option>
+            <option value="50">50% of column</option>
+          </select></label>
+          <label>Height <select id="setFigHeight" data-figure="height">
+            <option value="none">No limit</option>
+            <option value="screen">Fit the window</option>
+            <option value="half">Half the window</option>
+          </select></label>
+          <label>Place <select id="setFigAlign" data-figure="align">
+            <option value="center">Centred</option>
+            <option value="left">Left</option>
+          </select></label>
+          <label>Captions <select id="setFigCaption" data-figure="caption">
+            <option value="numbered">Figure 1, 2, …</option>
+            <option value="plain">Without number</option>
+            <option value="off">None</option>
+          </select></label>
+          <p class="dim settings-note">In the file: <code>![Caption](fig.png){width=60% .left}</code>. Click a figure to open it full size.</p>
+        </section>
+        <section>
           <h3>Window</h3>
           <label>Interface font <select id="setUiFont">
             <option value="system">System</option>
