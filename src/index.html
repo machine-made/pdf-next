@@ -299,7 +299,9 @@
         </div>
         <div class="review-filters">
           <label>Action <select id="reviewActionFilter" aria-label="Filter reviews by action">
-            <option value="all">All</option><option value="delete">Delete</option><option value="improve">Improve</option>
+            <option value="all">All</option><option value="improve">Improve</option><option value="polish">Polish</option>
+            <option value="shorten">Shorten</option><option value="expand">Expand</option><option value="check">Check</option>
+            <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
           </select></label>
           <label>Status <select id="reviewStatusFilter" aria-label="Filter reviews by status">
             <option value="all">All</option><option value="open">Open</option><option value="applied">Applied</option><option value="resolved">Resolved</option>
@@ -318,7 +320,14 @@
         <div id="noteQuote" class="note-quote" aria-label="Selected text"></div>
         <label class="note-action-label">Action
           <select id="noteAction" aria-label="Review action">
-            <option value="improve">Improve</option><option value="delete">Delete selection</option>
+            <option value="improve">Improve</option>
+            <option value="polish">Polish (wording only)</option>
+            <option value="shorten">Shorten</option>
+            <option value="expand">Expand</option>
+            <option value="check">Check (fact, number, equation)</option>
+            <option value="bold">Make bold</option>
+            <option value="italic">Make italic</option>
+            <option value="delete">Delete selection</option>
           </select>
         </label>
         <input id="noteText" type="text" placeholder="Comment (Enter to save, Esc to cancel)" />
@@ -332,8 +341,35 @@
         <svg class="icon"><use href="#i-add-review"/></svg>
       </button>
       <div id="reviewMenu" hidden role="menu">
-        <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
-        <button id="reviewMenuDelete" type="button" role="menuitem">Delete selection</button>
+        <button id="reviewMenuCopy" type="button" role="menuitem">Copy</button>
+        <div id="reviewMenuReview" class="menu-group">
+          <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
+          <button id="reviewMenuDelete" type="button" role="menuitem">Delete selection</button>
+        </div>
+        <div id="reviewMenuEdit" class="menu-group" role="group" aria-label="Edit the Markdown file">
+          <hr class="menu-rule" />
+          <button type="button" role="menuitem" data-format="bold">Bold <kbd>Ctrl+B</kbd></button>
+          <button type="button" role="menuitem" data-format="italic">Italic <kbd>Ctrl+I</kbd></button>
+          <button type="button" role="menuitem" data-format="underline">Underline</button>
+          <button type="button" role="menuitem" data-format="strike">Strikethrough</button>
+          <button type="button" role="menuitem" data-format="code">Code</button>
+          <button id="reviewMenuEditText" type="button" role="menuitem">Edit text… <kbd>Ctrl+E</kbd></button>
+        </div>
+      </div>
+
+      <div id="editBox" hidden>
+        <div class="note-head">
+          <div id="editRef"></div>
+          <button id="editClose" type="button" title="Close (Esc)" aria-label="Close without saving">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <textarea id="editText" rows="5" spellcheck="true" aria-label="Markdown source"></textarea>
+        <div class="note-buttons">
+          <span class="dim edit-hint">Ctrl+Enter saves</span>
+          <button id="editCancel" type="button">Cancel</button>
+          <button id="editSave" type="button">Save to file</button>
+        </div>
       </div>
 
       <div id="empty">

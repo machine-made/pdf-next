@@ -793,6 +793,78 @@ mark.review[data-review-action='delete'] {
   padding: 0 10px;
 }
 
+#reviewMenu .menu-group[hidden] {
+  display: none;
+}
+
+#reviewMenu kbd {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.menu-rule {
+  margin: 4px 2px;
+  border: 0;
+  border-top: 1px solid var(--widget-border);
+}
+
+#editBox {
+  position: fixed;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 6px;
+  background: var(--widget);
+  box-shadow: 0 4px 16px var(--shadow);
+  font-size: var(--review-size, 12px);
+}
+
+#editBox[hidden] {
+  display: none;
+}
+
+#editRef {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+#editText {
+  width: min(440px, calc(100vw - 32px));
+  min-height: 5em;
+  padding: 4px 6px;
+  border: 1px solid var(--widget-border);
+  border-radius: 2px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 0.95em;
+  resize: vertical;
+}
+
+.edit-hint {
+  margin-right: auto;
+  align-self: center;
+  font-size: 0.85em;
+}
+
+#editSave,
+#editCancel {
+  padding: 2px 8px;
+  border: 1px solid var(--widget-border);
+  border-radius: 2px;
+  background: var(--widget);
+  cursor: pointer;
+}
+
+#editSave:hover,
+#editCancel:hover {
+  background: var(--widget-hover);
+}
+
 #viewerContainer {
   position: absolute;
   inset: 0;
@@ -1574,6 +1646,7 @@ body.pages-on #mdWidth {
 
   #reviewPane,
   #noteBox,
+  #editBox,
   #reviewChip,
   #reviewMenu {
     display: none !important;

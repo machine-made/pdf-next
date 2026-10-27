@@ -6,8 +6,9 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
+import { blockSpan, formatEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
@@ -604,7 +605,7 @@ for (const kind of ['markdown', 'pdf']) {
       document: { activeElement: null, createElement: element, createTextNode: (text) => text },
       draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
       reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
-      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS,
       scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
       patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
       reviewRowById: () => null, HTMLTextAreaElement: class {},
@@ -937,7 +938,7 @@ for (const kind of ['markdown', 'pdf']) {
   const note = { file: 'a.pdf', quote: 'selected text' };
   const state = { file: { path: 'a.pdf' }, generation: 1, pendingNote: note };
   const ui = {
-    noteBox: { hidden: false }, noteText: { value: 'unsaved comment' },
+    noteBox: { hidden: false }, noteText: { value: 'unsaved comment' }, editBox: { hidden: false },
     image: { removeAttribute() {} }, markdown: {}, markdownRaw: {},
   };
   const open = appFunction('openFile', 'async function openPath(', {
@@ -1112,7 +1113,7 @@ for (const pauseAt of ['save', 'close']) {
   let applied = false;
   let appended;
   let statusMessage = '';
-  const save = appFunction('saveNote', 'async function optionalSourceHint(', {
+  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS,
     state,
     noteSaveInFlight: false,
     structuredClone: (value) => JSON.parse(JSON.stringify(value)),
@@ -1607,8 +1608,8 @@ assert.match(
 );
 assert.match(
   app,
-  /function onDocumentContextMenu\(event\)[\s\S]*?if \(!state\.reviewOpen\) \{\s*return;\s*\}[\s\S]*?event\.preventDefault\(\)/,
-  'Outside review mode the system context menu, with Copy, must stay.',
+  /function onDocumentContextMenu\(event\)[\s\S]*?if \(!state\.reviewOpen && !edits\) \{\s*return;\s*\}[\s\S]*?event\.preventDefault\(\)[\s\S]*?ui\.reviewMenuCopy\.hidden = state\.reviewOpen;/,
+  'Outside review mode the system context menu stays, unless a Markdown edit menu replaces it with its own Copy.',
 );
 assert.match(
   app,
@@ -3017,5 +3018,37 @@ if (releaseTag) {
   assert.equal(heal({ ...review, status: 'applied' }, joined, found, { line: 4 }, { line: 4 }), null,
     'Only open reviews are healed; applied and resolved ones keep their record.');
 }
+
+// Direct edits map a rendered selection back to its Markdown source.
+{
+  const raw = '# Title\r\n\r\nThe wake is long and the\r\nwake is slow.\r\n\r\nA [link to the wake](x.md) here.\r\n';
+  const lines = (n) => n;
+  const span = sourceSpan(raw, lines(3), lines(3), 'long and the wake');
+  assert.equal(raw.slice(span.start, span.end), 'long and the\r\nwake', 'A quote across a line break maps whole.');
+  assert.equal(sourceSpan(raw, 3, 3, 'wake').error, 'repeated', 'A repeat within the paragraph is refused.');
+  assert.equal(sourceSpan(raw, 6, 6, 'link to the wake here').error, 'markup', 'A quote across a link is refused.');
+  const block = blockSpan(raw, 3, 3);
+  assert.deepEqual([block.line, block.endLine], [3, 4], 'The paragraph runs to the next blank line.');
+  assert.equal(raw.slice(block.start, block.end), 'The wake is long and the\r\nwake is slow.');
+  const bold = formatEdit(raw, span, 'bold');
+  assert.equal(bold.replacement, '**long and the\r\nwake**');
+  const boldRaw = raw.slice(0, bold.start) + bold.replacement + raw.slice(bold.start + bold.expected.length);
+  const inner = { start: bold.start + 2, end: bold.start + 2 + span.end - span.start };
+  const unbold = formatEdit(boldRaw, inner, 'bold');
+  assert.equal(unbold.removed, true, 'Bold on bold text removes it.');
+  assert.equal(unbold.replacement, 'long and the\r\nwake');
+  const italic = formatEdit(boldRaw, inner, 'italic');
+  assert.equal(italic.removed, false, 'A star that is half of a bold pair is not italic.');
+  assert.equal(formatEdit('a `b` c', { start: 3, end: 4 }, 'code').removed, true);
+  assert.equal(formatEdit('a b c', { start: 2, end: 3 }, 'underline').replacement, '<u>b</u>');
+  assert.throws(() => formatEdit('a', { start: 0, end: 1 }, 'blink'));
+  const smart = 'It\'s -- here... "x"';
+  const typographic = sourceSpan(smart, 1, 1, 'It’s – here… “x”');
+  assert.equal(smart.slice(typographic.start, typographic.end), smart,
+    'Smart quotes, dashes and ellipses map back to their source characters.');
+}
+assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
+assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
+  'Undoing a direct edit writes the inverse against the digest the edit produced.');
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
