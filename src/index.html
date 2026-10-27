@@ -356,6 +356,23 @@
             <span><strong>pdf-next</strong> by machine-made<br /><span id="aboutVersion" class="dim"></span></span>
           </div>
           <p class="dim">A PDF, image and Markdown viewer for the compile loop, made in the machine-made lab. MIT licence.</p>
+          <details class="about-details">
+            <summary>Details: what pdf-next is built with</summary>
+            <dl>
+              <dt>App shell</dt>
+              <dd>Rust and Tauri 2 (window, installers), with the system webview: WebView2, WKWebView or WebKitGTK. serde, sha2, tempfile and cap-std keep the review file and edits safe.</dd>
+              <dt>PDF</dt>
+              <dd>Mozilla PDF.js 6.3.289 renders and searches. lopdf and picamatl (pure Rust) make Reduce PDF. SyncTeX hints use the <code>synctex</code> program of your TeX install, when present.</dd>
+              <dt>Markdown</dt>
+              <dd>pulldown-cmark parses, ammonia sanitizes, highlight.js 11.12 colours code.</dd>
+              <dt>TeX equations</dt>
+              <dd>math-core 0.9 turns TeX into MathML, set in New Computer Modern Math.</dd>
+              <dt>Fonts</dt>
+              <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1.</dd>
+              <dt>Licences</dt>
+              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; fonts GUST and SIL OFL. Full list in the README.</dd>
+            </dl>
+          </details>
           <div class="about-links">
             <button id="aboutUpdate" type="button">Check for updates</button>
             <button id="aboutSource" type="button">Source code</button>
