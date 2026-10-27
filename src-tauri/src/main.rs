@@ -3741,6 +3741,7 @@ fn patch_review_record(
     dry_run: bool,
 ) -> Result<ReviewFile, String> {
     const PATCHABLE: &[&str] = &[
+        "quote",
         "action",
         "status",
         "resolution",
