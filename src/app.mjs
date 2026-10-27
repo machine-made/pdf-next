@@ -1,10 +1,11 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
-import { findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
+import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
+import { FORMAT_LABELS, blockSpan, formatEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -118,6 +119,8 @@ const ui = {
   noteAction: el('noteAction'),
   noteText: el('noteText'),
   noteSave: el('noteSave'),
+  noteCancel: el('noteCancel'),
+  noteClose: el('noteClose'),
   reviewPane: el('reviewPane'),
   reviewList: el('reviewList'),
   reviewCount: el('reviewCount'),
@@ -129,6 +132,29 @@ const ui = {
   reviewMenu: el('reviewMenu'),
   reviewMenuAdd: el('reviewMenuAdd'),
   reviewMenuDelete: el('reviewMenuDelete'),
+  reviewMenuCopy: el('reviewMenuCopy'),
+  reviewMenuReview: el('reviewMenuReview'),
+  reviewMenuEdit: el('reviewMenuEdit'),
+  reviewMenuEditText: el('reviewMenuEditText'),
+  editBox: el('editBox'),
+  editRef: el('editRef'),
+  editText: el('editText'),
+  editSave: el('editSave'),
+  editCancel: el('editCancel'),
+  editClose: el('editClose'),
+  settingsToggle: el('settingsToggle'),
+  settingsPanel: el('settingsPanel'),
+  settingsClose: el('settingsClose'),
+  setFont: el('setFont'),
+  setSize: el('setSize'),
+  setWidth: el('setWidth'),
+  setPoll: el('setPoll'),
+  setDirectEdits: el('setDirectEdits'),
+  setUiFont: el('setUiFont'),
+  aboutVersion: el('aboutVersion'),
+  aboutUpdate: el('aboutUpdate'),
+  aboutSource: el('aboutSource'),
+  figureSelects: document.querySelectorAll('#settingsPanel select[data-figure]'),
 };
 
 const state = {
@@ -178,6 +204,7 @@ const state = {
   reviewDocumentPath: null,
   reviewConflicts: new Map(),
   reviewLocations: new Map(),
+  reattachReviewId: null,
   reviewActionFilter: 'all',
   reviewStatusFilter: 'all',
   selectedReviewId: null,
@@ -262,16 +289,84 @@ function setTitle(name) {
 
 // ── Status ────────────────────────────────────────────────────────────────
 
-function setStatus(message, { error = false, sticky = false } = {}) {
+/// Show a short message. `action` adds one button to it, such as Undo; a
+/// message with a button stays up longer, long enough to reach it.
+function setStatus(message, { error = false, sticky = false, action = null } = {}) {
   window.clearTimeout(state.statusTimer);
   ui.status.textContent = message;
+  if (message && action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'status-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      ui.status.classList.remove('on', 'actionable');
+      action.run();
+    });
+    ui.status.append(button);
+  }
   ui.status.classList.toggle('on', Boolean(message));
+  ui.status.classList.toggle('actionable', Boolean(message && action));
   ui.status.classList.toggle('error', error);
   if (message && !sticky) {
     state.statusTimer = window.setTimeout(() => {
-      ui.status.classList.remove('on');
-    }, 2200);
+      ui.status.classList.remove('on', 'actionable');
+    }, action ? 10_000 : 2200);
   }
+}
+
+// ── Undo ──────────────────────────────────────────────────────────────────
+// One stack per window for changes made through the app: a removed review,
+// and later a direct edit to a Markdown file. Each entry knows its file, and
+// Ctrl+Z undoes the newest entry for the file on screen.
+
+const UNDO_LIMIT = 20;
+const undoStack = [];
+
+function pushUndo(entry) {
+  undoStack.push(entry);
+  if (undoStack.length > UNDO_LIMIT) {
+    undoStack.splice(0, undoStack.length - UNDO_LIMIT);
+  }
+}
+
+/// Undo the newest change made to the file on screen. True when there was one.
+async function undoLast() {
+  const path = state.file?.path;
+  let index = -1;
+  for (let at = undoStack.length - 1; at >= 0; at -= 1) {
+    if (undoStack[at].path === path) {
+      index = at;
+      break;
+    }
+  }
+  if (index < 0) {
+    return false;
+  }
+  const [entry] = undoStack.splice(index, 1);
+  try {
+    await entry.run();
+  } catch (error) {
+    if (state.file?.path === path) {
+      setStatus(`Could not undo ${entry.label}: ${String(error)}`, { error: true });
+    }
+  }
+  return true;
+}
+
+/// Put a removed review back exactly as it was: same ID, same fields, same
+/// place in the list. An unsaved comment draft comes back with it.
+async function restoreRemovedReview(path, record, draft) {
+  const store = await invoke('restore_review', { document: path, review: record });
+  if (state.file?.path !== path) {
+    return;
+  }
+  if (draft) {
+    pendingComments.set(commentDraftKey(path, record.id), draft);
+  }
+  applyReviewStore(store, { authoritative: true });
+  selectReview(record.id);
+  setStatus(`Review ${record.id} restored`);
 }
 
 // ── View state, preserved across reloads ──────────────────────────────────
@@ -891,6 +986,55 @@ function embedMarkdownImages(root, revision) {
   }
 }
 
+// ── Figures ───────────────────────────────────────────────────────────────
+// An image alone in its paragraph is a figure, as in Pandoc: its alt text is
+// the caption, numbered when Settings says so. The paragraph stays the block
+// it was, so line anchors, pages and reviews work on it unchanged, and the
+// caption is text a review can quote.
+
+const FIGURE_SETTINGS = {
+  width: { key: 'pdf-next.fig-width', values: ['natural', 'column', '75', '50'], fallback: 'natural' },
+  height: { key: 'pdf-next.fig-height', values: ['none', 'screen', 'half'], fallback: 'none' },
+  align: { key: 'pdf-next.fig-align', values: ['center', 'left'], fallback: 'center' },
+  caption: { key: 'pdf-next.fig-caption', values: ['numbered', 'plain', 'off'], fallback: 'numbered' },
+};
+
+function figureSetting(name) {
+  const { key, values, fallback } = FIGURE_SETTINGS[name];
+  let saved = null;
+  try {
+    saved = localStorage.getItem(key);
+  } catch {
+    // Preference only.
+  }
+  return values.includes(saved) ? saved : fallback;
+}
+
+/// Put the figure preferences on the article, where the stylesheet reads them.
+function applyFigureSettings() {
+  for (const name of Object.keys(FIGURE_SETTINGS)) {
+    ui.markdown.dataset[`fig${name[0].toUpperCase()}${name.slice(1)}`] = figureSetting(name);
+  }
+}
+
+function markFigures(root) {
+  const captions = figureSetting('caption') !== 'off';
+  for (const paragraph of root.querySelectorAll('p')) {
+    const elements = [...paragraph.children].filter((child) => !child.matches('span.src'));
+    if (elements.length !== 1 || !elements[0].matches('img') || paragraph.textContent.trim()) continue;
+    const image = elements[0];
+    paragraph.classList.add('md-figure');
+    const alt = image.getAttribute('alt')?.trim();
+    if (captions && alt) {
+      const caption = document.createElement('span');
+      caption.className = 'md-caption';
+      caption.textContent = alt;
+      paragraph.classList.add('has-caption');
+      paragraph.append(caption);
+    }
+  }
+}
+
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
 /// assigning innerHTML here does not hand the document a script surface, and
 /// the CSP forbids inline script besides.
@@ -904,8 +1048,10 @@ async function showMarkdown(file, view, generation, fit) {
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   colourCode(ui.markdown);
+  markFigures(ui.markdown);
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
+  state.markdownSource = doc.raw;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
   setMarkdownScale(view?.scale || 1);
 
@@ -1498,6 +1644,10 @@ async function openFile(
     state.pendingNotePdf = null;
     ui.noteBox.hidden = true;
     ui.noteText.value = '';
+    state.reattachReviewId = null;
+    document.body.classList.remove('reattach-picking');
+    ui.editBox.hidden = true;
+    state.pendingEdit = null;
   }
   state.file = file;
   state.natural = null;
@@ -2714,9 +2864,9 @@ function openNoteBox(action = 'improve') {
     : null;
   ui.noteRef.textContent = formatSelection(picked);
   ui.noteQuote.textContent = picked.quote;
-  ui.noteAction.value = action === 'delete' ? 'delete' : 'improve';
+  ui.noteAction.value = REVIEW_ACTIONS.includes(action) ? action : 'improve';
   ui.noteText.value = '';
-  ui.noteText.placeholder = 'Instruction (optional comment for Delete)';
+  updateNotePlaceholder();
   ui.noteText.hidden = false;
   ui.noteBox.hidden = false;
   placeNoteBox(rect);
@@ -2737,6 +2887,31 @@ function placeNoteBox(rect) {
   placeFloating(ui.noteBox, Math.max(8, window.innerWidth / 2 - 130), Math.max(8, window.innerHeight / 3));
 }
 
+/// Improve needs an instruction; every other action stands on its own.
+function updateNotePlaceholder() {
+  ui.noteText.placeholder = ui.noteAction.value === 'improve'
+    ? 'Instruction (Enter to save)'
+    : 'Optional note (Enter to save)';
+}
+
+/// A box about to hide must not keep the focus: a hidden field that still
+/// has it makes the next shortcut look like typing, and it is ignored.
+function releaseFocus(box) {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && box.contains(active)) active.blur();
+}
+
+/// Close the review composer without saving. Esc, the × in its corner, Cancel
+/// and a click outside an empty composer all end here.
+function closeNoteBox() {
+  releaseFocus(ui.noteBox);
+  hideReviewChrome();
+  ui.noteBox.hidden = true;
+  ui.noteText.value = '';
+  state.pendingNote = null;
+  state.pendingNotePdf = null;
+}
+
 let noteSaveInFlight = false;
 
 async function saveNote() {
@@ -2744,7 +2919,7 @@ async function saveNote() {
     return;
   }
   if (noteSaveInFlight) return;
-  const action = ui.noteAction.value === 'delete' ? 'delete' : 'improve';
+  const action = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
   const comment = ui.noteText.value.trim();
   if (action === 'improve' && !comment) {
     setStatus('Add an instruction for this improvement');
@@ -3015,7 +3190,7 @@ function renderReviewList() {
     }
   }
   const visible = records.filter((review) =>
-    (state.reviewActionFilter === 'all' || (review.action || 'improve') === state.reviewActionFilter) &&
+    (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
   if (!visible.length) {
@@ -3037,9 +3212,10 @@ function renderReviewList() {
     if (conflict) row.classList.add('conflict');
     if (review._draftOnly) row.classList.add('draft-only');
     const locationStatus = state.reviewLocations.get(stateKey);
-    if (locationStatus && !['located', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
+    if (locationStatus && !['located', 'changed', 'positioned', 'preserved', 'lines'].includes(locationStatus)) {
       row.classList.add('unlocated');
     }
+    if (state.reattachReviewId === review.id) row.classList.add('picking');
     if (review.id === state.selectedReviewId) {
       row.classList.add('on');
     }
@@ -3048,7 +3224,7 @@ function renderReviewList() {
     loc.className = 'review-loc';
     const action = document.createElement('span');
     action.className = 'review-action-label';
-    action.textContent = reviewAction(review) === 'delete' ? 'Delete selection' : 'Improve';
+    action.textContent = ACTION_LABELS[reviewAction(review)];
     loc.append(makeReviewBadge(review), action, document.createTextNode(formatSelection(review)));
     row.append(loc);
 
@@ -3073,13 +3249,24 @@ function renderReviewList() {
       location.className = 'review-location';
       location.textContent = 'Placed by its line range · select the text and Reattach to pin it';
       row.append(location);
+    } else if (locationStatus === 'changed') {
+      const location = document.createElement('div');
+      location.className = 'review-location';
+      location.textContent = 'Text changed since the review · marked between its old neighbours';
+      row.append(location);
     } else if (locationStatus && !['located', 'positioned', 'preserved'].includes(locationStatus)) {
       const location = document.createElement('div');
       location.className = 'review-location';
       location.textContent = locationStatus === 'ambiguous'
-        ? 'Ambiguous match · not highlighted'
-        : 'Unlocated · not highlighted';
+        ? 'Ambiguous match · not highlighted · Reattach to pin it'
+        : 'Unlocated · not highlighted · Reattach to pin it';
       row.append(location);
+    }
+    if (state.reattachReviewId === review.id) {
+      const picking = document.createElement('div');
+      picking.className = 'review-location review-picking';
+      picking.textContent = 'Select the new text in the document… (Esc cancels)';
+      row.append(picking);
     }
     if (state.file?.kind === 'markdown' && madeOnOlderVersion(review, state.markdownDigest, locationStatus)) {
       const older = document.createElement('div');
@@ -3113,11 +3300,11 @@ function renderReviewList() {
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
-    if (!review._draftOnly &&
-        ['ambiguous', 'unlocated', 'lines'].includes(locationStatus) && reviewStatus(review) === 'open') {
+    if (!review._draftOnly && reviewStatus(review) === 'open') {
       const reattach = document.createElement('button');
       reattach.type = 'button';
-      reattach.textContent = 'Reattach selection';
+      reattach.textContent = state.reattachReviewId === review.id ? 'Cancel reattach' : 'Reattach';
+      reattach.title = 'Pin this review to other text: select it first, or click here and then select it';
       reattach.addEventListener('pointerdown', (event) => event.preventDefault());
       reattach.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -3361,11 +3548,10 @@ async function updateReviewComment(pending, { quiet = false } = {}) {
   return true;
 }
 
+/// Remove a review at once, with no question asked: the toast and Ctrl+Z can
+/// put it back, which beats a dialog that is clicked through anyway.
 async function deleteReview(id) {
   if (!state.file) {
-    return;
-  }
-  if (!window.confirm('Remove this review? This only removes the review task.')) {
     return;
   }
   const path = state.file.path;
@@ -3376,12 +3562,23 @@ async function deleteReview(id) {
     if (state.generation !== generation || state.file?.path !== path) {
       return;
     }
-    pendingComments.delete(commentDraftKey(path, id));
+    const draftKey = commentDraftKey(path, id);
+    const draft = pendingComments.get(draftKey) ?? null;
+    pendingComments.delete(draftKey);
     applyReviewStore(store);
     if (state.selectedReviewId === id) {
       state.selectedReviewId = null;
     }
-    setStatus('Review removed');
+    if (expectedRecord) {
+      pushUndo({
+        path,
+        label: `review ${id}`,
+        run: () => restoreRemovedReview(path, expectedRecord, draft),
+      });
+    }
+    setStatus(`Review ${id} removed`, {
+      action: expectedRecord ? { label: 'Undo', run: () => void undoLast() } : null,
+    });
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(String(error), { error: true });
@@ -3450,17 +3647,32 @@ async function saveDraftAfterConflict(id) {
   }
 }
 
+/// Reattach pins a review to other text. With text selected it takes that
+/// selection at once; otherwise it waits for the next selection (pick mode).
+/// The new text need not match the old quote: after an edit it rarely can.
 async function reattachReview(review) {
+  const kind = state.file?.kind;
+  if (!state.file?.path || (kind !== 'pdf' && kind !== 'markdown')) return;
+  if (state.reattachReviewId === review.id) {
+    cancelReattach();
+    return;
+  }
+  const picked = describeSelection({ context: true });
+  if (picked && picked.kind === kind && picked.quote) {
+    await pinReviewTo(review, picked);
+    return;
+  }
+  state.reattachReviewId = review.id;
+  document.body.classList.add('reattach-picking');
+  renderReviewList();
+  setStatus(`Select the new text for ${review.id} (Esc cancels)`, { sticky: true });
+}
+
+async function pinReviewTo(review, picked) {
   const path = state.file?.path;
   const generation = state.generation;
   const kind = state.file?.kind;
-  if (!path || (kind !== 'pdf' && kind !== 'markdown')) return;
   const label = kind === 'pdf' ? 'PDF' : 'Markdown';
-  const picked = describeSelection({ context: true });
-  if (!picked || picked.kind !== kind || !sameReviewQuote(review, picked.quote)) {
-    setStatus(`Select the same quoted text in the ${label} before reattaching`, { error: true });
-    return;
-  }
   if (!(kind === 'pdf' ? picked.anchor?.position : picked.anchor?.prefix || picked.anchor?.suffix)) {
     setStatus(`The selected text has no ${kind === 'pdf' ? 'PDF position' : 'surrounding text'} to attach to`, { error: true });
     return;
@@ -3470,15 +3682,39 @@ async function reattachReview(review) {
     if (state.generation !== generation || state.file?.path !== path) return;
     const nextAnchor = reattachedReviewAnchor(review.anchor, picked.anchor, review.at, review.quote);
     if (digest) nextAnchor.documentRevision = digest;
-    // A Markdown selection can sit on other lines than the review did. A
-    // selection with no source line keeps the review's lines.
-    const patch = kind === 'markdown' && picked.at?.line ? { anchor: nextAnchor, at: picked.at } : { anchor: nextAnchor };
-    await patchReview(review, patch, `Review reattached to the selected ${label} text`);
+    // The review takes the selected text as its quote, and its place: the
+    // page or lines it is on. A selection with no locator keeps the old one.
+    const patch = { anchor: nextAnchor, quote: picked.quote };
+    if (picked.at?.line || picked.at?.page) patch.at = picked.at;
+    await patchReview(review, patch, `Review ${review.id} reattached to the selected ${label} text`);
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
       setStatus(`Could not reattach review: ${String(error)}`, { error: true });
     }
   }
+}
+
+/// In pick mode, a finished selection completes the reattach.
+async function finishReattachPick() {
+  const id = state.reattachReviewId;
+  if (!id) return;
+  const review = state.reviews.find((item) => item.id === id);
+  if (!review) {
+    cancelReattach();
+    return;
+  }
+  const picked = describeSelection({ context: true });
+  if (!picked || picked.kind !== state.file?.kind || !hasLocator(picked) || !selectionInDocument()) return;
+  cancelReattach({ quiet: true });
+  await pinReviewTo(review, picked);
+}
+
+function cancelReattach({ quiet = false } = {}) {
+  if (!state.reattachReviewId) return;
+  state.reattachReviewId = null;
+  document.body.classList.remove('reattach-picking');
+  renderReviewList();
+  if (!quiet) setStatus('Reattach canceled');
 }
 
 async function jumpToReview(review) {
@@ -3736,9 +3972,9 @@ function wrapQuoteIn(root, quote, id) {
   return wrapQuoteFragments(root, quote, id, { asMark: true });
 }
 
-function markdownReviewMark(id) {
+function markdownReviewMark(id, { changed = false } = {}) {
   const mark = document.createElement('mark');
-  mark.className = 'review';
+  mark.className = changed ? 'review changed' : 'review';
   applyReviewTint(mark, id);
   return mark;
 }
@@ -3800,7 +4036,7 @@ function paintMarkdownMarks() {
       continue;
     }
     const found = resolveMarkdownReview(joined, review, { normalized: true });
-    if (found.status === 'located') {
+    if (found.status === 'located' || found.status === 'changed') {
       located.push({ review, found });
     } else if (found.legacy) {
       byLines.set(review, null);
@@ -3809,10 +4045,13 @@ function paintMarkdownMarks() {
     // `lines`: no context was saved, so the line range stands in for the text.
     locations.set(
       reviewStateKey(state.file.path, review.id),
-      found.status === 'located' ? 'located' : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
+      found.status === 'located' || found.status === 'changed'
+        ? found.status
+        : found.legacy ? 'lines' : gone ? 'preserved' : found.status,
     );
   }
   const hosts = new Map();
+  const heals = [];
   let lowest = Infinity;
   for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
     if (item.found.end > lowest) {
@@ -3820,8 +4059,17 @@ function paintMarkdownMarks() {
       ({ parts } = collectTextParts(ui.markdown, true));
     }
     lowest = item.found.start;
-    const first = wrapSpanParts(ui.markdown, parts, item.found, () => markdownReviewMark(item.review.id));
+    const changed = item.found.status === 'changed';
+    let last = null;
+    const first = wrapSpanParts(ui.markdown, parts, item.found, () => {
+      last = markdownReviewMark(item.review.id, { changed });
+      return last;
+    });
     hosts.set(item.review, first && markdownBadgeHost(first));
+    if (first && !changed) {
+      const heal = markdownHealPatch(item.review, joined, item.found, first, last);
+      if (heal) heals.push(heal);
+    }
   }
   for (const review of byLines.keys()) {
     hosts.set(review, paintMarkdownByLines(review));
@@ -3837,6 +4085,63 @@ function paintMarkdownMarks() {
   if (finding) {
     buildMarkdownFind(true);
   }
+  scheduleReviewHeal(heals);
+}
+
+/// The rewrite an open Markdown review needs after the text around it moved:
+/// fresh context from where its quote stands now, and the source lines it is
+/// on. Null when the record already says so.
+function markdownHealPatch(review, joined, found, first, last) {
+  if (reviewStatus(review) !== 'open' || review._draftOnly) return null;
+  const { prefix, suffix } = contextAt(joined, found.start, found.end);
+  const at = atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line');
+  const anchor = review.anchor ?? {};
+  const contextMoved = (anchor.prefix ?? '') !== prefix || (anchor.suffix ?? '') !== suffix;
+  const linesMoved = at.line != null &&
+    (at.line !== review.at?.line || (at.end ?? null) !== (review.at?.end ?? null));
+  if (!contextMoved && !linesMoved) return null;
+  const patch = {};
+  const expected = {};
+  if (contextMoved) {
+    patch.anchor = {
+      ...anchor, prefix, suffix, ...(state.markdownDigest ? { documentRevision: state.markdownDigest } : {}),
+    };
+    expected.anchor = review.anchor ?? null;
+  }
+  if (linesMoved) {
+    patch.at = { ...review.at, ...at };
+    if (at.end == null) delete patch.at.end;
+    expected.at = review.at ?? null;
+  }
+  return { id: review.id, patch, expected };
+}
+
+let reviewHealTimer = 0;
+
+/// Write healed locations back, after the paint and out of its way. Each
+/// write is a compare-and-swap: a record changed meanwhile (by an agent, or
+/// by you) is left alone, and the next paint looks again.
+function scheduleReviewHeal(heals) {
+  window.clearTimeout(reviewHealTimer);
+  reviewHealTimer = 0;
+  if (!heals.length || state.file?.kind !== 'markdown') return;
+  const path = state.file.path;
+  const generation = state.generation;
+  reviewHealTimer = window.setTimeout(async () => {
+    reviewHealTimer = 0;
+    let store = null;
+    for (const { id, patch, expected } of heals) {
+      if (state.generation !== generation || state.file?.path !== path) return;
+      try {
+        store = await invoke('patch_review', { document: path, id, patch, expected });
+      } catch {
+        // A conflict means someone else wrote first; the next paint retries.
+      }
+    }
+    if (store && state.generation === generation && state.file?.path === path) {
+      applyReviewStore(store);
+    }
+  }, 400);
 }
 
 let pdfReviewTextDocument = null;
@@ -3930,7 +4235,7 @@ async function paintPdfMarks() {
       continue;
     }
     const resolved = resolveReviewAnchor(textPages, review.quote, anchor);
-    if (resolved.status !== 'located') {
+    if (resolved.status !== 'located' && resolved.status !== 'changed') {
       const position = anchor.position;
       const sameRevision = anchor.documentRevision != null && anchor.documentRevision === digest;
       const page = position?.page && ui.viewer.querySelector(`.page[data-page-number="${position.page}"]`);
@@ -3950,9 +4255,14 @@ async function paintPdfMarks() {
       const local = resolveReviewAnchor([{ page: resolved.page, text: collectTextParts(layer).joined }], review.quote, {
         ...anchor, position: { ...anchor.position, page: resolved.page },
       });
-      const first = local.status === 'located'
+      const first = local.status === 'located' || local.status === 'changed'
         ? wrapPdfQuote(layer, review.quote, review.id, { start: local.start, end: local.end })
         : null;
+      if (first && local.status === 'changed') {
+        for (const piece of layer.querySelectorAll(`review-q[data-review-id="${review.id}"]`)) {
+          piece.classList.add('changed');
+        }
+      }
       if (first) {
         placePdfBadge(page, first, review);
         continue;
@@ -4022,7 +4332,7 @@ function selectionInDocument() {
   if (!(el instanceof Element)) {
     return null;
   }
-  if (el.closest('#reviewPane, #noteBox, #reviewChip, #reviewMenu, #bar, #find, #tabs')) {
+  if (el.closest('#reviewPane, #noteBox, #editBox, #reviewChip, #reviewMenu, #bar, #find, #tabs')) {
     return null;
   }
   if (!el.closest('#markdown, #markdownRaw, #viewer, #viewerContainer, #markdownStage')) {
@@ -4057,6 +4367,11 @@ function scheduleReviewChip() {
   window.clearTimeout(reviewChipTimer);
   reviewChipTimer = 0;
   ui.reviewChip.hidden = true;
+  // Picking text for Reattach: the selection is the answer, not a new review.
+  if (state.reattachReviewId) {
+    hideReviewMenu();
+    return;
+  }
   if (!ui.noteBox.hidden) {
     hideReviewMenu();
     return;
@@ -4080,8 +4395,10 @@ function onDocumentContextMenu(event) {
   if (state.file?.kind !== 'markdown' && state.file?.kind !== 'pdf') {
     return;
   }
-  // Outside review mode the system menu stays, with its Copy.
-  if (!state.reviewOpen) {
+  const edits = Boolean(markdownEditTarget());
+  // Outside review mode, and with nothing to edit, the system menu stays,
+  // with its Copy.
+  if (!state.reviewOpen && !edits) {
     return;
   }
   if (!reviewFromSelection()) {
@@ -4089,11 +4406,241 @@ function onDocumentContextMenu(event) {
   }
   event.preventDefault();
   hideReviewChip();
+  ui.reviewMenuReview.hidden = !state.reviewOpen;
+  ui.reviewMenuCopy.hidden = state.reviewOpen;
+  ui.reviewMenuEdit.hidden = !edits;
   ui.reviewMenu.hidden = false;
   placeFloating(ui.reviewMenu, event.clientX, event.clientY);
 }
 
+// ── Direct edits to Markdown ──────────────────────────────────────────────
+// Bold, italic and the rest write the .md itself, through Rust, which first
+// checks that the file is still the one on screen. Each edit can be undone.
+// On by default; Settings turns it off.
+
+function directEditsEnabled() {
+  try {
+    return localStorage.getItem('pdf-next.direct-edits') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/// The selection, when it can be edited in place: rendered Markdown (not the
+/// raw view), on a source line, with direct edits on.
+function markdownEditTarget() {
+  if (state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
+      typeof state.markdownSource !== 'string') {
+    return null;
+  }
+  const range = selectionInDocument();
+  if (!range || !ui.markdown.contains(range.commonAncestorContainer)) return null;
+  const picked = describeSelection();
+  if (!picked?.at?.line || !picked.quote) return null;
+  return { range, picked };
+}
+
+async function applyDirectFormat(format) {
+  hideReviewChrome();
+  const target = markdownEditTarget();
+  if (!target) {
+    setStatus(state.file?.kind === 'markdown'
+      ? 'Select text in the rendered Markdown to format it'
+      : 'Formatting edits Markdown files only; add a review instead');
+    return;
+  }
+  const node = target.range.commonAncestorContainer;
+  const element = node.nodeType === 3 ? node.parentElement : node;
+  if (element?.closest('pre, code, math')) {
+    setStatus('Formatting does not apply inside code or equations', { error: true });
+    return;
+  }
+  const raw = state.markdownSource;
+  const span = sourceSpan(raw, target.picked.at.line, target.picked.at.end, target.picked.quote);
+  if (span.error) {
+    setStatus(span.error === 'repeated'
+      ? 'That text appears more than once in its paragraph: select a longer passage'
+      : 'The selection crosses formatting or a link: use Edit text… (Ctrl+E)', { error: true });
+    return;
+  }
+  const edit = formatEdit(raw, span, format);
+  await writeMarkdownEdit(edit, `${FORMAT_LABELS[format]}${edit.removed ? ' removed' : ''}`);
+}
+
+/// Write one edit, then show the file as it now is. Undo writes the inverse,
+/// against the digest this edit produced, so it never undoes over a change
+/// made since.
+async function writeMarkdownEdit({ start, expected, replacement }, label) {
+  const file = state.file;
+  if (!file || expected === replacement) return;
+  const path = file.path;
+  try {
+    const next = await invoke('edit_markdown', {
+      path, expectedDigest: state.markdownDigest, start, expectedText: expected, replacement,
+    });
+    pushUndo({
+      path,
+      label: label.toLowerCase(),
+      run: async () => {
+        await invoke('edit_markdown', {
+          path, expectedDigest: next, start, expectedText: replacement, replacement: expected,
+        });
+        if (state.file?.path === path) {
+          await openFile(state.file, { preserveView: true });
+          setStatus(`Undone: ${label}`);
+        }
+      },
+    });
+    if (state.file?.path === path) {
+      await openFile(state.file, { preserveView: true });
+    }
+    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void undoLast() } });
+  } catch (error) {
+    if (state.file?.path === path) {
+      setStatus(`Could not edit the file: ${String(error)}`, { error: true });
+    }
+  }
+}
+
+/// Edit text: the source of the selection, or of its whole paragraph when the
+/// selection crosses markup, in a small editor.
+function openEditBox() {
+  hideReviewChrome();
+  const target = markdownEditTarget();
+  if (!target) {
+    setStatus(state.file?.kind === 'markdown'
+      ? 'Select text in the rendered Markdown to edit it'
+      : 'Edit text works on Markdown files only');
+    return;
+  }
+  const raw = state.markdownSource;
+  const { line, end } = target.picked.at;
+  let span = sourceSpan(raw, line, end, target.picked.quote);
+  let where = 'selection';
+  if (span.error) {
+    span = blockSpan(raw, line, end);
+    where = span.endLine > span.line ? `lines ${span.line}–${span.endLine}` : `line ${span.line}`;
+  }
+  const expected = raw.slice(span.start, span.end);
+  state.pendingEdit = { path: state.file.path, digest: state.markdownDigest, start: span.start, expected };
+  ui.editRef.textContent = `${state.file.name} · ${where}`;
+  ui.editText.value = expected;
+  ui.editText.rows = Math.min(14, Math.max(3, expected.split('\n').length + 1));
+  ui.editBox.hidden = false;
+  const rect = target.range.getBoundingClientRect();
+  const height = ui.editBox.offsetHeight || 160;
+  const below = rect.bottom + 8;
+  placeFloating(ui.editBox, rect.left, below + height <= window.innerHeight - 8 ? below : Math.max(8, rect.top - height - 8));
+  ui.editText.focus({ preventScroll: true });
+}
+
+function closeEditBox() {
+  releaseFocus(ui.editBox);
+  ui.editBox.hidden = true;
+  ui.editText.value = '';
+  state.pendingEdit = null;
+}
+
+async function saveEditBox() {
+  const pending = state.pendingEdit;
+  if (!pending || state.file?.path !== pending.path) {
+    closeEditBox();
+    return;
+  }
+  if (pending.digest !== state.markdownDigest) {
+    setStatus('The file changed while you were editing; select the text again', { error: true });
+    return;
+  }
+  const replacement = ui.editText.value;
+  closeEditBox();
+  await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────
+// One place for the preferences. The Markdown and reload menus in the toolbar
+// stay as shortcuts; the panel mirrors them and drives the same setters.
+
+const UI_FONTS = ['system', 'mm-sans', 'weft'];
+const SETTINGS_MIRRORS = [['setFont', 'mdFont'], ['setSize', 'mdSize'], ['setWidth', 'mdWidth'], ['setPoll', 'poll']];
+
+function applyUiFont(value, { persist = true } = {}) {
+  const chosen = UI_FONTS.includes(value) ? value : 'system';
+  if (chosen === 'system') {
+    delete document.documentElement.dataset.uiFont;
+  } else {
+    document.documentElement.dataset.uiFont = chosen;
+  }
+  if (ui.setUiFont) ui.setUiFont.value = chosen;
+  if (!persist) return;
+  try {
+    localStorage.setItem('pdf-next.ui-font', chosen);
+  } catch {
+    // Preference only.
+  }
+}
+
+function syncSettings() {
+  for (const [mine, theirs] of SETTINGS_MIRRORS) {
+    const select = ui[mine];
+    if (!select.options.length) {
+      for (const option of ui[theirs].options) select.append(new Option(option.textContent, option.value));
+    }
+    select.value = ui[theirs].value;
+  }
+  ui.setDirectEdits.checked = directEditsEnabled();
+  for (const select of ui.figureSelects) select.value = figureSetting(select.dataset.figure);
+  ui.aboutVersion.textContent = state.version ? `Version ${state.version}` : '';
+}
+
+function toggleSettings(open = ui.settingsPanel.hidden) {
+  if (open) syncSettings();
+  else releaseFocus(ui.settingsPanel);
+  ui.settingsPanel.hidden = !open;
+  ui.settingsToggle.setAttribute('aria-pressed', String(open));
+}
+
 // ── Wiring ────────────────────────────────────────────────────────────────
+
+ui.settingsToggle.addEventListener('click', () => toggleSettings());
+ui.settingsClose.addEventListener('click', () => toggleSettings(false));
+for (const [mine, theirs] of SETTINGS_MIRRORS) {
+  ui[mine].addEventListener('change', () => {
+    const select = ui[theirs];
+    if (select.dataset.md) {
+      setMarkdownStyle(select, ui[mine].value);
+    } else {
+      select.value = ui[mine].value;
+      select.dispatchEvent(new Event('change'));
+    }
+  });
+}
+ui.setDirectEdits.addEventListener('change', () => {
+  try {
+    localStorage.setItem('pdf-next.direct-edits', ui.setDirectEdits.checked ? '1' : '0');
+  } catch {
+    // Preference only.
+  }
+});
+ui.setUiFont.addEventListener('change', () => applyUiFont(ui.setUiFont.value));
+for (const select of ui.figureSelects) {
+  select.addEventListener('change', () => {
+    const name = select.dataset.figure;
+    try {
+      localStorage.setItem(FIGURE_SETTINGS[name].key, select.value);
+    } catch {
+      // Preference only.
+    }
+    applyFigureSettings();
+    // Captions are text in the article: adding or removing them re-renders.
+    if (name === 'caption' && state.file?.kind === 'markdown') {
+      void openFile(state.file, { preserveView: true });
+    }
+  });
+}
+ui.aboutUpdate.addEventListener('click', () => ui.update.click());
+ui.aboutSource.addEventListener('click', () => {
+  void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
+});
 
 ui.open.addEventListener('click', async () => {
   const picked = await invoke('pick_file');
@@ -4322,11 +4869,7 @@ ui.reviewStatusFilter.addEventListener('change', () => {
   state.reviewStatusFilter = ui.reviewStatusFilter.value;
   renderReviewList();
 });
-ui.noteAction.addEventListener('change', () => {
-  ui.noteText.placeholder = ui.noteAction.value === 'delete'
-    ? 'Optional reason (Enter to save)'
-    : 'Instruction (Enter to save)';
-});
+ui.noteAction.addEventListener('change', updateNotePlaceholder);
 ui.reviewChip.addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });
@@ -4337,17 +4880,67 @@ ui.reviewMenuAdd.addEventListener('pointerdown', (event) => {
 ui.reviewMenuAdd.addEventListener('click', () => openNoteBox());
 ui.reviewMenuDelete.addEventListener('pointerdown', (event) => event.preventDefault());
 ui.reviewMenuDelete.addEventListener('click', () => openNoteBox('delete'));
+for (const button of [ui.reviewMenuCopy, ui.reviewMenuEditText, ...ui.reviewMenuEdit.querySelectorAll('[data-format]')]) {
+  // Keep the selection: these act on it.
+  button.addEventListener('pointerdown', (event) => event.preventDefault());
+}
+ui.reviewMenuCopy.addEventListener('click', async () => {
+  const text = window.getSelection()?.toString() ?? '';
+  hideReviewMenu();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    setStatus('Clipboard refused the text', { error: true });
+  }
+});
+for (const button of ui.reviewMenuEdit.querySelectorAll('[data-format]')) {
+  button.addEventListener('click', () => void applyDirectFormat(button.dataset.format));
+}
+ui.reviewMenuEditText.addEventListener('click', () => openEditBox());
+ui.editSave.addEventListener('click', () => void saveEditBox());
+ui.editCancel.addEventListener('click', () => closeEditBox());
+ui.editClose.addEventListener('click', () => closeEditBox());
+ui.editText.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void saveEditBox();
+  }
+});
 document.addEventListener('selectionchange', scheduleReviewChip);
+// A selection is finished when the button or the Shift key is let go.
+document.addEventListener('pointerup', () => {
+  if (state.reattachReviewId) window.setTimeout(() => void finishReattachPick(), 0);
+});
+document.addEventListener('keyup', (event) => {
+  if (state.reattachReviewId && event.key === 'Shift') void finishReattachPick();
+});
 ui.container.addEventListener('contextmenu', onDocumentContextMenu);
 ui.markdownStage.addEventListener('contextmenu', onDocumentContextMenu);
 ui.container.addEventListener('scroll', hideReviewChrome, { passive: true });
 ui.markdownStage.addEventListener('scroll', hideReviewChrome, { passive: true });
 document.addEventListener('pointerdown', (event) => {
   const target = event.target;
-  if (target instanceof Element && target.closest('#reviewChip, #reviewMenu, #noteBox')) {
+  if (target instanceof Element && target.closest('#reviewChip, #reviewMenu, #noteBox, #editBox')) {
     return;
   }
   hideReviewMenu();
+  if (!ui.settingsPanel.hidden && target instanceof Element && !target.closest('#settingsPanel, #settingsToggle')) {
+    toggleSettings(false);
+  }
+  // A click elsewhere closes a composer you have not typed in. One with text
+  // stays, so a stray click cannot lose a comment.
+  if (!ui.noteBox.hidden && !ui.noteText.value.trim()) {
+    closeNoteBox();
+  }
+});
+
+// A figure opens full size in a tab of its own, with zoom and the folder
+// walk. Only a plain click: a drag that selects text is left alone.
+ui.markdown.addEventListener('click', (event) => {
+  const image = event.target instanceof Element ? event.target.closest('img[data-doc]') : null;
+  if (!image || event.button !== 0 || !window.getSelection()?.isCollapsed || state.reattachReviewId) return;
+  event.preventDefault();
+  void openPath(image.dataset.doc);
 });
 
 // A link in a markdown file must not leave the page. A relative one —
@@ -4531,17 +5124,12 @@ ui.noteText.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
     void saveNote();
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    hideReviewChrome();
-    ui.noteBox.hidden = true;
-    ui.noteText.value = '';
-    state.pendingNote = null;
-    state.pendingNotePdf = null;
   }
 });
 
 ui.noteSave.addEventListener('click', () => void saveNote());
+ui.noteCancel.addEventListener('click', () => closeNoteBox());
+ui.noteClose.addEventListener('click', () => closeNoteBox());
 
 
 eventBus.on('textlayerrendered', () => {
@@ -4581,6 +5169,33 @@ window.addEventListener('keydown', (event) => {
     event.target instanceof HTMLSelectElement;
   const key = event.key.toLowerCase();
 
+  // Esc closes the composer wherever focus went: its action menu, the page,
+  // the review panel. Before anything else, so no other Esc use takes it.
+  if (key === 'escape' && !ui.noteBox.hidden) {
+    event.preventDefault();
+    closeNoteBox();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {
+    event.preventDefault();
+    toggleSettings();
+    return;
+  }
+  if (key === 'escape' && !ui.settingsPanel.hidden) {
+    event.preventDefault();
+    toggleSettings(false);
+    return;
+  }
+  if (key === 'escape' && !ui.editBox.hidden) {
+    event.preventDefault();
+    closeEditBox();
+    return;
+  }
+  if (key === 'escape' && state.reattachReviewId) {
+    event.preventDefault();
+    cancelReattach();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key === 'o') {
     event.preventDefault();
     ui.open.click();
@@ -4681,6 +5296,23 @@ window.addEventListener('keydown', (event) => {
     return;
   }
   if (typing) {
+    return;
+  }
+  // Ctrl+B, Ctrl+I and Ctrl+E edit a Markdown selection in place.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
+      (key === 'b' || key === 'i' || key === 'e') && markdownEditTarget()) {
+    event.preventDefault();
+    if (key === 'e') openEditBox();
+    else void applyDirectFormat(key === 'b' ? 'bold' : 'italic');
+    return;
+  }
+  // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.
+  // In a text field it stays the field's own undo, by the return above.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'z') {
+    event.preventDefault();
+    void undoLast().then((done) => {
+      if (!done) setStatus('Nothing to undo');
+    });
     return;
   }
   // Delete, or Cmd+Backspace as in the macOS Finder.
@@ -4936,6 +5568,12 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   }
   setMarkdownStyle(select, saved, { persist: false });
 }
+try {
+  applyUiFont(localStorage.getItem('pdf-next.ui-font'), { persist: false });
+} catch {
+  applyUiFont('system', { persist: false });
+}
+applyFigureSettings();
 
 for (const key of ['pdf', 'md']) {
   let saved = null;

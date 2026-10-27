@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 use crate::review_directory::AllowedDocuments;
 use serde_json::{json, Value};
 
-const HELP: &str = "Usage:\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews list notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.\n\nMarkdown documents (.md, .markdown) use the same commands. A review quotes rendered text and\nnames the source line range in `at`; edit the Markdown file, then record the result.";
+const HELP: &str = "Usage:\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n  pdf-next reviews restore <PDF|MD> --record <JSONfile|-> --expected-revision N\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n  restore    Put a removed review back under its own ID (the full record, as listed).\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --record FILE              One complete review record, as `list` printed it; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews list notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.\n\nMarkdown documents (.md, .markdown) use the same commands. A review quotes rendered text and\nnames the source line range in `at`; edit the Markdown file, then record the result.";
 const MAX_PATCH_BYTES: usize = 16_000;
+/// A whole record may be as large as the store allows one to be.
+const MAX_RECORD_BYTES: usize = 64_000;
 
 /// Handle `reviews` arguments. `None` leaves normal viewer arguments to the
 /// existing CLI parser; `Some` is the process exit status for this command.
@@ -62,6 +64,7 @@ fn run(args: &[OsString]) -> Result<String, CliError> {
     match command {
         "list" => run_list(&args[1..]),
         "update" => run_update(&args[1..]),
+        "restore" => run_restore(&args[1..]),
         other => Err(usage(format!("unknown reviews command `{other}`"))),
     }
 }
@@ -150,22 +153,67 @@ fn run_update(args: &[OsString]) -> Result<String, CliError> {
     serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
 }
 
-fn read_patch(path: &OsString) -> Result<String, CliError> {
-    if path == "-" {
-        return read_bounded(io::stdin().lock());
+fn run_restore(args: &[OsString]) -> Result<String, CliError> {
+    if args.is_empty() {
+        return Err(usage("reviews restore needs a document path"));
     }
-    let file = fs::File::open(PathBuf::from(path)).map_err(|error| runtime(error.to_string()))?;
-    read_bounded(file)
+    let (document, allowed) = document_path(&args[0])?;
+    let mut record_path = None;
+    let mut expected_revision = None;
+    let mut rest = args[1..].iter();
+    while let Some(option) = rest.next() {
+        let name = option
+            .to_str()
+            .ok_or_else(|| usage("option name must be UTF-8"))?;
+        match name {
+            "--record" if record_path.is_none() => {
+                record_path = Some(rest.next().ok_or_else(|| usage("--record needs a value"))?);
+            }
+            "--expected-revision" if expected_revision.is_none() => {
+                let value = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| usage("--expected-revision needs a non-negative integer"))?;
+                expected_revision = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| usage("--expected-revision needs a non-negative integer"))?,
+                );
+            }
+            "--help" | "-h" => return Ok(HELP.to_string()),
+            _ => return Err(usage(format!("unknown or repeated option `{name}`"))),
+        }
+    }
+    let record_path = record_path.ok_or_else(|| usage("--record is required"))?;
+    let revision = expected_revision.ok_or_else(|| usage("--expected-revision is required"))?;
+    let record_text = read_json_input(record_path, MAX_RECORD_BYTES, "review record")?;
+    let record = serde_json::from_str(&record_text)
+        .map_err(|error| usage(format!("invalid review record JSON: {error}")))?;
+    let store = crate::restore_review_record(&document, record, Some(revision), &allowed)
+        .map_err(runtime)?;
+    serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
 }
 
-fn read_bounded(input: impl Read) -> Result<String, CliError> {
-    let mut bytes = Vec::with_capacity(MAX_PATCH_BYTES);
+fn read_patch(path: &OsString) -> Result<String, CliError> {
+    read_json_input(path, MAX_PATCH_BYTES, "patch")
+}
+
+fn read_json_input(path: &OsString, limit: usize, what: &str) -> Result<String, CliError> {
+    if path == "-" {
+        return read_bounded(io::stdin().lock(), limit, what);
+    }
+    let file = fs::File::open(PathBuf::from(path)).map_err(|error| runtime(error.to_string()))?;
+    read_bounded(file, limit, what)
+}
+
+fn read_bounded(input: impl Read, limit: usize, what: &str) -> Result<String, CliError> {
+    let mut bytes = Vec::with_capacity(limit);
     input
-        .take((MAX_PATCH_BYTES + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| runtime(error.to_string()))?;
-    if bytes.len() > MAX_PATCH_BYTES {
-        return Err(usage(format!("patch JSON exceeds {MAX_PATCH_BYTES} bytes")));
+    if bytes.len() > limit {
+        return Err(usage(format!("{what} JSON exceeds {limit} bytes")));
     }
     String::from_utf8(bytes).map_err(|error| usage(error.to_string()))
 }
