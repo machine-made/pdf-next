@@ -3666,6 +3666,72 @@ fn remove_review_cas(
     Ok(reviews_for_file(store, &basename))
 }
 
+/// Put back a review that was removed: the same record, with the same ID.
+///
+/// IDs are never reused, so this is not a new review taking an old number;
+/// it is the removed task returning. The ID must be one this store issued
+/// (below `nextId`) and must be free. With `expected_revision`, the store must
+/// still be at that revision.
+fn restore_review_record(
+    document: &str,
+    review: Review,
+    expected_revision: Option<u64>,
+    allowed: &AllowedDocuments,
+) -> Result<ReviewFile, String> {
+    let number = review
+        .id
+        .strip_prefix('r')
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .filter(|number| *number >= 1 && review.id == format!("r{number}"))
+        .ok_or_else(|| "review id must look like r12".to_string())?;
+    let doc_path = open_review_document(document, allowed)?;
+    let basename = document_basename(&doc_path)?;
+    if review.file != basename {
+        return Err("review belongs to another document".into());
+    }
+    let sidecar_path = doc_path.sidecar();
+    let _lock = ReviewLock::acquire(&sidecar_path)?;
+    let (sidecar, mut store) = load_store(&doc_path)?;
+    if let Some(revision) = expected_revision {
+        if revision != store.revision {
+            return Err(format!(
+                "review conflict: revision changed (expected {revision}, found {})",
+                store.revision
+            ));
+        }
+    }
+    if number >= store.next_id {
+        return Err(format!(
+            "{} was never issued by this review store",
+            review.id
+        ));
+    }
+    if store
+        .reviews
+        .iter()
+        .any(|existing| existing.id == review.id)
+    {
+        return Err(format!("{} already exists", review.id));
+    }
+    validate_review(&review)?;
+    let mut review = review;
+    drop_redundant_end(&mut review);
+    let index = store
+        .reviews
+        .iter()
+        .position(|existing| {
+            existing
+                .id
+                .strip_prefix('r')
+                .and_then(|rest| rest.parse::<u64>().ok())
+                .is_some_and(|other| other > number)
+        })
+        .unwrap_or(store.reviews.len());
+    store.reviews.insert(index, review);
+    save_store(&sidecar, &mut store)?;
+    Ok(reviews_for_file(store, &basename))
+}
+
 fn patch_review_record(
     document: &str,
     id: &str,
@@ -3844,6 +3910,18 @@ fn delete_review(
     watched: State<'_, Watched>,
 ) -> Result<ReviewFile, String> {
     let store = remove_review_cas(&document, &id, &expected_record, &allowed_set(&watched)?)?;
+    note_sidecar_written(&watched, &document);
+    Ok(store)
+}
+
+/// Undo a removal: put the removed record back under its own ID.
+#[tauri::command]
+fn restore_review(
+    document: String,
+    review: Review,
+    watched: State<'_, Watched>,
+) -> Result<ReviewFile, String> {
+    let store = restore_review_record(&document, review, None, &allowed_set(&watched)?)?;
     note_sidecar_written(&watched, &document);
     Ok(store)
 }
@@ -4524,6 +4602,7 @@ fn main() {
             read_reviews,
             update_review,
             delete_review,
+            restore_review,
             patch_review,
             review_source_hint,
             reduce_pdf
@@ -4608,8 +4687,8 @@ mod tests {
         is_windows_replace_contention, list_reviews, natural_key, next_review_id, open_download,
         open_link, parse_cli, parse_store, patch_review_record,
         read_snapshot as read_bound_snapshot, reduced_pdf_path, remove_review, remove_review_cas,
-        rename_with_retry, render_markdown, shrink_pdf_bytes, sidecar_ready, trash_target,
-        write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
+        rename_with_retry, render_markdown, restore_review_record, shrink_pdf_bytes, sidecar_ready,
+        trash_target, write_review, Cli, Review, ReviewAnchor, ReviewAt, ReviewPosition, Target,
     };
     use std::collections::HashSet;
     use std::ffi::OsString;
@@ -6959,6 +7038,64 @@ mod tests {
         assert!(super::write_reduced_copy(&source, b"replacement").is_err());
         assert_eq!(std::fs::read(&dest).unwrap(), b"reduced");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_review_puts_the_removed_record_back_in_place() {
+        let dir = scratch("review_restore");
+        let md = dir.join("collab.md");
+        std::fs::write(&md, "# hi\n").unwrap();
+        let mut allowed = super::AllowedDocuments::default();
+        allowed.insert(std::fs::canonicalize(&md).unwrap()).unwrap();
+        let path = md.display().to_string();
+
+        for quote in ["first passage", "second passage", "third passage"] {
+            let mut review = markdown_review();
+            review.quote = quote.into();
+            write_review(&path, review, &allowed).unwrap();
+        }
+        let before = list_reviews(&path, &allowed).unwrap();
+        let removed = before.reviews[1].clone();
+        remove_review(&path, "r2", &allowed).unwrap();
+
+        let restored = restore_review_record(&path, removed.clone(), None, &allowed).unwrap();
+        let ids: Vec<_> = restored
+            .reviews
+            .iter()
+            .map(|review| review.id.as_str())
+            .collect();
+        assert_eq!(ids, ["r1", "r2", "r3"], "the record returns to its place");
+        assert_eq!(restored.reviews[1], removed, "the record returns unchanged");
+        assert_eq!(
+            restored.next_id, before.next_id,
+            "no ID is issued by a restore"
+        );
+
+        let again = restore_review_record(&path, removed.clone(), None, &allowed).unwrap_err();
+        assert!(again.contains("already exists"), "{again}");
+
+        let mut unissued = removed.clone();
+        unissued.id = "r9".into();
+        let error = restore_review_record(&path, unissued, None, &allowed).unwrap_err();
+        assert!(error.contains("never issued"), "{error}");
+
+        let mut foreign = removed.clone();
+        foreign.file = "other.md".into();
+        let error = restore_review_record(&path, foreign, None, &allowed).unwrap_err();
+        assert!(error.contains("another document"), "{error}");
+
+        remove_review(&path, "r2", &allowed).unwrap();
+        let stale = restore_review_record(&path, removed.clone(), Some(0), &allowed).unwrap_err();
+        assert!(stale.contains("revision changed"), "{stale}");
+        let added = write_review(&path, markdown_review(), &allowed).unwrap();
+        assert_eq!(
+            added.reviews.last().unwrap().id,
+            "r4",
+            "a removed ID is never reused"
+        );
+
+        drop(allowed);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
