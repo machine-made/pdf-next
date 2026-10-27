@@ -3089,7 +3089,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-next"
-version = "0.15.2"
+version = "0.16.0"
 dependencies = [
  "ammonia",
  "cap-std",
@@ -3111,6 +3111,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tempfile",
+ "unicode-normalization",
  "webview2-com",
  "windows",
  "windows-sys 0.61.2",

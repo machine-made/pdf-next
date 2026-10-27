@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::review_directory::AllowedDocuments;
 use serde_json::{json, Value};
 
-const HELP: &str = "Usage:\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n  pdf-next reviews restore <PDF|MD> --record <JSONfile|-> --expected-revision N\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n  restore    Put a removed review back under its own ID (the full record, as listed).\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --record FILE              One complete review record, as `list` printed it; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews list paper.pdf\n  pdf-next reviews list notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nRicardo must verify the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.\n\nMarkdown documents (.md, .markdown) use the same commands. A review quotes rendered text and\nnames the source line range in `at`; edit the Markdown file, then record the result.";
+const HELP: &str = "Usage:\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n  pdf-next reviews restore <PDF|MD> --record <JSONfile|-> --expected-revision N\n  pdf-next reviews brief <PDF|MD>\n  pdf-next reviews done <PDF|MD> rN <what you changed> [--built <command>]\n\nCommands:\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n  restore    Put a removed review back under its own ID (the full record, as listed).\n  brief      Print the short view: one line per open review (also in {stem}_review.agent.txt).\n  done       Mark one review applied, with what you changed. A PDF needs --built <command>.\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --record FILE              One complete review record, as `list` printed it; - reads stdin.\n  --expected-revision N      Required sidecar revision read with the patch.\n  --dry-run                  Validate and print the proposed store without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews brief notes.md\n  pdf-next reviews done notes.md r12 \"stated the ideal-gas assumption\"\n  pdf-next reviews done paper.pdf r3 \"split the long sentence\" --built \"latexmk -pdf paper.tex\"\n  pdf-next reviews list paper.pdf\n  pdf-next reviews list notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n  cat patch.json | pdf-next reviews update paper.pdf --id r12 --patch - --expected-revision 8 --dry-run\n\nAgent workflow: read the open items with `brief` (or {stem}_review.agent.txt), fix each in the source,\nand close it with `done`, or append \"<id> <what you changed>\" to {stem}_review.done. Never edit the\nJSON store yourself. For a PDF: inspect the PDF quote and context, locate the corresponding source in the\nLaTeX entry point or included files, edit the source, then compile it. Record source/build\nresults against the same review ID. Mark a PDF task applied only after a successful build;\nThe reader verifies the rendered PDF before it is resolved. Treat source hints as candidates.\nEquation symbols need surrounding context and position; do not copy symbols blindly.\n\nMarkdown documents (.md, .markdown) use the same commands. A review quotes rendered text and\nnames the source line range in `at`; edit the Markdown file, then record the result.";
 const MAX_PATCH_BYTES: usize = 16_000;
 /// A whole record may be as large as the store allows one to be.
 const MAX_RECORD_BYTES: usize = 64_000;
@@ -65,6 +65,8 @@ fn run(args: &[OsString]) -> Result<String, CliError> {
         "list" => run_list(&args[1..]),
         "update" => run_update(&args[1..]),
         "restore" => run_restore(&args[1..]),
+        "brief" => run_brief(&args[1..]),
+        "done" => run_done(&args[1..]),
         other => Err(usage(format!("unknown reviews command `{other}`"))),
     }
 }
@@ -92,6 +94,7 @@ fn run_list(args: &[OsString]) -> Result<String, CliError> {
         return Err(usage("reviews list needs exactly one document path"));
     }
     let (document, allowed) = document_path(&args[0])?;
+    apply_inbox(&document, &allowed)?;
     let store = crate::list_reviews(&document, &allowed).map_err(runtime)?;
     serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
 }
@@ -151,6 +154,75 @@ fn run_update(args: &[OsString]) -> Result<String, CliError> {
     let store = crate::patch_review_record(&document, id, &patch, &expected, &allowed, dry_run)
         .map_err(runtime)?;
     serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
+}
+
+/// Lines waiting in `{stem}_review.done` are applied before any command reads
+/// the store, so what it prints is current.
+fn apply_inbox(document: &str, allowed: &AllowedDocuments) -> Result<(), CliError> {
+    let admitted = crate::open_review_document(document, allowed).map_err(runtime)?;
+    crate::apply_done_inbox(&admitted).map_err(runtime)?;
+    Ok(())
+}
+
+/// `reviews brief`: the agent view, the same text as `{stem}_review.agent.txt`.
+fn run_brief(args: &[OsString]) -> Result<String, CliError> {
+    if args.len() != 1 {
+        return Err(usage("reviews brief needs exactly one document path"));
+    }
+    let (document, allowed) = document_path(&args[0])?;
+    apply_inbox(&document, &allowed)?;
+    let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
+    crate::review_brief(&admitted)
+        .map(|view| view.trim_end().to_string())
+        .map_err(runtime)
+}
+
+/// `reviews done <doc> <id> <what you changed…> [--built <command>]`.
+fn run_done(args: &[OsString]) -> Result<String, CliError> {
+    if args.len() < 3 {
+        return Err(usage(
+            "reviews done needs a document, an ID and what you changed",
+        ));
+    }
+    let (document, allowed) = document_path(&args[0])?;
+    let id = args[1]
+        .to_str()
+        .filter(|id| valid_id(id))
+        .ok_or_else(|| usage("the ID must look like r12"))?;
+    let mut words = Vec::new();
+    let mut built = None;
+    let mut rest = args[2..].iter();
+    while let Some(arg) = rest.next() {
+        let text = arg
+            .to_str()
+            .ok_or_else(|| usage("arguments must be UTF-8"))?;
+        if text == "--built" {
+            built = Some(
+                rest.next()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| usage("--built needs the build command"))?
+                    .to_string(),
+            );
+        } else {
+            words.push(text.to_string());
+        }
+    }
+    let text = words.join(" ");
+    if text.trim().is_empty() {
+        return Err(usage("say what you changed"));
+    }
+    if text.len() > 4_000 {
+        return Err(usage("what you changed is longer than 4 000 characters"));
+    }
+    apply_inbox(&document, &allowed)?;
+    let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
+    let store = crate::mark_review_done(&admitted, id, &text, built.as_deref()).map_err(runtime)?;
+    let open = store
+        .reviews
+        .iter()
+        .filter(|review| review.status == "open")
+        .count();
+    Ok(format!("{id} applied; {open} open"))
 }
 
 fn run_restore(args: &[OsString]) -> Result<String, CliError> {
@@ -218,7 +290,7 @@ fn read_bounded(input: impl Read, limit: usize, what: &str) -> Result<String, Cl
     String::from_utf8(bytes).map_err(|error| usage(error.to_string()))
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     id.strip_prefix('r').is_some_and(|number| {
         !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
     })

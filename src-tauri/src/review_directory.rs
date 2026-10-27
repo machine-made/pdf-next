@@ -80,6 +80,10 @@ impl ReviewPath {
             .expect("review paths have a file name")
     }
 
+    pub(crate) fn file_name_string(&self) -> String {
+        self.name().to_string_lossy().into_owned()
+    }
+
     pub(crate) fn sibling(&self, name: impl AsRef<std::ffi::OsStr>) -> Self {
         Self {
             path: self.path.with_file_name(name),
