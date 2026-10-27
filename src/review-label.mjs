@@ -174,16 +174,30 @@ const EDGE_CONTEXT = 24;
 function changedSpan(list, want, anchor) {
   const prefix = normalizeReviewText(anchor?.prefix).slice(-EDGE_CONTEXT);
   const suffix = normalizeReviewText(anchor?.suffix).slice(0, EDGE_CONTEXT);
-  if (prefix.length < DISTINCT_QUOTE || suffix.length < DISTINCT_QUOTE) return null;
+  // Both sides distinctive, or one side long and the other at least present:
+  // a quote at the end of a paragraph has little after it.
+  const strongPrefix = prefix.length >= EDGE_CONTEXT || (prefix.length >= DISTINCT_QUOTE && suffix.length >= DISTINCT_QUOTE);
+  const strongSuffix = suffix.length >= EDGE_CONTEXT || (prefix.length >= DISTINCT_QUOTE && suffix.length >= DISTINCT_QUOTE);
+  if (!prefix || !suffix || (!strongPrefix && !strongSuffix)) return null;
   const reach = Math.max(400, want.length * 4);
   let found = null;
   for (const item of list) {
-    for (let from = item.text.indexOf(prefix); from >= 0; from = item.text.indexOf(prefix, from + 1)) {
-      const after = from + prefix.length;
-      const next = item.text.indexOf(suffix, after);
-      if (next < 0 || next - after > reach) continue;
-      if (found) return null;
-      found = { item, start: after, end: next };
+    const text = item.text;
+    if (strongPrefix) {
+      for (let from = text.indexOf(prefix); from >= 0; from = text.indexOf(prefix, from + 1)) {
+        const after = from + prefix.length;
+        const next = text.indexOf(suffix, after);
+        if (next < 0 || next - after > reach) continue;
+        if (found) return null;
+        found = { item, start: after, end: next };
+      }
+    } else {
+      for (let next = text.indexOf(suffix); next >= 0; next = text.indexOf(suffix, next + 1)) {
+        const from = text.lastIndexOf(prefix, next - prefix.length);
+        if (from < 0 || next - (from + prefix.length) > reach) continue;
+        if (found) return null;
+        found = { item, start: from + prefix.length, end: next };
+      }
     }
   }
   if (!found) return null;
