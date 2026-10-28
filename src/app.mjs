@@ -2101,6 +2101,32 @@ function cycleTab(delta) {
   void activateTab((state.active + delta + count) % count);
 }
 
+// The wheel over the tab strip walks the tabs, wrapping at the ends. A
+// trackpad sends a stream of small deltas, so they are summed until they
+// make one notch's worth; a mouse wheel moves one tab per notch.
+let tabWheel = 0;
+let tabWheelAt = 0;
+ui.tabs.addEventListener('wheel', (event) => {
+  if (state.tabs.length < 2 || event.ctrlKey) {
+    return;
+  }
+  event.preventDefault();
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+  const unit = event.deltaMode === 1 ? 3 : event.deltaMode === 2 ? 1 : 100;
+  const now = event.timeStamp;
+  if (now - tabWheelAt > 300) {
+    tabWheel = 0;
+  }
+  tabWheelAt = now;
+  tabWheel += delta / unit;
+  if (Math.abs(tabWheel) < 0.5) {
+    return;
+  }
+  const step = tabWheel > 0 ? 1 : -1;
+  tabWheel = 0;
+  cycleTab(step);
+}, { passive: false });
+
 // ── Page and zoom controls ────────────────────────────────────────────────
 
 function updatePageControls() {
