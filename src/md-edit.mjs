@@ -52,7 +52,11 @@ const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };
-const WORD_CHARACTER = /[\p{L}\p{N}]/u;
+// Latin letters, digits and underscore at an edge make the boundary matter;
+// dashes also count as inside a word ("two-dimensional"). Other scripts run
+// without spaces, so no boundary is checked for them.
+const WORD_EDGE = /[\p{Script=Latin}\p{N}_]/u;
+const WORD_CLASS = '\\p{Script=Latin}\\p{N}_\\-\\u2010-\\u2015';
 const wordPattern = (word) => [...word].map((character) => SMART[character] ?? escapeRegExp(character)).join('');
 
 /// Where the selected rendered text stands in the source, within its block.
@@ -66,8 +70,8 @@ export function sourceSpan(raw, line, end, quote) {
   const block = blockSpan(raw, line, end);
   const region = raw.slice(block.start, block.end);
   // A word at either edge must not sit inside a longer word: "is" is not in "This".
-  const lead = WORD_CHARACTER.test(words[0].charAt(0)) ? '(?<![\\p{L}\\p{N}])' : '';
-  const tail = WORD_CHARACTER.test(words.at(-1).slice(-1)) ? '(?![\\p{L}\\p{N}])' : '';
+  const lead = WORD_EDGE.test(words[0].charAt(0)) ? `(?<![${WORD_CLASS}])` : '';
+  const tail = WORD_EDGE.test(words.at(-1).slice(-1)) ? `(?![${WORD_CLASS}])` : '';
   const pattern = new RegExp(lead + words.map(wordPattern).join('\\s+') + tail, 'gu');
   const found = [...region.matchAll(pattern)];
   if (found.length === 0) return { error: 'markup', block };
@@ -149,8 +153,9 @@ export function figureWidthEdit(raw, line, widthPct) {
   let nextAttrs;
   if (attrs) {
     const inner = attrs.slice(1, -1).trim();
-    if (/(^|\s)width=/.test(inner)) {
-      nextAttrs = `{${inner.replace(/(^|\s)width=\S*/, `$1width=${pct}%`)}}`;
+    // "width = 80%" and "width= 80%" are the same key; the value stops before "height=3".
+    if (/(^|\s)width\s*=/.test(inner)) {
+      nextAttrs = `{${inner.replace(/(^|\s)width\s*=(?:\s*(?!\S*=)\S*)/, `$1width=${pct}%`)}}`;
     } else {
       nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
     }
