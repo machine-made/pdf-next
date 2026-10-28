@@ -154,10 +154,12 @@ export function figureWidthEdit(raw, line, widthPct) {
   if (attrs) {
     const inner = attrs.slice(1, -1).trim();
     // Quoted text is masked out, so a "width=" inside a title or alt text is never the size.
-    const masked = inner.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (quoted) => '_'.repeat(quoted.length));
+    const masked = inner.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|“[^”]*”|‘[^’]*’/g, (quoted) => '_'.repeat(quoted.length));
     if (/(^|\s)width\s*=/.test(masked)) {
       // A plain size only, in the units the renderer reads: a number, optionally with a unit,
       // ending at a space. "width=#id" and "width=80%height=3" are refused.
+      // A quote left after masking is unclosed or escaped: where the quoted text ends is not known.
+      if (/["'“”‘’]/.test(masked)) return { error: 'malformed-attribute', block };
       const plain = /(^|\s)width\s*=\s*\d+(?:\.\d+)?(?:%|px|cm|mm|in|pt)?(?=\s|$)/;
       const hit = plain.exec(masked);
       if (!hit) return { error: 'malformed-attribute', block };
