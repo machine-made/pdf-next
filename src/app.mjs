@@ -5813,12 +5813,12 @@ eventBus.on('updatefindcontrolstate', ({ matchesCount, state: findState }) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  // A key press means the reader has the scroll; late figures must not pull it back.
-  state.restoringMarkdownView = null;
   const typing =
     event.target instanceof HTMLInputElement ||
     event.target instanceof HTMLTextAreaElement ||
     event.target instanceof HTMLSelectElement;
+  // A key that moves the reader ends the restored scroll; late figures must not pull it back.
+  if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) state.restoringMarkdownView = null;
   const key = event.key.toLowerCase();
 
   // Esc closes the composer wherever focus went: its action menu, the page,

@@ -3069,6 +3069,11 @@ if (releaseTag) {
   assert.equal(figUpdate.replacement, '![Wake](fig.png){width=50%}');
   assert.equal(sourceSpan('This is it.', 1, 1, 'is').start, 5, 'A selected word is not found inside a longer word.');
   assert.equal(sourceSpan('This', 1, 1, 'is').error, 'markup', 'A word found only inside a longer word is not a match.');
+  assert.equal(sourceSpan('is_ready and is', 1, 1, 'is').start, 13, 'An underscore joins a word.');
+  assert.equal(sourceSpan('two-dimensional flow', 1, 1, 'dimensional').error, 'markup', 'A dash joins a word.');
+  assert.equal(sourceSpan('这是测试', 1, 1, '是测').start, 1, 'A selection inside unspaced text is found.');
+  assert.equal(figureWidthEdit('![a](f.png){width = 80%}\n', 1, 50).replacement, '![a](f.png){width=50%}');
+  assert.equal(figureWidthEdit('![a](f.png){width= 80% height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
   assert.equal(figureWidthEdit('![a](img(1).png)\n', 1, 50).replacement, '![a](img(1).png){width=50%}');
   assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
   assert.equal(figureWidthEdit('![a](f.png){max-width=10}\n', 1, 50).replacement, '![a](f.png){width=50% max-width=10}');
