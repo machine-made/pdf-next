@@ -1458,6 +1458,12 @@ body.mode-sepia #markdownStage {
 #markdown[data-size="20"] { font-size: 20px; }
 #markdown[data-size="22"] { font-size: 22px; }
 #markdown[data-size="24"] { font-size: 24px; }
+#markdown[data-size="26"] { font-size: 26px; }
+#markdown[data-size="28"] { font-size: 28px; }
+#markdown[data-size="32"] { font-size: 32px; }
+#markdown[data-size="36"] { font-size: 36px; }
+#markdown[data-size="40"] { font-size: 40px; }
+#markdown[data-size="48"] { font-size: 48px; }
 
 /* Width is in em of the text size, so a larger size keeps the words per line. */
 #markdown[data-width="narrow"] { max-width: 30em; }
