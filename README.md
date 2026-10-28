@@ -425,8 +425,11 @@ that protocol can overwrite concurrent changes.
 
 The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
 `polish` (better wording, same meaning), `shorten`, `expand`, `check` (verify the fact, number or
-equation and fix it only if wrong), `bold`, `italic` (format the passage in the source) and
-`delete` (remove the passage). For the actions other than `improve`, `comment` is an optional note.
+equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
+`comment` is an optional suggestion for the agent to revise and expand), `gloss` (add a brief
+inline gloss; `comment` is an optional suggestion), `bold`, `italic` (format the passage in the
+source) and `delete` (remove the passage). For the actions other than `improve`, `comment` is an
+optional note or suggestion.
 
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
 hyphenation, equations and included files can change how text appears. Check the surrounding

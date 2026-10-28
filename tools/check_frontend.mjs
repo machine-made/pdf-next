@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
-import { blockSpan, formatEdit, sourceSpan } from '../src/md-edit.mjs';
+import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
@@ -3055,6 +3055,18 @@ if (releaseTag) {
   const typographic = sourceSpan(smart, 1, 1, 'It’s – here… “x”');
   assert.equal(smart.slice(typographic.start, typographic.end), smart,
     'Smart quotes, dashes and ellipses map back to their source characters.');
+  const delMid = deleteEdit('Say obrigado now.', sourceSpan('Say obrigado now.', 1, 1, 'obrigado'));
+  assert.equal(
+    'Say obrigado now.'.slice(0, delMid.start) + delMid.replacement + 'Say obrigado now.'.slice(delMid.start + delMid.expected.length),
+    'Say now.',
+    'Deleting a word mid-sentence tidies the adjacent space.',
+  );
+  const paren = parentheticalEdit('Say obrigado now.', sourceSpan('Say obrigado now.', 1, 1, 'obrigado'), 'thank you');
+  assert.equal(paren.replacement, 'obrigado (thank you)', 'Parenthetical definition inserts term (explanation).');
+  const figAdd = figureWidthEdit('![Wake](fig.png)\n', 1, 65);
+  assert.equal(figAdd.replacement, '![Wake](fig.png){width=65%}');
+  const figUpdate = figureWidthEdit('![Wake](fig.png){width=80%}\n', 1, 50);
+  assert.equal(figUpdate.replacement, '![Wake](fig.png){width=50%}');
 }
 assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
 assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
