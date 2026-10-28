@@ -66,6 +66,11 @@ struct WatchState {
     images: Vec<(PathBuf, Option<Stamp>)>,
     /// Where the next watcher tick starts in `images`.
     image_cursor: usize,
+    /// Optional secondary Markdown file shown in split view.
+    secondary_path: Option<PathBuf>,
+    secondary_modified: Option<SystemTime>,
+    secondary_len: u64,
+    secondary_missing: bool,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -356,6 +361,27 @@ fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.path = None;
     state.images.clear();
+    state.secondary_path = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn watch_secondary(path: Option<String>, watched: State<'_, Watched>) -> Result<(), String> {
+    let Some(raw) = path.filter(|s| !s.trim().is_empty()) else {
+        let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+        state.secondary_path = None;
+        return Ok(());
+    };
+    let canonical = std::fs::canonicalize(PathBuf::from(raw)).map_err(|error| error.to_string())?;
+    let (modified, len) = stat(&canonical).unwrap_or((None, 0));
+    let mut state = watched.0.lock().map_err(|error| error.to_string())?;
+    if !state.allowed.contains(&canonical) {
+        return Err("file was never opened".into());
+    }
+    state.secondary_path = Some(canonical);
+    state.secondary_modified = modified;
+    state.secondary_len = len;
+    state.secondary_missing = false;
     Ok(())
 }
 
@@ -1181,9 +1207,19 @@ fn render_math(
     }
 
     // The converter has no `split`; `aligned` lays out the same inside an equation.
-    let converted = tex
+    let mut converted = tex
         .replace(r"\begin{split}", r"\begin{aligned}")
         .replace(r"\end{split}", r"\end{aligned}");
+    let mut explicit_tag: Option<ExplicitTag> = None;
+    if display {
+        match prepare_display_math(&converted) {
+            Ok((next_tex, tag)) => {
+                converted = next_tex;
+                explicit_tag = tag;
+            }
+            Err(()) => return math_source(tex),
+        }
+    }
     let mode = if display {
         MathDisplay::Block
     } else {
@@ -1206,14 +1242,197 @@ fn render_math(
     let Some(Ok(result)) = converted else {
         return math_source(tex);
     };
+    let mathml = match explicit_tag {
+        Some(tag) => wrap_math_tag(&result.mathml, &tag.label, tag.id.as_deref()),
+        None => result.mathml,
+    };
     // Markup that is discarded still counts against the document's budget.
-    let fits = result.mathml.len() <= budget.output;
-    budget.output = budget.output.saturating_sub(result.mathml.len());
+    let fits = mathml.len() <= budget.output;
+    budget.output = budget.output.saturating_sub(mathml.len());
     if fits {
-        result.mathml
+        mathml
     } else {
         math_source(tex)
     }
+}
+
+#[derive(Clone, Debug)]
+struct ExplicitTag {
+    label: String,
+    id: Option<String>,
+}
+
+/// Extract an explicit `\tag{...}` or `\tag*{...}` from display math, or wrap
+/// plain display math into `\begin{equation}...\end{equation}` so `math-core`
+/// numbers display equations and links `\eqref{...}`.
+fn prepare_display_math(tex: &str) -> Result<(String, Option<ExplicitTag>), ()> {
+    if let Some((cleaned, tag)) = extract_math_tag(tex)? {
+        return Ok((cleaned, Some(tag)));
+    }
+    let has_suppress = tex.contains(r"\notag") || tex.contains(r"\nonumber");
+    let has_outer_env = [
+        r"\begin{equation",
+        r"\begin{align",
+        r"\begin{gather",
+        r"\begin{multline",
+    ]
+    .iter()
+    .any(|env| tex.contains(env));
+    if has_suppress && !has_outer_env {
+        let cleaned = tex.replace(r"\notag", "").replace(r"\nonumber", "");
+        return Ok((cleaned, None));
+    }
+    if !has_suppress && !has_outer_env && !is_macro_only_math(tex) {
+        return Ok((format!(r"\begin{{equation}}{tex}\end{{equation}}"), None));
+    }
+    Ok((tex.to_string(), None))
+}
+
+/// True when a display block only defines macros (`\newcommand`, `\def`, etc.)
+/// and has no expression to number.
+fn is_macro_only_math(tex: &str) -> bool {
+    let trimmed = tex.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let mut tokens = TexTokens { rest: trimmed };
+    let mut saw_definer = false;
+    while let Some(token) = tokens.next_solid() {
+        let TexToken::Command(name) = token else {
+            return false;
+        };
+        if !is_math_definer(name) {
+            return false;
+        }
+        if !math_definition_is_bounded(&mut tokens, name == "def") {
+            return false;
+        }
+        saw_definer = true;
+    }
+    saw_definer
+}
+
+fn extract_braced_command(tex: &str, prefix: &str) -> Result<Option<(usize, usize, String)>, ()> {
+    let mut search_from = 0usize;
+    let start = loop {
+        let Some(rel) = tex[search_from..].find(prefix) else {
+            return Ok(None);
+        };
+        let pos = search_from + rel;
+        let next_char = tex[pos + prefix.len()..].chars().next();
+        // Skip longer command names that merely share a prefix (e.g. `\tagx` vs `\tag`).
+        if next_char.is_some_and(|c| c.is_ascii_alphabetic()) {
+            search_from = pos + prefix.len();
+            continue;
+        }
+        break pos;
+    };
+    let after_cmd = &tex[start + prefix.len()..];
+    let ws = after_cmd.len() - after_cmd.trim_start().len();
+    let brace_open = start + prefix.len() + ws;
+    if !tex[brace_open..].starts_with('{') {
+        return Err(());
+    }
+    let body_start = brace_open + 1;
+    let mut depth = 1usize;
+    let mut end = body_start;
+    for (offset, ch) in tex[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = body_start + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(());
+    }
+    let content = tex[body_start..end].trim().to_string();
+    if content.is_empty() || content.contains(['<', '>', '{', '}', '\\']) {
+        return Err(());
+    }
+    Ok(Some((start, end + 1, content)))
+}
+
+fn extract_math_tag(tex: &str) -> Result<Option<(String, ExplicitTag)>, ()> {
+    let (starred, found) = if tex.contains(r"\tag*") {
+        (true, extract_braced_command(tex, r"\tag*")?)
+    } else if tex.contains(r"\tag") {
+        (false, extract_braced_command(tex, r"\tag")?)
+    } else {
+        (false, None)
+    };
+    let Some((start, end, raw_tag)) = found else {
+        return Ok(None);
+    };
+    let mut cleaned = format!("{}{}", &tex[..start], &tex[end..]);
+    let mut label_id = None;
+    if let Ok(Some((l_start, l_end, lbl))) = extract_braced_command(&cleaned, r"\label") {
+        cleaned = format!("{}{}", &cleaned[..l_start], &cleaned[l_end..]);
+        let encoded: String =
+            percent_encoding::utf8_percent_encode(&lbl, FRAGMENT_ESCAPES).to_string();
+        label_id = Some(encoded);
+    }
+    for env in ["equation*", "equation"] {
+        let trimmed = cleaned.trim();
+        let begin = format!("\\begin{{{env}}}");
+        let end = format!("\\end{{{env}}}");
+        if let Some(inner) = trimmed
+            .strip_prefix(&begin)
+            .and_then(|s| s.strip_suffix(&end))
+        {
+            cleaned = inner.to_string();
+            break;
+        }
+    }
+    for env in ["equation", "align", "gather", "multline"] {
+        cleaned = cleaned
+            .replace(&format!("\\begin{{{env}}}"), &format!("\\begin{{{env}*}}"))
+            .replace(&format!("\\end{{{env}}}"), &format!("\\end{{{env}*}}"));
+    }
+    let label = if starred {
+        raw_tag
+    } else {
+        format!("({raw_tag})")
+    };
+    Ok(Some((
+        cleaned,
+        ExplicitTag {
+            label,
+            id: label_id,
+        },
+    )))
+}
+
+fn wrap_math_tag(mathml: &str, tag_label: &str, label_id: Option<&str>) -> String {
+    const OPEN: &str = "<math display=\"block\">";
+    const CLOSE: &str = "</math>";
+    let Some(inner) = mathml
+        .strip_prefix(OPEN)
+        .and_then(|s| s.strip_suffix(CLOSE))
+    else {
+        return mathml.to_string();
+    };
+    let mut out = String::with_capacity(mathml.len() + 180);
+    out.push_str(OPEN);
+    out.push_str("<mtable displaystyle=\"true\" style=\"width: 100%\"><mtr><mtd style=\"width: 50%\"></mtd><mtd>");
+    out.push_str(inner);
+    out.push_str("</mtd><mtd style=\"width: 50%; justify-items: right\"");
+    if let Some(id) = label_id {
+        out.push_str(" id=\"math:");
+        html_escape_into(&mut out, id);
+        out.push('"');
+    }
+    out.push_str("><mtext>");
+    html_escape_into(&mut out, tag_label);
+    out.push_str("</mtext></mtd></mtr></mtable>");
+    out.push_str(CLOSE);
+    out
 }
 
 fn html_escape_into(out: &mut String, text: &str) {
@@ -1439,12 +1658,31 @@ type OffsetEvent<'a> = (pulldown_cmark::Event<'a>, std::ops::Range<usize>);
 
 /// GitHub's other way to write display math: a fenced block whose info string
 /// is `math`. It becomes the same event as `$$…$$`; every other fence, and
-/// any `$` inside one, stays code.
-fn math_fences(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
+/// any `$` inside one, stays code. Bare LaTeX display environments
+/// (`\begin{equation}…\end{equation}`, `\begin{align}…\end{align}`, etc.)
+/// written as a paragraph are also promoted to display math from the raw slice.
+fn math_fences<'a>(source: &'a str, events: Vec<OffsetEvent<'a>>) -> Vec<OffsetEvent<'a>> {
     use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+    const ENVS: [&str; 8] = [
+        "equation",
+        "equation*",
+        "align",
+        "align*",
+        "gather",
+        "gather*",
+        "multline",
+        "multline*",
+    ];
     let mut out = Vec::with_capacity(events.len());
     let mut open: Option<(std::ops::Range<usize>, String)> = None;
+    let mut skip_paragraph = false;
     for (event, range) in events {
+        if skip_paragraph {
+            if matches!(event, Event::End(TagEnd::Paragraph)) {
+                skip_paragraph = false;
+            }
+            continue;
+        }
         match (open.as_mut(), event) {
             (Some((_, tex)), Event::Text(text)) => tex.push_str(&text),
             (Some(_), Event::End(TagEnd::CodeBlock)) => {
@@ -1456,6 +1694,20 @@ fn math_fences(events: Vec<OffsetEvent<'_>>) -> Vec<OffsetEvent<'_>> {
                 if info.split_whitespace().next() == Some("math") =>
             {
                 open = Some((range, String::new()));
+            }
+            (None, Event::Start(Tag::Paragraph)) => {
+                let slice = source.get(range.clone()).unwrap_or("").trim();
+                let is_math_env = ENVS.iter().any(|env| {
+                    let begin = format!("\\begin{{{env}}}");
+                    let end = format!("\\end{{{env}}}");
+                    slice.starts_with(&begin) && slice.ends_with(&end)
+                });
+                if is_math_env {
+                    skip_paragraph = true;
+                    out.push((Event::DisplayMath(slice.into()), range));
+                } else {
+                    out.push((Event::Start(Tag::Paragraph), range));
+                }
             }
             (_, event) => out.push((event, range)),
         }
@@ -1779,7 +2031,7 @@ fn render_markdown(source: &str, base: &Path) -> Rendered {
     )
     .collect();
     name_headings(&mut merged);
-    let events_with_offset = image_attributes(link_bare_urls(math_fences(merged)));
+    let events_with_offset = image_attributes(link_bare_urls(math_fences(source, merged)));
     let mut math_budget = MathBudget::default();
     let mut converter = math_converter();
 
@@ -2989,8 +3241,75 @@ fn spawn_watcher(app: AppHandle) {
                     );
                 }
             }
+            check_secondary_watched(&app, &watched);
         }
     });
+}
+
+fn check_secondary_watched(app: &AppHandle, watched: &Watched) {
+    let snapshot = {
+        let Ok(state) = watched.0.lock() else {
+            return;
+        };
+        let Some(sec_path) = state.secondary_path.clone() else {
+            return;
+        };
+        if state.path.as_deref() == Some(sec_path.as_path()) {
+            return;
+        }
+        (
+            sec_path,
+            state.secondary_modified,
+            state.secondary_len,
+            state.secondary_missing,
+        )
+    };
+    let (sec_path, recorded_modified, recorded_len, missing) = snapshot;
+    match stat(&sec_path) {
+        Some((modified, len)) => {
+            let changed = modified != recorded_modified || len != recorded_len;
+            let reappeared = missing;
+            if (changed || reappeared) && !is_complete(&sec_path) {
+                return;
+            }
+            {
+                let Ok(mut state) = watched.0.lock() else {
+                    return;
+                };
+                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
+                    return;
+                }
+                state.secondary_modified = modified;
+                state.secondary_len = len;
+                state.secondary_missing = false;
+            }
+            if changed || reappeared {
+                let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = app.emit(
+                    "file-changed",
+                    WatchEvent {
+                        path: display_path(&sec_path),
+                        kind: if reappeared { "restored" } else { "changed" },
+                        revision,
+                    },
+                );
+            }
+        }
+        None => {
+            if missing {
+                return;
+            }
+            {
+                let Ok(mut state) = watched.0.lock() else {
+                    return;
+                };
+                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
+                    return;
+                }
+                state.secondary_missing = true;
+            }
+        }
+    }
 }
 
 /// How the window should come up, from the command line.
@@ -3166,7 +3485,8 @@ fn review_basename(name: &str) -> bool {
 /// What a review asks of the agent. Improve carries its instruction in
 /// `comment`; the others are complete on their own, a comment optional.
 const REVIEW_ACTIONS: &[&str] = &[
-    "improve", "polish", "shorten", "expand", "check", "bold", "italic", "delete",
+    "improve", "polish", "shorten", "expand", "check", "define", "gloss", "bold", "italic",
+    "delete",
 ];
 
 fn validate_review(review: &Review) -> Result<(), String> {
@@ -3825,15 +4145,21 @@ fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
         } else {
             String::new()
         };
+        let note = match (review.action.as_str(), comment.is_empty()) {
+            ("define", true) => "add parenthetical definition () after term".to_string(),
+            ("define", false) => {
+                format!("suggestion \"{comment}\" (parenthetical definition () after term)")
+            }
+            ("gloss", true) => "add brief gloss in text".to_string(),
+            ("gloss", false) => format!("suggestion \"{comment}\" (brief gloss in text)"),
+            (_, true) => "(no comment)".to_string(),
+            (_, false) => comment,
+        };
         out.push_str(&format!(
             "{} {file}{location} {}: {} | \"{}\"\n",
             review.id,
             review.action,
-            if comment.is_empty() {
-                "(no comment)"
-            } else {
-                &comment
-            },
+            note,
             view_quote(&review.quote, 120),
         ));
     }
@@ -5196,6 +5522,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_path,
             close_document,
+            watch_secondary,
             trash_document,
             trash_plan,
             initial_file,
@@ -6535,7 +6862,7 @@ mod tests {
     fn equations_that_fail_are_shown_as_escaped_source() {
         for tex in [
             r"\frac{",
-            r"\tag{1} a = b",
+            r"\tag{1 a = b",
             r"\begin{nothing} x \end{nothing}",
             "<img src=x onerror=x> \\frac{",
         ] {
@@ -6545,6 +6872,10 @@ mod tests {
             assert!(!html.contains("<math"), "{html}");
             assert!(!html.contains("<img"), "{html}");
         }
+        let tagged = render_html("$$\\tag{1} a = b$$\n\n$$c = d \\label{eq:two}$$\n\n\\begin{equation}\ne = f\n\\end{equation}\n");
+        assert!(tagged.contains("<mtext>(1)</mtext>"), "{tagged}");
+        assert!(tagged.contains("id=\"md-math:eq:two\""), "{tagged}");
+        assert!(tagged.contains("<mtext>(2)</mtext>"), "{tagged}");
     }
 
     #[test]
@@ -7746,7 +8077,9 @@ mod tests {
 
     #[test]
     fn review_actions_accept_the_request_kinds() {
-        for action in ["polish", "shorten", "expand", "check", "bold", "italic"] {
+        for action in [
+            "polish", "shorten", "expand", "check", "define", "gloss", "bold", "italic",
+        ] {
             let mut review = markdown_review();
             review.action = action.into();
             assert!(super::validate_review(&review).is_ok(), "{action}");
@@ -7754,6 +8087,56 @@ mod tests {
         let mut review = markdown_review();
         review.action = "rewrite-everything".into();
         assert!(super::validate_review(&review).is_err());
+    }
+
+    #[test]
+    fn agent_view_renders_define_and_gloss_requests_and_suggestions() {
+        let mut r1 = markdown_review();
+        r1.id = "r1".into();
+        r1.action = "define".into();
+        r1.quote = "obrigado".into();
+        r1.comment = "".into();
+
+        let mut r2 = markdown_review();
+        r2.id = "r2".into();
+        r2.action = "define".into();
+        r2.quote = "obrigado".into();
+        r2.comment = "thank you".into();
+
+        let mut r3 = markdown_review();
+        r3.id = "r3".into();
+        r3.action = "gloss".into();
+        r3.quote = "saudade".into();
+        r3.comment = "longing".into();
+
+        let store = super::ReviewFile {
+            format: 3,
+            revision: 1,
+            next_id: 4,
+            document: None,
+            reviews: vec![r1, r2, r3],
+            migration_backup: None,
+            extra: serde_json::Map::new(),
+        };
+        let view = super::agent_view(&store, "notes.md", "");
+        assert!(
+            view.contains(
+                "r1 L12-18 define: add parenthetical definition () after term | \"obrigado\""
+            ),
+            "{view}"
+        );
+        assert!(
+            view.contains(
+                "r2 L12-18 define: suggestion \"thank you\" (parenthetical definition () after term) | \"obrigado\""
+            ),
+            "{view}"
+        );
+        assert!(
+            view.contains(
+                "r3 L12-18 gloss: suggestion \"longing\" (brief gloss in text) | \"saudade\""
+            ),
+            "{view}"
+        );
     }
 
     /// A synthetic document for the agent-facing store tests. Nothing in it

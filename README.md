@@ -75,7 +75,7 @@ that survives a build deleting and recreating the file mid-compile.
   tables, task lists, footnotes and strikethrough included — parsed by
   [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) in Rust and sanitized by
   [ammonia](https://github.com/rust-ammonia/ammonia) before the HTML ever reaches the window,
-  so a hostile file cannot script anything. `Ctrl+U` (or the toolbar button) flips to the raw
+  so a hostile file cannot script anything. `Ctrl+U` with no selection (or the toolbar button) flips to the raw
   text and back; zoom reflows the text rather than scaling a bitmap. Edit the file and the
   view reloads within a second, keeping your scroll position — the same watch loop as PDFs.
 - **Equations, typeset.** `$…$`, `$$…$$` and a fenced block marked `math` are TeX, turned into
@@ -86,7 +86,7 @@ that survives a build deleting and recreating the file mid-compile.
   or exceeds the rendering limits is shown as escaped TeX source; an unknown command is marked in
   red and the rest of the equation still renders. A `\eqref` to an equation further down the file
   shows `(??)`.
-- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono), the text size (14 px to 48 px) and the column width (Narrow, Normal, Wide, Full); each choice is remembered. Zoom reflows the text rather than scaling it.
+- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono), the text size (14 px to 48 px) and the column width (a number of pixels, or 100%; 720 px by default); each choice is remembered. Zoom reflows the text rather than scaling it.
 - **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
@@ -136,12 +136,12 @@ that survives a build deleting and recreating the file mid-compile.
   (inside a line of text, `.left` and `.right` float the image). Settings sets the defaults for
   figures that give no size: natural size, the column width, 75% or 50% of it; no height limit,
   the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
-  open it full size in a tab of its own, with zoom and the folder walk.
+  select it, and drag its corner to resize it (the width is written as `{width=N%}`); double-click, or Ctrl+click, to open it full size in a tab of its own, with zoom and the folder walk.
 - **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
 - **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
-  `←`/`→` tabs (or folder, with one file open), `Delete` move to trash, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
-  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown, `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Esc` close the review box without saving, `Ctrl+B`/`Ctrl+I`/`Ctrl+E` bold, italic or edit a Markdown selection, `Ctrl+Z` undo a removed review or an edit, `Ctrl+Shift+R` Review panel,
+  `←`/`→` tabs (or folder, with one file open), `Delete` deletes a selection in rendered Markdown (undo with `Ctrl+Z`), otherwise moves the shown file to the trash after confirmation, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
+  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown (in rendered Markdown with a selection, underline it), `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Esc` close the review box without saving, `Ctrl+B`/`Ctrl+I`/`Ctrl+E` bold, italic or edit a Markdown selection, `Ctrl+Z` undo a removed review or an edit, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+F` fit window to content,
   `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
 ## Install
@@ -425,8 +425,11 @@ that protocol can overwrite concurrent changes.
 
 The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
 `polish` (better wording, same meaning), `shorten`, `expand`, `check` (verify the fact, number or
-equation and fix it only if wrong), `bold`, `italic` (format the passage in the source) and
-`delete` (remove the passage). For the actions other than `improve`, `comment` is an optional note.
+equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
+`comment` is an optional suggestion for the agent to revise and expand), `gloss` (add a brief
+inline gloss; `comment` is an optional suggestion), `bold`, `italic` (format the passage in the
+source) and `delete` (remove the passage). For the actions other than `improve`, `comment` is an
+optional note or suggestion.
 
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
 hyphenation, equations and included files can change how text appears. Check the surrounding
