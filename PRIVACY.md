@@ -24,11 +24,19 @@ Microsoft. Installing from the apt repository or Homebrew downloads the package
 from GitHub, as any package install does.
 
 **Storage.** The app saves your page appearance, poll interval, raw Markdown
-preference, and review text size in local browser storage. Tab paths, zoom,
+preference, review text size, Markdown font, size and width, interface font,
+figure settings and the in-place editing switch in local browser storage. Tab paths, zoom,
 and scroll positions stay in memory for the current session. Reviews are saved
 beside the document as `{stem}_review.json`, with a transaction `.json.lock`
 file and a last-valid `.json.bak` backup. A legacy migration also keeps a
 `.json.pre-v3.bak` copy. Source hints and agent build results stay in the sidecar.
+After each change to the reviews, the app writes a short text view of the open
+items beside them as `{stem}_review.agent.txt`, and it reads
+`{stem}_review.done` when an agent leaves lines there; it never writes to that
+file.
+When you edit a Markdown file in place (Bold, Italic, Edit text…), the app
+writes that file, and only that file, after checking it is the version on
+screen. Settings turns this off.
 The Reduce button can write
 `{stem}_reduced.pdf` beside the original. There is no account, telemetry,
 crash reporting, or analytics.
