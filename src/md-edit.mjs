@@ -153,14 +153,12 @@ export function figureWidthEdit(raw, line, widthPct) {
   let nextAttrs;
   if (attrs) {
     const inner = attrs.slice(1, -1).trim();
-    // Spaces around "=" are dropped first, so "width = 80%" is "width=80%".
-    const tokens = inner.replace(/\s*=\s*/g, '=').split(/\s+/).filter(Boolean);
-    const at = tokens.findIndex((token) => token.startsWith('width='));
-    if (at >= 0) {
-      // Only a plain size is replaced: "width=#id" or "width=80%height=3" is not one.
-      if (/[#.=]/.test(tokens[at].slice('width='.length))) return { error: 'malformed-attribute', block };
-      tokens[at] = `width=${pct}%`;
-      nextAttrs = `{${tokens.join(' ')}}`;
+    if (/(^|\s)width\s*=/.test(inner)) {
+      // A plain size only: a number, optionally with a unit, ending at a space.
+      // "width=#id" or "width=80%height=3" is refused; the other attributes stay as they are.
+      const plain = /(^|\s)width\s*=\s*\d+(?:\.\d+)?(?:%|cm|mm|in|px|em)?(?=\s|$)/;
+      if (!plain.test(inner)) return { error: 'malformed-attribute', block };
+      nextAttrs = `{${inner.replace(plain, `$1width=${pct}%`)}}`;
     } else {
       nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
     }
