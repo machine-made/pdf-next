@@ -3067,6 +3067,14 @@ if (releaseTag) {
   assert.equal(figAdd.replacement, '![Wake](fig.png){width=65%}');
   const figUpdate = figureWidthEdit('![Wake](fig.png){width=80%}\n', 1, 50);
   assert.equal(figUpdate.replacement, '![Wake](fig.png){width=50%}');
+  assert.equal(sourceSpan('This is it.', 1, 1, 'is').start, 5, 'A selected word is not found inside a longer word.');
+  assert.equal(sourceSpan('This', 1, 1, 'is').error, 'markup', 'A word found only inside a longer word is not a match.');
+  assert.equal(figureWidthEdit('![a](img(1).png)\n', 1, 50).replacement, '![a](img(1).png){width=50%}');
+  assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
+  assert.equal(figureWidthEdit('![a](f.png){max-width=10}\n', 1, 50).replacement, '![a](f.png){width=50% max-width=10}');
+  assert.equal(figureWidthEdit('![a](a.png) and ![b](b.png)\n', 1, 50).error, 'several-images', 'Two images in one paragraph are not guessed at.');
+  assert.equal(parentheticalEdit('Say obrigado now.', sourceSpan('Say obrigado now.', 1, 1, 'obrigado'), 'thank\n\nyou').replacement,
+    'obrigado (thank you)', 'A parenthetical definition stays on one line.');
 }
 assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
 assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,

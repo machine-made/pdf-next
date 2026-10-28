@@ -5500,6 +5500,8 @@ if (ui.figureResizerGrip) {
         const edit = figureWidthEdit(state.markdownSource, line, lastPct);
         if (edit && !edit.error) {
           await writeMarkdownEdit(edit, `Figure width ${lastPct}%`);
+        } else if (edit?.error === 'several-images') {
+          setStatus('Two images share this paragraph, so the width is not saved. Put each figure in its own paragraph.', { error: true });
         }
       }
     };

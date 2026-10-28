@@ -52,6 +52,7 @@ const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };
+const WORD_CHARACTER = /[\p{L}\p{N}]/u;
 const wordPattern = (word) => [...word].map((character) => SMART[character] ?? escapeRegExp(character)).join('');
 
 /// Where the selected rendered text stands in the source, within its block.
@@ -64,7 +65,10 @@ export function sourceSpan(raw, line, end, quote) {
   if (!words.length) return { error: 'empty' };
   const block = blockSpan(raw, line, end);
   const region = raw.slice(block.start, block.end);
-  const pattern = new RegExp(words.map(wordPattern).join('\\s+'), 'g');
+  // A word at either edge must not sit inside a longer word: "is" is not in "This".
+  const lead = WORD_CHARACTER.test(words[0].charAt(0)) ? '(?<![\\p{L}\\p{N}])' : '';
+  const tail = WORD_CHARACTER.test(words.at(-1).slice(-1)) ? '(?![\\p{L}\\p{N}])' : '';
+  const pattern = new RegExp(lead + words.map(wordPattern).join('\\s+') + tail, 'gu');
   const found = [...region.matchAll(pattern)];
   if (found.length === 0) return { error: 'markup', block };
   if (found.length > 1) return { error: 'repeated', block };
@@ -118,7 +122,8 @@ export function deleteEdit(raw, span) {
 /// The edit that appends a parenthetical explanation `term (explanation)`
 /// right after `span` in `raw`.
 export function parentheticalEdit(raw, span, explanation) {
-  const clean = String(explanation || '').trim().replace(/^\(\s*([\s\S]*?)\s*\)$/, '$1').trim();
+  // One line: a blank line in the explanation would split the paragraph.
+  const clean = String(explanation || '').replace(/\s+/g, ' ').trim().replace(/^\(\s*(.*?)\s*\)$/, '$1').trim();
   if (!clean) return null;
   const expected = raw.slice(span.start, span.end);
   return {
@@ -134,14 +139,18 @@ export function figureWidthEdit(raw, line, widthPct) {
   const pct = Math.min(100, Math.max(10, Math.round(Number(widthPct) || 100)));
   const block = blockSpan(raw, line, line);
   const region = raw.slice(block.start, block.end);
-  const match = /(!\[[^\]]*\]\([^)\n]+\))(\{[^}\n]*\})?/.exec(region);
-  if (!match) return { error: 'no-image', block };
+  // A path may hold one pair of parentheses: ![a](img(1).png).
+  const images = [...region.matchAll(/(!\[[^\]]*\]\((?:[^()\n]|\([^()\n]*\))+\))(\{[^}\n]*\})?/g)];
+  if (images.length === 0) return { error: 'no-image', block };
+  // Two images in one block: which one is meant is not known, so leave both alone.
+  if (images.length > 1) return { error: 'several-images', block };
+  const match = images[0];
   const [full, imagePart, attrs] = match;
   let nextAttrs;
   if (attrs) {
     const inner = attrs.slice(1, -1).trim();
-    if (/\bwidth\s*=\s*\S+/.test(inner)) {
-      nextAttrs = `{${inner.replace(/\bwidth\s*=\s*\S+/, `width=${pct}%`)}}`;
+    if (/(^|\s)width=/.test(inner)) {
+      nextAttrs = `{${inner.replace(/(^|\s)width=\S*/, `$1width=${pct}%`)}}`;
     } else {
       nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
     }
