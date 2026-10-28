@@ -153,13 +153,16 @@ export function figureWidthEdit(raw, line, widthPct) {
   let nextAttrs;
   if (attrs) {
     const inner = attrs.slice(1, -1).trim();
-    if (/(^|\s)width\s*=/.test(inner)) {
+    // Quoted text is masked out, so a "width=" inside a title or alt text is never the size.
+    const masked = inner.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (quoted) => '_'.repeat(quoted.length));
+    if (/(^|\s)width\s*=/.test(masked)) {
       // A plain size only, in the units the renderer reads: a number, optionally with a unit,
-      // ending at a space. "width=#id", "width=80%height=3" and quoted text are refused;
-      // the other attributes stay as they are.
+      // ending at a space. "width=#id" and "width=80%height=3" are refused.
       const plain = /(^|\s)width\s*=\s*\d+(?:\.\d+)?(?:%|px|cm|mm|in|pt)?(?=\s|$)/;
-      if (/["']/.test(inner) || !plain.test(inner)) return { error: 'malformed-attribute', block };
-      nextAttrs = `{${inner.replace(plain, `$1width=${pct}%`)}}`;
+      const hit = plain.exec(masked);
+      if (!hit) return { error: 'malformed-attribute', block };
+      const at = hit.index + hit[1].length;
+      nextAttrs = `{${inner.slice(0, at)}width=${pct}%${inner.slice(hit.index + hit[0].length)}}`;
     } else {
       nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
     }
