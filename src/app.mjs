@@ -3377,9 +3377,23 @@ async function saveNote() {
     if (added?.id) {
       selectReview(added.id);
     }
-    setStatus(sourceHintUnavailable
-      ? 'Review saved; source hint unavailable, PDF quote and location retained'
-      : 'Review saved');
+    if (action === 'delete' && added?.id) {
+      const id = added.id;
+      pushUndo({
+        path,
+        label: `delete review ${id}`,
+        run: async () => {
+          await deleteReview(id);
+        },
+      });
+      setStatus(`Marked for deletion · ${id}`, {
+        action: { label: 'Undo', run: () => void undoLast() },
+      });
+    } else {
+      setStatus(sourceHintUnavailable
+        ? 'Review saved; source hint unavailable, PDF quote and location retained'
+        : 'Review saved');
+    }
   } catch (error) {
     if (state.file?.path === path) {
       setStatus(String(error), { error: true });
@@ -4975,26 +4989,9 @@ async function deleteSelectionNow() {
       return;
     }
   }
+  // The note box opens so a note can go with the deletion; Save (Enter) makes the review.
   if (state.reviewOpen) {
     openNoteBox('delete');
-    if (!ui.noteBox.hidden) {
-      await saveNote();
-      const added = state.reviews[state.reviews.length - 1];
-      if (added?.id && state.file?.path) {
-        const path = state.file.path;
-        const id = added.id;
-        pushUndo({
-          path,
-          label: `delete review ${id}`,
-          run: async () => {
-            await deleteReview(id);
-          },
-        });
-        setStatus(`Marked for deletion · ${id}`, {
-          action: { label: 'Undo', run: () => void undoLast() },
-        });
-      }
-    }
   }
 }
 
