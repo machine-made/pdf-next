@@ -3074,6 +3074,8 @@ if (releaseTag) {
   assert.equal(sourceSpan('这是测试', 1, 1, '是测').start, 1, 'A selection inside unspaced text is found.');
   assert.equal(figureWidthEdit('![a](f.png){width = 80%}\n', 1, 50).replacement, '![a](f.png){width=50%}');
   assert.equal(figureWidthEdit('![a](f.png){width= 80% height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
+  assert.equal(figureWidthEdit('![a](f.png){width= height = 3}\n', 1, 50).replacement, '![a](f.png){width=50% height = 3}');
+  assert.equal(figureWidthEdit('![a](f.png){width= #id}\n', 1, 50).replacement, '![a](f.png){width=50% #id}');
   assert.equal(figureWidthEdit('![a](img(1).png)\n', 1, 50).replacement, '![a](img(1).png){width=50%}');
   assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
   assert.equal(figureWidthEdit('![a](f.png){max-width=10}\n', 1, 50).replacement, '![a](f.png){width=50% max-width=10}');

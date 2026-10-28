@@ -155,7 +155,7 @@ export function figureWidthEdit(raw, line, widthPct) {
     const inner = attrs.slice(1, -1).trim();
     // "width = 80%" and "width= 80%" are the same key; the value stops before "height=3".
     if (/(^|\s)width\s*=/.test(inner)) {
-      nextAttrs = `{${inner.replace(/(^|\s)width\s*=(?:\s*(?!\S*=)\S*)/, `$1width=${pct}%`)}}`;
+      nextAttrs = `{${inner.replace(/(^|\s)width\s*=(?:\s*(?!\S*\s*=|[#.])\S+)?/, `$1width=${pct}%`)}}`;
     } else {
       nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
     }
