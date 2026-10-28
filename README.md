@@ -619,6 +619,14 @@ out of the way. The one exception is small, deliberate edits to a Markdown file 
 pdf-next is made by machine-made, a lab for software built with AI agents. MIT licensed. Built on [Mozilla PDF.js](https://github.com/mozilla/pdf.js) and
 [Tauri](https://tauri.app).
 
+## Code signing policy
+
+Windows builds are to be signed through the SignPath Foundation: free code signing provided by
+[SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+Roles, the build that is signed and the privacy statement are in
+[docs/code-signing.md](docs/code-signing.md). Until the signing is in place, releases are unsigned
+and every Windows installer is scanned with Microsoft Defender before it is published.
+
 ## Disclaimer
 
 This software is provided "as is", without warranty of any kind. To the extent

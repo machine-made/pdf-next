@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "pdf-next-installers": the NSIS setup
+     and the MSI, built around the already signed application binary. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" default-value="0.0.0" />
+  </parameters>
+  <zip-file>
+    <pe-file path="pdf-next_${version}_x64-setup.exe" product-name="pdf-next" product-version="${version}">
+      <authenticode-sign description="pdf-next ${version} setup" description-url="https://github.com/machine-made/pdf-next" />
+    </pe-file>
+    <msi-file path="pdf-next_${version}_x64_en-US.msi">
+      <authenticode-sign description="pdf-next ${version} installer" description-url="https://github.com/machine-made/pdf-next" />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>
