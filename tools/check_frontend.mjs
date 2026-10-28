@@ -3078,7 +3078,9 @@ if (releaseTag) {
   assert.equal(figureWidthEdit('![a](f.png){width=#id}\n', 1, 50).error, 'malformed-attribute', 'A width that holds a class is refused.');
   assert.equal(figureWidthEdit('![a](f.png){width=80%height=3}\n', 1, 50).error, 'malformed-attribute', 'A width glued to another key is refused.');
   assert.equal(figureWidthEdit('![a](f.png){width = 80% height = 3}\n', 1, 50).replacement, '![a](f.png){width=50% height = 3}', 'Other attributes keep their spacing.');
-  assert.equal(figureWidthEdit('![a](f.png){title="a = b" width=5cm}\n', 1, 50).replacement, '![a](f.png){title="a = b" width=50%}');
+  assert.equal(figureWidthEdit('![a](f.png){title="a = b" width=5cm}\n', 1, 50).error, 'malformed-attribute', 'Quoted text in the attributes is not edited.');
+  assert.equal(figureWidthEdit('![a](f.png){alt="a width=5cm extra" width=40%}\n', 1, 50).error, 'malformed-attribute');
+  assert.equal(figureWidthEdit('![a](f.png){width=12pt}\n', 1, 50).replacement, '![a](f.png){width=50%}', 'Points are a unit the renderer reads.');
   assert.equal(figureWidthEdit('![a](f.png){width=50.5%}\n', 1, 50).replacement, '![a](f.png){width=50%}', 'A decimal size is a plain size.');
   assert.equal(figureWidthEdit('![a](img(1).png)\n', 1, 50).replacement, '![a](img(1).png){width=50%}');
   assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).error, 'malformed-attribute');
