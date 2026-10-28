@@ -25,8 +25,9 @@ from GitHub, as any package install does.
 
 **Storage.** The app saves your page appearance, poll interval, raw Markdown
 preference, review text size, Markdown font, size and width, interface font,
-figure settings and the in-place editing switch in local browser storage. Tab paths, zoom,
-and scroll positions stay in memory for the current session. Reviews are saved
+figure settings and the in-place editing switch in local browser storage. The open tabs, their
+scroll and zoom positions and the split view are kept there too (key `pdf-next.session`), so they
+reopen on launch; nothing is sent anywhere. Reviews are saved
 beside the document as `{stem}_review.json`, with a transaction `.json.lock`
 file and a last-valid `.json.bak` backup. A legacy migration also keeps a
 `.json.pre-v3.bak` copy. Source hints and agent build results stay in the sidecar.

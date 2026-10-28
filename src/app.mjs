@@ -1840,8 +1840,10 @@ async function openPath(path, { activate = true, target = null } = {}) {
   try {
     const file = await invoke('open_path', { path, activate });
     await openInTab(file, { activate, target });
+    return file;
   } catch (error) {
     setStatus(String(error), { error: true, sticky: true });
+    return null;
   }
 }
 
@@ -2069,19 +2071,24 @@ async function restoreSession() {
     }
   }
   const validTabs = [];
-  for (const item of saved.tabs) {
+  let activeIdx = -1;
+  for (const [index, item] of saved.tabs.entries()) {
     if (typeof item?.path !== 'string') continue;
     try {
       const file = await invoke('open_path', { path: item.path, activate: false });
+      if (index === Number(saved.active)) activeIdx = validTabs.length;
       validTabs.push({ path: file.path, name: file.name, kind: file.kind, target: null, file });
     } catch {
       // File moved or deleted since last session.
     }
   }
   if (!validTabs.length) return false;
-  const activeIdx = Math.min(Math.max(0, Number(saved.active) || 0), validTabs.length - 1);
+  // The saved active tab may have been dropped; then the first tab that opened is shown.
+  if (activeIdx < 0) activeIdx = 0;
   state.tabs = validTabs.map(({ path, name, kind, target }) => ({ path, name, kind, target }));
   state.active = activeIdx;
+  // Set before the tabs are saved again, so a restart right after this keeps the split.
+  state.splitView = saved.splitView === 'right' || saved.splitView === 'bottom' ? saved.splitView : 'off';
   if (typeof saved.splitRatio === 'number' && saved.splitRatio > 0.15 && saved.splitRatio < 0.85) {
     state.splitRatio = saved.splitRatio;
     ui.stage?.style?.setProperty?.('--split-ratio', String(Number(saved.splitRatio.toFixed(3))));
@@ -2179,8 +2186,9 @@ async function setSplitView(mode, { persist = true } = {}) {
   if (valid !== 'off' && !markdownTabsForSplit().length) {
     const picked = await invoke('pick_file').catch(() => null);
     if (picked) {
-      await openPath(picked, { activate: false });
-      state.splitPath = picked;
+      // The tab holds the canonical path; the picker's path may differ in form.
+      const opened = await openPath(picked, { activate: false });
+      state.splitPath = opened?.path ?? picked;
     }
     if (!markdownTabsForSplit().length) {
       state.splitView = 'off';
@@ -5805,6 +5813,8 @@ eventBus.on('updatefindcontrolstate', ({ matchesCount, state: findState }) => {
 });
 
 window.addEventListener('keydown', (event) => {
+  // A key press means the reader has the scroll; late figures must not pull it back.
+  state.restoringMarkdownView = null;
   const typing =
     event.target instanceof HTMLInputElement ||
     event.target instanceof HTMLTextAreaElement ||
