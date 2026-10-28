@@ -3485,8 +3485,8 @@ fn review_basename(name: &str) -> bool {
 /// What a review asks of the agent. Improve carries its instruction in
 /// `comment`; the others are complete on their own, a comment optional.
 const REVIEW_ACTIONS: &[&str] = &[
-    "improve", "polish", "shorten", "expand", "check", "define", "gloss", "bold", "italic",
-    "delete",
+    "improve", "polish", "clarify", "shorten", "expand", "check", "define", "gloss", "bold",
+    "italic", "delete",
 ];
 
 fn validate_review(review: &Review) -> Result<(), String> {
@@ -8078,7 +8078,7 @@ mod tests {
     #[test]
     fn review_actions_accept_the_request_kinds() {
         for action in [
-            "polish", "shorten", "expand", "check", "define", "gloss", "bold", "italic",
+            "polish", "clarify", "shorten", "expand", "check", "define", "gloss", "bold", "italic",
         ] {
             let mut review = markdown_review();
             review.action = action.into();
