@@ -5508,8 +5508,8 @@ if (ui.figureResizerGrip) {
         const edit = figureWidthEdit(state.markdownSource, line, lastPct);
         if (edit && !edit.error) {
           await writeMarkdownEdit(edit, `Figure width ${lastPct}%`);
-        } else if (edit?.error === 'several-images') {
-          setStatus('Two images share this paragraph, so the width is not saved. Put each figure in its own paragraph.', { error: true });
+        } else if (edit?.error === 'several-images' || edit?.error === 'malformed-attribute') {
+          setStatus('This figure\'s width is not saved: its Markdown is not one plain image with a size. Edit the file by hand.', { error: true });
         }
       }
     };

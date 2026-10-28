@@ -3074,10 +3074,12 @@ if (releaseTag) {
   assert.equal(sourceSpan('这是测试', 1, 1, '是测').start, 1, 'A selection inside unspaced text is found.');
   assert.equal(figureWidthEdit('![a](f.png){width = 80%}\n', 1, 50).replacement, '![a](f.png){width=50%}');
   assert.equal(figureWidthEdit('![a](f.png){width= 80% height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
-  assert.equal(figureWidthEdit('![a](f.png){width= height = 3}\n', 1, 50).replacement, '![a](f.png){width=50% height = 3}');
-  assert.equal(figureWidthEdit('![a](f.png){width= #id}\n', 1, 50).replacement, '![a](f.png){width=50% #id}');
+  assert.equal(figureWidthEdit('![a](f.png){width= height = 3}\n', 1, 50).error, 'malformed-attribute', 'An empty width is not guessed at.');
+  assert.equal(figureWidthEdit('![a](f.png){width=#id}\n', 1, 50).error, 'malformed-attribute', 'A width that holds a class is refused.');
+  assert.equal(figureWidthEdit('![a](f.png){width=80%height=3}\n', 1, 50).error, 'malformed-attribute', 'A width glued to another key is refused.');
+  assert.equal(figureWidthEdit('![a](f.png){width = 80% height = 3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
   assert.equal(figureWidthEdit('![a](img(1).png)\n', 1, 50).replacement, '![a](img(1).png){width=50%}');
-  assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).replacement, '![a](f.png){width=50% height=3}');
+  assert.equal(figureWidthEdit('![a](f.png){width= height=3}\n', 1, 50).error, 'malformed-attribute');
   assert.equal(figureWidthEdit('![a](f.png){max-width=10}\n', 1, 50).replacement, '![a](f.png){width=50% max-width=10}');
   assert.equal(figureWidthEdit('![a](a.png) and ![b](b.png)\n', 1, 50).error, 'several-images', 'Two images in one paragraph are not guessed at.');
   assert.equal(parentheticalEdit('Say obrigado now.', sourceSpan('Say obrigado now.', 1, 1, 'obrigado'), 'thank\n\nyou').replacement,
