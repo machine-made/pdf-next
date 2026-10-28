@@ -5,7 +5,7 @@ import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVers
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
-import { FORMAT_LABELS, blockSpan, formatEdit, sourceSpan } from './md-edit.mjs';
+import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -74,6 +74,7 @@ const ui = {
   mdSize: el('mdSize'),
   mdWidth: el('mdWidth'),
   pageView: el('pageView'),
+  splitView: el('splitView'),
   ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
@@ -108,6 +109,15 @@ const ui = {
   markdown: el('markdown'),
   markdownRaw: el('markdownRaw'),
   markdownStage: el('markdownStage'),
+  figureResizer: el('figureResizer'),
+  figureResizerLabel: el('figureResizerLabel'),
+  figureResizerGrip: el('figureResizerGrip'),
+  splitDivider: el('splitDivider'),
+  markdownStageSplit: el('markdownStageSplit'),
+  splitTabSelect: el('splitTabSelect'),
+  splitClose: el('splitClose'),
+  markdownSplit: el('markdownSplit'),
+  markdownRawSplit: el('markdownRawSplit'),
   print: el('print'),
   printPages: el('printPages'),
   printRules: el('printRules'),
@@ -118,6 +128,7 @@ const ui = {
   noteQuote: el('noteQuote'),
   noteAction: el('noteAction'),
   noteText: el('noteText'),
+  noteInsert: el('noteInsert'),
   noteSave: el('noteSave'),
   noteCancel: el('noteCancel'),
   noteClose: el('noteClose'),
@@ -132,6 +143,8 @@ const ui = {
   reviewMenu: el('reviewMenu'),
   reviewMenuAdd: el('reviewMenuAdd'),
   reviewMenuDelete: el('reviewMenuDelete'),
+  reviewMenuDefine: el('reviewMenuDefine'),
+  reviewMenuGloss: el('reviewMenuGloss'),
   reviewMenuCopy: el('reviewMenuCopy'),
   reviewMenuReview: el('reviewMenuReview'),
   reviewMenuEdit: el('reviewMenuEdit'),
@@ -190,6 +203,11 @@ const state = {
   tabs: [],
   active: -1,
   views: new Map(),
+  splitView: 'off',
+  splitPath: null,
+  splitRatio: 0.5,
+  selectedFigure: null,
+  restoringMarkdownView: null,
   // Blocks extracted from rendered markdown, per path: { path, texts: string[] }
   markdownBlocks: null,
   // Find hits in the rendered article: { hits: Element[][], index }, or null.
@@ -382,12 +400,41 @@ function captureView() {
     };
   }
   if (state.file?.kind === 'markdown' || state.file?.kind === 'json') {
+    let anchorLine = null;
+    let anchorDoc = null;
+    let anchorOffset = 0;
+    if (state.file.kind === 'markdown' && !state.markdownRaw && ui.markdownStage && ui.markdown) {
+      const stageTop = ui.markdownStage.getBoundingClientRect?.()?.top ?? 0;
+      const stageBottom = ui.markdownStage.getBoundingClientRect?.()?.bottom ?? Infinity;
+      const fig = state.selectedFigure?.isConnected && ui.markdown.contains?.(state.selectedFigure)
+        ? state.selectedFigure
+        : null;
+      const figRect = fig?.getBoundingClientRect?.();
+      if (fig?.dataset?.doc && figRect && figRect.bottom > stageTop && figRect.top < stageBottom) {
+        anchorDoc = fig.dataset.doc;
+        anchorOffset = Math.round(figRect.top - stageTop);
+      } else {
+        const candidates = ui.markdown.querySelectorAll?.('img[data-doc], [data-line]') || [];
+        for (const node of candidates) {
+          const host = node.matches?.('span.src') && node.parentElement ? node.parentElement : node;
+          const rect = host.getBoundingClientRect?.();
+          if (rect && rect.bottom > stageTop + 4) {
+            if (node.dataset?.doc) anchorDoc = node.dataset.doc;
+            else if (node.dataset?.line) anchorLine = Number(node.dataset.line);
+            anchorOffset = Math.round(rect.top - stageTop);
+            break;
+          }
+        }
+      }
+    }
     return {
       kind: state.file.kind,
       scale: state.markdownScale,
       raw: state.markdownRaw,
       top: ui.markdownStage.scrollTop,
       left: ui.markdownStage.scrollLeft,
+      ...(anchorDoc ? { anchorDoc, anchorOffset } : {}),
+      ...(anchorLine ? { anchorLine, anchorOffset } : {}),
     };
   }
   if (!state.document) {
@@ -769,6 +816,14 @@ function setRaw(on, { persist = true } = {}) {
   state.markdownRaw = on;
   ui.markdown.hidden = on;
   ui.markdownRaw.hidden = !on;
+  if (on && ui.figureResizer) {
+    ui.figureResizer.hidden = true;
+    state.selectedFigure = null;
+  }
+  if (ui.markdownSplit && ui.markdownRawSplit) {
+    ui.markdownSplit.hidden = on;
+    ui.markdownRawSplit.hidden = !on;
+  }
   ui.raw.classList.toggle('on', on);
   ui.raw.setAttribute('aria-pressed', String(on));
   if (!on) {
@@ -788,13 +843,33 @@ function setRaw(on, { persist = true } = {}) {
 /// names the attribute on the article that style.css keys on. An unknown saved
 /// value falls back to the option the page marks as selected.
 function setMarkdownStyle(select, value, { persist = true } = {}) {
+  const legacyWidth = { narrow: '520', normal: '720', wide: '1000', full: '100%' };
   const options = Array.from(select.options);
-  const chosen = options.some((option) => option.value === value)
-    ? value
+  const mapped =
+    select.dataset.md === 'width' &&
+    !options.some((option) => option.value === value) &&
+    legacyWidth[value]
+      ? legacyWidth[value]
+      : value;
+  const chosen = options.some((option) => option.value === mapped)
+    ? mapped
     : (options.find((option) => option.defaultSelected) ?? options[0]).value;
   const style = select.dataset.md;
   select.value = chosen;
   ui.markdown.dataset[style] = chosen;
+  if (ui.markdownSplit?.dataset) {
+    ui.markdownSplit.dataset[style] = chosen;
+  }
+  if (style === 'width') {
+    const cssWidth = chosen === '100%' ? '100%' : /^\d+$/.test(chosen) ? `${chosen}px` : '';
+    if (cssWidth) {
+      ui.markdownStage?.style?.setProperty?.('--md-width', cssWidth);
+      ui.markdownStageSplit?.style?.setProperty?.('--md-width', cssWidth);
+    } else {
+      ui.markdownStage?.style?.removeProperty?.('--md-width');
+      ui.markdownStageSplit?.style?.removeProperty?.('--md-width');
+    }
+  }
   if (!persist) {
     return;
   }
@@ -811,9 +886,16 @@ function setMarkdownScale(scale) {
   state.markdownScale = scale;
   ui.markdown.style.zoom = String(scale);
   ui.markdownRaw.style.zoom = String(scale);
+  if (ui.markdownSplit && ui.markdownRawSplit) {
+    ui.markdownSplit.style.zoom = String(scale);
+    ui.markdownRawSplit.style.zoom = String(scale);
+  }
   updateZoomControl(String(scale), scale);
   schedulePaginate();
   scheduleWrap();
+  if (state.selectedFigure && typeof positionFigureResizer === 'function') {
+    positionFigureResizer();
+  }
 }
 
 // ── Page views ────────────────────────────────────────────────────────────
@@ -977,12 +1059,51 @@ function paginateMarkdown({ keepPosition = true } = {}) {
   };
 }
 
+function applyRestoredMarkdownScroll(view) {
+  if (!view || state.file?.kind !== 'markdown' || !ui.markdownStage) return;
+  if (view.anchorDoc && ui.markdown?.querySelector) {
+    const img = ui.markdown.querySelector(`img[data-doc="${CSS.escape(view.anchorDoc)}"]`);
+    if (img) {
+      const stageTop = ui.markdownStage.getBoundingClientRect().top;
+      const rect = img.getBoundingClientRect();
+      ui.markdownStage.scrollTop += rect.top - stageTop - (view.anchorOffset || 0);
+      ui.markdownStage.scrollLeft = view.left || 0;
+      return;
+    }
+  }
+  if (view.anchorLine && ui.markdown?.querySelector) {
+    const span = ui.markdown.querySelector(`[data-line="${view.anchorLine}"]`);
+    const host = span?.matches?.('span.src') && span.parentElement ? span.parentElement : span;
+    if (host) {
+      const stageTop = ui.markdownStage.getBoundingClientRect().top;
+      const rect = host.getBoundingClientRect();
+      ui.markdownStage.scrollTop += rect.top - stageTop - (view.anchorOffset || 0);
+      ui.markdownStage.scrollLeft = view.left || 0;
+      return;
+    }
+  }
+  ui.markdownStage.scrollTop = view.top;
+  ui.markdownStage.scrollLeft = view.left;
+}
+
 /// An image arrives as `data-doc`, the canonical path Rust checked, and gets
 /// its `src` here, because only the frontend knows the platform's doc URL. The
 /// revision in the URL makes a regenerated figure load again.
 function embedMarkdownImages(root, revision) {
+  const generation = state.generation;
+  if (root === ui.markdown) {
+    state.selectedFigure = null;
+    if (ui.figureResizer) ui.figureResizer.hidden = true;
+  }
   for (const image of root.querySelectorAll('img[data-doc]')) {
     image.src = sourceUrl({ path: image.dataset.doc, revision });
+    if (root === ui.markdown && typeof image.decode === 'function') {
+      image.decode().then(() => {
+        if (state.generation === generation && state.restoringMarkdownView) {
+          applyRestoredMarkdownScroll(state.restoringMarkdownView);
+        }
+      }).catch(() => {});
+    }
   }
 }
 
@@ -1013,7 +1134,12 @@ function figureSetting(name) {
 /// Put the figure preferences on the article, where the stylesheet reads them.
 function applyFigureSettings() {
   for (const name of Object.keys(FIGURE_SETTINGS)) {
-    ui.markdown.dataset[`fig${name[0].toUpperCase()}${name.slice(1)}`] = figureSetting(name);
+    const key = `fig${name[0].toUpperCase()}${name.slice(1)}`;
+    const val = figureSetting(name);
+    ui.markdown.dataset[key] = val;
+    if (ui.markdownSplit?.dataset) {
+      ui.markdownSplit.dataset[key] = val;
+    }
   }
 }
 
@@ -1045,6 +1171,7 @@ async function showMarkdown(file, view, generation, fit) {
     return;
   }
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
+  state.restoringMarkdownView = view || null;
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   colourCode(ui.markdown);
@@ -1094,6 +1221,9 @@ async function showMarkdown(file, view, generation, fit) {
   if (view) {
     ui.markdownStage.scrollTop = view.top;
     ui.markdownStage.scrollLeft = view.left;
+    if (typeof applyRestoredMarkdownScroll === 'function') {
+      applyRestoredMarkdownScroll(view);
+    }
     return;
   }
   ui.markdownStage.scrollTop = 0;
@@ -1665,6 +1795,8 @@ async function openFile(
     ui.image.removeAttribute('src');
   }
   if (file.kind !== 'markdown' && file.kind !== 'json') {
+    state.selectedFigure = null;
+    if (ui.figureResizer) ui.figureResizer.hidden = true;
     ui.markdown.textContent = '';
     ui.markdownRaw.textContent = '';
   }
@@ -1890,9 +2022,185 @@ function icon(href) {
   return svg;
 }
 
+const SESSION_KEY = 'pdf-next.session';
+
+function saveSession() {
+  if (typeof localStorage === 'undefined' || launch?.smoke) return;
+  try {
+    if (!state.tabs.length) {
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    const views = {};
+    for (const [k, v] of state.views.entries()) {
+      views[k] = v;
+    }
+    const current = state.tabs[state.active];
+    if (current && state.file?.path === current.path) {
+      const live = captureView();
+      if (live) views[current.path] = live;
+    }
+    const payload = {
+      tabs: state.tabs.map((t) => ({ path: t.path, name: t.name, kind: t.kind })),
+      active: state.active,
+      views,
+      splitView: state.splitView,
+      splitPath: state.splitPath,
+      splitRatio: state.splitRatio,
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    // Preference only.
+  }
+}
+
+async function restoreSession() {
+  if (typeof localStorage === 'undefined' || launch?.smoke) return false;
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+  } catch {
+    return false;
+  }
+  if (!saved || !Array.isArray(saved.tabs) || !saved.tabs.length) return false;
+  if (saved.views && typeof saved.views === 'object') {
+    for (const [k, v] of Object.entries(saved.views)) {
+      if (v && typeof v === 'object') state.views.set(k, v);
+    }
+  }
+  const validTabs = [];
+  for (const item of saved.tabs) {
+    if (typeof item?.path !== 'string') continue;
+    try {
+      const file = await invoke('open_path', { path: item.path, activate: false });
+      validTabs.push({ path: file.path, name: file.name, kind: file.kind, target: null, file });
+    } catch {
+      // File moved or deleted since last session.
+    }
+  }
+  if (!validTabs.length) return false;
+  const activeIdx = Math.min(Math.max(0, Number(saved.active) || 0), validTabs.length - 1);
+  state.tabs = validTabs.map(({ path, name, kind, target }) => ({ path, name, kind, target }));
+  state.active = activeIdx;
+  if (typeof saved.splitRatio === 'number' && saved.splitRatio > 0.15 && saved.splitRatio < 0.85) {
+    state.splitRatio = saved.splitRatio;
+    ui.stage?.style?.setProperty?.('--split-ratio', String(Number(saved.splitRatio.toFixed(3))));
+  }
+  if (typeof saved.splitPath === 'string') {
+    state.splitPath = saved.splitPath;
+  }
+  renderTabs();
+  const activeEntry = validTabs[activeIdx];
+  await openFile(activeEntry.file, {
+    keepWindow: false,
+    view: state.views.get(activeEntry.path) || null,
+  });
+  if (saved.splitView === 'right' || saved.splitView === 'bottom') {
+    await setSplitView(saved.splitView, { persist: false });
+  }
+  return true;
+}
+
+// ── Split view (two Markdown files in render mode) ────────────────────────
+
+function markdownTabsForSplit() {
+  const activePath = state.tabs[state.active]?.path || state.file?.path;
+  return state.tabs.filter((t) => t.kind === 'markdown' && t.path !== activePath);
+}
+
+async function renderSplitMarkdown(revision = 0) {
+  if (state.splitView === 'off' || !state.splitPath || !ui.markdownSplit) {
+    if (ui.markdownSplit) ui.markdownSplit.textContent = '';
+    if (ui.markdownRawSplit) ui.markdownRawSplit.textContent = '';
+    invoke('watch_secondary', { path: null }).catch(() => {});
+    return;
+  }
+  const path = state.splitPath;
+  try {
+    await invoke('watch_secondary', { path });
+    const doc = await invoke('read_markdown', { path });
+    if (state.splitPath !== path || state.splitView === 'off') return;
+    ui.markdownSplit.innerHTML = doc.html;
+    embedMarkdownImages(ui.markdownSplit, revision);
+    colourCode(ui.markdownSplit);
+    markFigures(ui.markdownSplit);
+    if (ui.markdownRawSplit) {
+      ui.markdownRawSplit.textContent = doc.raw;
+    }
+  } catch (error) {
+    setStatus(`Could not load split view: ${String(error)}`, { error: true });
+  }
+}
+
+function syncSplitTabSelect() {
+  if (!ui.splitTabSelect || !ui.markdownStageSplit || !ui.splitDivider) return;
+  const activeIsMarkdown = (state.tabs[state.active]?.kind || state.file?.kind) === 'markdown';
+  const active = state.splitView !== 'off' && activeIsMarkdown;
+  document.body.classList.toggle('split-right', active && state.splitView === 'right');
+  document.body.classList.toggle('split-bottom', active && state.splitView === 'bottom');
+  ui.splitDivider.hidden = !active;
+  ui.markdownStageSplit.hidden = !active;
+  if (ui.splitView) {
+    ui.splitView.value = state.splitView;
+  }
+  if (!active) {
+    invoke('watch_secondary', { path: null }).catch(() => {});
+    return;
+  }
+  const candidates = markdownTabsForSplit();
+  ui.splitTabSelect.textContent = '';
+  if (!candidates.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Open another .md file…';
+    ui.splitTabSelect.append(opt);
+    state.splitPath = null;
+    ui.markdownSplit.textContent = '';
+    if (ui.markdownRawSplit) ui.markdownRawSplit.textContent = '';
+    invoke('watch_secondary', { path: null }).catch(() => {});
+    return;
+  }
+  if (!state.splitPath || !candidates.some((t) => t.path === state.splitPath)) {
+    state.splitPath = candidates[0].path;
+  }
+  for (const tab of candidates) {
+    const opt = document.createElement('option');
+    opt.value = tab.path;
+    opt.textContent = tab.name;
+    opt.selected = tab.path === state.splitPath;
+    ui.splitTabSelect.append(opt);
+  }
+  void renderSplitMarkdown();
+}
+
+async function setSplitView(mode, { persist = true } = {}) {
+  const valid = ['off', 'right', 'bottom'].includes(mode) ? mode : 'off';
+  state.splitView = valid;
+  if (valid !== 'off' && !markdownTabsForSplit().length) {
+    const picked = await invoke('pick_file').catch(() => null);
+    if (picked) {
+      await openPath(picked, { activate: false });
+      state.splitPath = picked;
+    }
+    if (!markdownTabsForSplit().length) {
+      state.splitView = 'off';
+      if (ui.splitView) ui.splitView.value = 'off';
+      setStatus('Open a second Markdown file to use split view');
+      syncSplitTabSelect();
+      return;
+    }
+  }
+  syncSplitTabSelect();
+  if (persist) {
+    saveSession();
+  }
+}
+
 function renderTabs() {
   document.body.classList.toggle('has-tabs', state.tabs.length > 1);
   ui.tabs.textContent = '';
+  syncSplitTabSelect();
+  saveSession();
   if (state.tabs.length < 2) {
     return;
   }
@@ -1971,7 +2279,7 @@ async function openInTab(file, { activate = true, target = null } = {}) {
   state.tabs.splice(at, 0, entry);
   state.active = at;
   renderTabs();
-  await openFile(file);
+  await openFile(file, { keepWindow: state.tabs.length > 1 });
   await consumeTarget(entry);
 }
 
@@ -2916,10 +3224,57 @@ function placeNoteBox(rect) {
 }
 
 /// Improve needs an instruction; every other action stands on its own.
+/// For Parenthetical definition (`define`) and Gloss (`gloss`), you can leave
+/// it blank to ask the agent, type a suggestion for the agent to revise and
+/// expand, or click "Insert () in file" to insert `term (explanation)` directly.
 function updateNotePlaceholder() {
-  ui.noteText.placeholder = ui.noteAction.value === 'improve'
+  const action = ui.noteAction.value;
+  if (action === 'define' || action === 'gloss') {
+    ui.noteText.placeholder =
+      action === 'define'
+        ? 'Optional definition (blank = ask agent, or suggest for agent / Insert ())'
+        : 'Optional gloss (blank = ask agent, or suggest for agent / Insert ())';
+    if (ui.noteInsert) {
+      ui.noteInsert.hidden = !(state.pendingNote?.kind === 'markdown' && directEditsEnabled());
+    }
+    return;
+  }
+  if (ui.noteInsert) {
+    ui.noteInsert.hidden = true;
+  }
+  ui.noteText.placeholder = action === 'improve'
     ? 'Instruction (Enter to save)'
     : 'Optional note (Enter to save)';
+}
+
+async function insertNoteParenthetical() {
+  const picked = state.pendingNote;
+  const text = ui.noteText.value.trim();
+  if (!picked || picked.kind !== 'markdown' || !state.file || state.file.kind !== 'markdown') {
+    return;
+  }
+  if (!text) {
+    setStatus('Type the parenthetical definition or gloss to insert, or press Save to ask the agent');
+    ui.noteText.focus();
+    return;
+  }
+  const raw = state.markdownSource;
+  if (typeof raw !== 'string') return;
+  const span = sourceSpan(raw, picked.at?.line, picked.at?.end, picked.quote);
+  if (span.error) {
+    setStatus(
+      span.error === 'repeated'
+        ? 'That term appears more than once in its paragraph: select a longer phrase or press Save for the agent'
+        : 'Selection crosses markup: press Save to let the agent insert it',
+      { error: true },
+    );
+    return;
+  }
+  const edit = parentheticalEdit(raw, span, text);
+  if (!edit) return;
+  const label = ui.noteAction.value === 'gloss' ? 'Gloss' : 'Parenthetical definition';
+  closeNoteBox();
+  await writeMarkdownEdit(edit, label);
 }
 
 /// A box about to hide must not keep the focus: a hidden field that still
@@ -2935,6 +3290,7 @@ function closeNoteBox() {
   releaseFocus(ui.noteBox);
   hideReviewChrome();
   ui.noteBox.hidden = true;
+  if (ui.noteInsert) ui.noteInsert.hidden = true;
   ui.noteText.value = '';
   state.pendingNote = null;
   state.pendingNotePdf = null;
@@ -3317,6 +3673,12 @@ function renderReviewList() {
     const comment = document.createElement('textarea');
     comment.className = 'review-comment';
     comment.rows = 2;
+    const act = reviewAction(review);
+    if (act === 'define') {
+      comment.placeholder = 'No suggestion (agent will define in ()) — or type suggestion';
+    } else if (act === 'gloss') {
+      comment.placeholder = 'No suggestion (agent will add gloss) — or type suggestion';
+    }
     const pending = pendingComments.get(commentDraftKey(state.file?.path, review.id));
     comment.value = pending?.comment ?? review.comment ?? '';
     comment.addEventListener('click', (event) => event.stopPropagation());
@@ -4584,6 +4946,50 @@ async function saveEditBox() {
   await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
 }
 
+/// Right-click Delete: in rendered Markdown with direct edits on, deletes the
+/// selected text immediately and pushes an Undo entry; otherwise creates a
+/// 1-click delete review with Undo.
+async function deleteSelectionNow() {
+  hideReviewChrome();
+  const target = markdownEditTarget();
+  if (target) {
+    const raw = state.markdownSource;
+    const { line, end } = target.picked.at;
+    const span = sourceSpan(raw, line, end, target.picked.quote);
+    if (!span.error) {
+      const edit = deleteEdit(raw, span);
+      window.getSelection()?.removeAllRanges();
+      await writeMarkdownEdit(edit, 'Delete');
+      return;
+    }
+    if (!state.reviewOpen) {
+      openEditBox();
+      return;
+    }
+  }
+  if (state.reviewOpen) {
+    openNoteBox('delete');
+    if (!ui.noteBox.hidden) {
+      await saveNote();
+      const added = state.reviews[state.reviews.length - 1];
+      if (added?.id && state.file?.path) {
+        const path = state.file.path;
+        const id = added.id;
+        pushUndo({
+          path,
+          label: `delete review ${id}`,
+          run: async () => {
+            await deleteReview(id);
+          },
+        });
+        setStatus(`Marked for deletion · ${id}`, {
+          action: { label: 'Undo', run: () => void undoLast() },
+        });
+      }
+    }
+  }
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────
 // One place for the preferences. The Markdown and reload menus in the toolbar
 // stay as shortcuts; the panel mirrors them and drives the same setters.
@@ -4636,6 +5042,9 @@ for (const [mine, theirs] of SETTINGS_MIRRORS) {
     const select = ui[theirs];
     if (select.dataset.md) {
       setMarkdownStyle(select, ui[mine].value);
+      schedulePaginate();
+      scheduleWrap();
+      if (state.selectedFigure) positionFigureResizer();
     } else {
       select.value = ui[mine].value;
       select.dispatchEvent(new Event('change'));
@@ -4659,9 +5068,13 @@ for (const select of ui.figureSelects) {
       // Preference only.
     }
     applyFigureSettings();
+    if (state.selectedFigure) positionFigureResizer();
     // Captions are text in the article: adding or removing them re-renders.
     if (name === 'caption' && state.file?.kind === 'markdown') {
       void openFile(state.file, { preserveView: true });
+      if (state.splitView !== 'off' && state.splitPath) {
+        void renderSplitMarkdown();
+      }
     }
   });
 }
@@ -4814,6 +5227,7 @@ function pickAsset(assets, platform) {
 async function checkForUpdates({ quiet = false } = {}) {
   if (state.update) {
     try {
+      saveSession();
       await invoke('open_download', { url: state.update.url });
       setStatus(`Downloading pdf-next ${state.update.version} in your browser`);
     } catch (error) {
@@ -4875,13 +5289,67 @@ ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
 ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
+if (ui.splitView) {
+  ui.splitView.addEventListener('change', () => void setSplitView(ui.splitView.value));
+}
+if (ui.splitTabSelect) {
+  ui.splitTabSelect.addEventListener('change', () => {
+    state.splitPath = ui.splitTabSelect.value || null;
+    saveSession();
+    void renderSplitMarkdown();
+  });
+}
+if (ui.splitClose) {
+  ui.splitClose.addEventListener('click', () => void setSplitView('off'));
+}
+if (ui.splitDivider) {
+  ui.splitDivider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || state.splitView === 'off') return;
+    event.preventDefault();
+    ui.splitDivider.classList.add('dragging');
+    ui.splitDivider.setPointerCapture(event.pointerId);
+    const onMove = (moveEvent) => {
+      const rect = ui.stage.getBoundingClientRect();
+      const availWidth = Math.max(1, rect.width - (state.reviewOpen ? REVIEW_PANE_WIDTH : 0));
+      const ratio =
+        state.splitView === 'right'
+          ? (moveEvent.clientX - rect.left) / availWidth
+          : (moveEvent.clientY - rect.top) / Math.max(1, rect.height);
+      const clamped = Math.min(0.82, Math.max(0.18, ratio));
+      state.splitRatio = clamped;
+      ui.stage.style.setProperty('--split-ratio', String(Number(clamped.toFixed(3))));
+    };
+    const onUp = () => {
+      ui.splitDivider.classList.remove('dragging');
+      ui.splitDivider.removeEventListener('pointermove', onMove);
+      ui.splitDivider.removeEventListener('pointerup', onUp);
+      ui.splitDivider.removeEventListener('pointercancel', onUp);
+      saveSession();
+    };
+    ui.splitDivider.addEventListener('pointermove', onMove);
+    ui.splitDivider.addEventListener('pointerup', onUp);
+    ui.splitDivider.addEventListener('pointercancel', onUp);
+  });
+}
 // A figure that arrives after the cut changes its block's height.
-ui.markdown.addEventListener('load', schedulePaginate, true);
+ui.markdown.addEventListener('load', () => {
+  schedulePaginate();
+  if (state.restoringMarkdownView) {
+    applyRestoredMarkdownScroll(state.restoringMarkdownView);
+    window.requestAnimationFrame(() => {
+      if (state.restoringMarkdownView) {
+        applyRestoredMarkdownScroll(state.restoringMarkdownView);
+      }
+    });
+  }
+}, true);
 for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   select.addEventListener('change', () => {
     setMarkdownStyle(select, select.value);
+    if (!ui.settingsPanel.hidden) syncSettings();
     schedulePaginate();
     scheduleWrap();
+    if (state.selectedFigure) positionFigureResizer();
   });
 }
 ui.ask.addEventListener('click', () => void askSelection());
@@ -4898,6 +5366,9 @@ ui.reviewStatusFilter.addEventListener('change', () => {
   renderReviewList();
 });
 ui.noteAction.addEventListener('change', updateNotePlaceholder);
+if (ui.noteInsert) {
+  ui.noteInsert.addEventListener('click', () => void insertNoteParenthetical());
+}
 ui.reviewChip.addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });
@@ -4907,7 +5378,15 @@ ui.reviewMenuAdd.addEventListener('pointerdown', (event) => {
 });
 ui.reviewMenuAdd.addEventListener('click', () => openNoteBox());
 ui.reviewMenuDelete.addEventListener('pointerdown', (event) => event.preventDefault());
-ui.reviewMenuDelete.addEventListener('click', () => openNoteBox('delete'));
+ui.reviewMenuDelete.addEventListener('click', () => void deleteSelectionNow());
+if (ui.reviewMenuDefine) {
+  ui.reviewMenuDefine.addEventListener('pointerdown', (event) => event.preventDefault());
+  ui.reviewMenuDefine.addEventListener('click', () => openNoteBox('define'));
+}
+if (ui.reviewMenuGloss) {
+  ui.reviewMenuGloss.addEventListener('pointerdown', (event) => event.preventDefault());
+  ui.reviewMenuGloss.addEventListener('click', () => openNoteBox('gloss'));
+}
 for (const button of [ui.reviewMenuCopy, ui.reviewMenuEditText, ...ui.reviewMenuEdit.querySelectorAll('[data-format]')]) {
   // Keep the selection: these act on it.
   button.addEventListener('pointerdown', (event) => event.preventDefault());
@@ -4945,9 +5424,104 @@ document.addEventListener('keyup', (event) => {
 ui.container.addEventListener('contextmenu', onDocumentContextMenu);
 ui.markdownStage.addEventListener('contextmenu', onDocumentContextMenu);
 ui.container.addEventListener('scroll', hideReviewChrome, { passive: true });
-ui.markdownStage.addEventListener('scroll', hideReviewChrome, { passive: true });
+function hideFigureResizer() {
+  if (state.selectedFigure) {
+    state.selectedFigure.classList.remove('md-figure-selected');
+    state.selectedFigure = null;
+  }
+  if (ui.figureResizer) {
+    ui.figureResizer.hidden = true;
+  }
+}
+
+function positionFigureResizer() {
+  const image = state.selectedFigure;
+  if (!image || !image.isConnected || !ui.figureResizer || !ui.markdownStage) {
+    hideFigureResizer();
+    return;
+  }
+  const stageRect = ui.markdownStage.getBoundingClientRect();
+  const imgRect = image.getBoundingClientRect();
+  if (!imgRect.width || !imgRect.height) {
+    hideFigureResizer();
+    return;
+  }
+  const top = imgRect.top - stageRect.top + ui.markdownStage.scrollTop;
+  const left = imgRect.left - stageRect.left + ui.markdownStage.scrollLeft;
+  ui.figureResizer.style.top = `${Math.round(top)}px`;
+  ui.figureResizer.style.left = `${Math.round(left)}px`;
+  ui.figureResizer.style.width = `${Math.round(imgRect.width)}px`;
+  ui.figureResizer.style.height = `${Math.round(imgRect.height)}px`;
+  const containerWidth = image.parentElement?.getBoundingClientRect?.()?.width || ui.markdown.clientWidth || imgRect.width;
+  const columnWidth = Math.max(1, containerWidth);
+  const pct = Math.min(100, Math.max(10, Math.round((imgRect.width / columnWidth) * 100)));
+  if (ui.figureResizerLabel) {
+    ui.figureResizerLabel.textContent = `${pct}%`;
+  }
+  ui.figureResizer.hidden = false;
+}
+
+function selectFigureForResize(image) {
+  if (state.selectedFigure && state.selectedFigure !== image) {
+    state.selectedFigure.classList.remove('md-figure-selected');
+  }
+  state.selectedFigure = image;
+  image.classList.add('md-figure-selected');
+  positionFigureResizer();
+}
+
+if (ui.figureResizerGrip) {
+  ui.figureResizerGrip.addEventListener('pointerdown', (event) => {
+    const image = state.selectedFigure;
+    if (event.button !== 0 || !image || !image.isConnected) return;
+    event.preventDefault();
+    event.stopPropagation();
+    ui.figureResizerGrip.setPointerCapture(event.pointerId);
+    const containerWidth = image.parentElement?.getBoundingClientRect?.()?.width || ui.markdown.clientWidth || image.getBoundingClientRect().width;
+    const columnWidth = Math.max(1, containerWidth);
+    const startX = event.clientX;
+    const startWidth = image.getBoundingClientRect().width;
+    let lastPct = Math.min(100, Math.max(10, Math.round((startWidth / columnWidth) * 100)));
+    const onMove = (moveEvent) => {
+      const nextWidth = Math.max(48, startWidth + (moveEvent.clientX - startX));
+      lastPct = Math.min(100, Math.max(10, Math.round((nextWidth / columnWidth) * 100)));
+      image.style.width = `${lastPct}%`;
+      image.style.maxWidth = '100%';
+      image.setAttribute('width', `${lastPct}%`);
+      positionFigureResizer();
+    };
+    const onUp = async () => {
+      ui.figureResizerGrip.removeEventListener('pointermove', onMove);
+      ui.figureResizerGrip.removeEventListener('pointerup', onUp);
+      ui.figureResizerGrip.removeEventListener('pointercancel', onUp);
+      schedulePaginate();
+      const line = lineNear(image, ui.markdown);
+      if (line && directEditsEnabled() && typeof state.markdownSource === 'string') {
+        const edit = figureWidthEdit(state.markdownSource, line, lastPct);
+        if (edit && !edit.error) {
+          await writeMarkdownEdit(edit, `Figure width ${lastPct}%`);
+        }
+      }
+    };
+    ui.figureResizerGrip.addEventListener('pointermove', onMove);
+    ui.figureResizerGrip.addEventListener('pointerup', onUp);
+    ui.figureResizerGrip.addEventListener('pointercancel', onUp);
+  });
+}
+
+ui.markdownStage.addEventListener('wheel', () => {
+  state.restoringMarkdownView = null;
+}, { passive: true });
+ui.markdownStage.addEventListener('scroll', () => {
+  hideReviewChrome();
+  if (state.selectedFigure) positionFigureResizer();
+}, { passive: true });
 document.addEventListener('pointerdown', (event) => {
+  state.restoringMarkdownView = null;
   const target = event.target;
+  if (target instanceof Element && !target.closest('img[data-doc], #figureResizer')) {
+    hideFigureResizer();
+  }
   if (target instanceof Element && target.closest('#reviewChip, #reviewMenu, #noteBox, #editBox')) {
     return;
   }
@@ -4962,14 +5536,53 @@ document.addEventListener('pointerdown', (event) => {
   }
 });
 
-// A figure opens full size in a tab of its own, with zoom and the folder
-// walk. Only a plain click: a drag that selects text is left alone.
+// Single-click selects a figure in Markdown for drag-resizing; double-click
+// (or Ctrl/Cmd-click) opens the figure full size in a tab of its own.
 ui.markdown.addEventListener('click', (event) => {
   const image = event.target instanceof Element ? event.target.closest('img[data-doc]') : null;
   if (!image || event.button !== 0 || !window.getSelection()?.isCollapsed || state.reattachReviewId) return;
   event.preventDefault();
-  void openPath(image.dataset.doc);
+  if (event.detail === 2 || event.ctrlKey || event.metaKey) {
+    state.selectedFigure = image;
+    if (ui.figureResizer) ui.figureResizer.hidden = true;
+    void openPath(image.dataset.doc);
+    return;
+  }
+  if (event.detail === 1) {
+    selectFigureForResize(image);
+  }
 });
+if (ui.markdownSplit) {
+  ui.markdownSplit.addEventListener('click', (event) => {
+    const image = event.target instanceof Element ? event.target.closest('img[data-doc]') : null;
+    if (image && event.button === 0 && window.getSelection()?.isCollapsed && (event.detail === 2 || event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void openPath(image.dataset.doc);
+      return;
+    }
+    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    if (!anchor) return;
+    event.preventDefault();
+    const href = anchor.getAttribute('href') || '';
+    if (href.startsWith('#')) {
+      markdownFragmentTarget(href.slice(1), ui.markdownSplit)?.scrollIntoView({ block: 'start' });
+      return;
+    }
+    if (/^https?:/i.test(href)) {
+      void invoke('open_link', { url: href }).catch((error) => {
+        setStatus(String(error), { error: true });
+      });
+      return;
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+      return;
+    }
+    const target = siblingPath(href, state.splitPath);
+    if (target) {
+      void openPath(target);
+    }
+  });
+}
 
 // A link in a markdown file must not leave the page. A relative one —
 // `[notes](other.md)` — resolves against the app origin, which the navigation
@@ -5001,8 +5614,8 @@ ui.container.addEventListener('click', (event) => {
 // An equation label keeps its percent-encoding in the id as well as in the
 // link, while a hand-written link to a heading may be encoded where the id is
 // not. The fragment is tried as written, then decoded.
-function markdownFragmentTarget(fragment) {
-  const find = (id) => id && ui.markdown.querySelector(`[id="${CSS.escape(id)}"]`);
+function markdownFragmentTarget(fragment, root = ui.markdown) {
+  const find = (id) => id && root.querySelector(`[id="${CSS.escape(id)}"]`);
   let decoded;
   try {
     decoded = decodeURIComponent(fragment);
@@ -5050,7 +5663,7 @@ ui.markdown.addEventListener('click', (event) => {
 });
 
 /** A relative link, resolved against the folder of the file being read. */
-function siblingPath(href) {
+function siblingPath(href, from = state.file?.path) {
   const bare = href.split(/[?#]/, 1)[0];
   let relative;
   try {
@@ -5058,7 +5671,6 @@ function siblingPath(href) {
   } catch {
     return null;
   }
-  const from = state.file?.path;
   if (!relative || !from) {
     return null;
   }
@@ -5282,6 +5894,17 @@ window.addEventListener('keydown', (event) => {
     toggleReviewPanel();
     return;
   }
+  // Ctrl+B (bold), Ctrl+I (italic), Ctrl+S (strike), Ctrl+U (underline) and
+  // Ctrl+E (edit text) edit a Markdown selection in place. Checked before
+  // Ctrl+U's raw-view toggle so selecting text and pressing Ctrl+U underlines.
+  if (!typing && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
+      (key === 'b' || key === 'i' || key === 's' || key === 'u' || key === 'e') && markdownEditTarget()) {
+    event.preventDefault();
+    const formatByKey = { b: 'bold', i: 'italic', s: 'strike', u: 'underline' };
+    if (key === 'e') openEditBox();
+    else void applyDirectFormat(formatByKey[key]);
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key === 'u') {
     event.preventDefault();
     if (state.file?.kind === 'markdown') {
@@ -5326,14 +5949,6 @@ window.addEventListener('keydown', (event) => {
   if (typing) {
     return;
   }
-  // Ctrl+B, Ctrl+I and Ctrl+E edit a Markdown selection in place.
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
-      (key === 'b' || key === 'i' || key === 'e') && markdownEditTarget()) {
-    event.preventDefault();
-    if (key === 'e') openEditBox();
-    else void applyDirectFormat(key === 'b' ? 'bold' : 'italic');
-    return;
-  }
   // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.
   // In a text field it stays the field's own undo, by the return above.
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'z') {
@@ -5343,11 +5958,17 @@ window.addEventListener('keydown', (event) => {
     });
     return;
   }
-  // Delete, or Cmd+Backspace as in the macOS Finder.
+  // Delete on an active selection deletes the selected text (or marks it for
+  // deletion in review mode); with no selection, Delete / Cmd+Backspace moves
+  // the shown file to the Trash after confirmation.
   if ((key === 'delete' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) ||
       (state.platform === 'macos' && event.metaKey && key === 'backspace')) {
     event.preventDefault();
-    void trashShownFile();
+    if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
+      void deleteSelectionNow();
+    } else {
+      void trashShownFile();
+    }
     return;
   }
   if (key === 'escape') {
@@ -5505,6 +6126,12 @@ listen('reviews-changed', async (event) => {
 
 listen('file-changed', async (event) => {
   const { path, kind, revision } = event.payload || {};
+  if (state.splitView !== 'off' && path && path === state.splitPath && path !== state.file?.path) {
+    if (kind !== 'missing' && document.visibilityState !== 'hidden') {
+      await renderSplitMarkdown(revision);
+    }
+    return;
+  }
   if (!state.file || path !== state.file.path) {
     return;
   }
@@ -5531,6 +6158,7 @@ listen('file-changed', async (event) => {
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') {
+    saveSession();
     // A hidden window does not need warm font and image caches; they rebuild
     // lazily on return. cleanup() refuses to run mid-render, which is fine —
     // that tick is simply skipped.
@@ -5658,6 +6286,10 @@ if (launch?.mode) {
   }
 }
 
+window.addEventListener('beforeunload', () => {
+  saveSession();
+});
+
 mark('initial_file');
 const initial = await invoke('initial_file');
 // Files that reached the app before this code was listening — a Finder
@@ -5683,6 +6315,8 @@ if (initial) {
   }
 } else if (pending.length) {
   await openMany(pending);
+} else if (!launch?.smoke) {
+  await restoreSession();
 }
 mark('open');
 ui.container.focus();

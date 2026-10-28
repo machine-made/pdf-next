@@ -95,3 +95,63 @@ export function formatEdit(raw, span, format) {
   }
   return { start: span.start, expected: text, replacement: `${open}${text}${close}`, removed: false };
 }
+
+/// The edit that removes `span` from `raw`, tidying an adjacent space so
+/// deleting a word mid-sentence does not leave a double space or a space
+/// before punctuation.
+export function deleteEdit(raw, span) {
+  let { start, end } = span;
+  const before = raw[start - 1];
+  const after = raw[end];
+  if (before === ' ' && (after === ' ' || (after && ',.;:!?)]}'.includes(after)))) {
+    start -= 1;
+  } else if (after === ' ' && (start === 0 || raw[start - 1] === '\n')) {
+    end += 1;
+  }
+  return {
+    start,
+    expected: raw.slice(start, end),
+    replacement: '',
+  };
+}
+
+/// The edit that appends a parenthetical explanation `term (explanation)`
+/// right after `span` in `raw`.
+export function parentheticalEdit(raw, span, explanation) {
+  const clean = String(explanation || '').trim().replace(/^\(\s*([\s\S]*?)\s*\)$/, '$1').trim();
+  if (!clean) return null;
+  const expected = raw.slice(span.start, span.end);
+  return {
+    start: span.start,
+    expected,
+    replacement: `${expected} (${clean})`,
+  };
+}
+
+/// The edit that sets or updates `{width=N%}` on the Markdown image in the
+/// block at 1-based `line`.
+export function figureWidthEdit(raw, line, widthPct) {
+  const pct = Math.min(100, Math.max(10, Math.round(Number(widthPct) || 100)));
+  const block = blockSpan(raw, line, line);
+  const region = raw.slice(block.start, block.end);
+  const match = /(!\[[^\]]*\]\([^)\n]+\))(\{[^}\n]*\})?/.exec(region);
+  if (!match) return { error: 'no-image', block };
+  const [full, imagePart, attrs] = match;
+  let nextAttrs;
+  if (attrs) {
+    const inner = attrs.slice(1, -1).trim();
+    if (/\bwidth\s*=\s*\S+/.test(inner)) {
+      nextAttrs = `{${inner.replace(/\bwidth\s*=\s*\S+/, `width=${pct}%`)}}`;
+    } else {
+      nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
+    }
+  } else {
+    nextAttrs = `{width=${pct}%}`;
+  }
+  const start = block.start + match.index;
+  return {
+    start,
+    expected: full,
+    replacement: `${imagePart}${nextAttrs}`,
+  };
+}
