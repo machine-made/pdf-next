@@ -424,7 +424,7 @@ IDs and unknown fields, write atomically, and check the sidecar revision; writer
 that protocol can overwrite concurrent changes.
 
 The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
-`polish` (better wording, same meaning), `shorten`, `expand`, `check` (verify the fact, number or
+`polish` (better wording, same meaning), `clarify` (explain the passage better, same facts; `comment` is an optional note), `shorten`, `expand`, `check` (verify the fact, number or
 equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
 `comment` is an optional suggestion for the agent to revise and expand), `gloss` (add a brief
 inline gloss; `comment` is an optional suggestion), `bold`, `italic` (format the passage in the

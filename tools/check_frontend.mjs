@@ -3097,6 +3097,11 @@ assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes
 assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
   'Undoing a direct edit writes the inverse against the digest the edit produced.');
 
+// Every review action the agent can read is offered in the menus.
+for (const action of REVIEW_ACTIONS) {
+  assert.match(page, new RegExp(`<option value="${action}">`), `${action} is in a review menu.`);
+}
+
 // machine-made type: every face the menus offer is declared, and Settings
 // mirrors the toolbar menus and keeps its own preferences.
 for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machine-made Sans'], ['heddle', 'machine-made Heddle']]) {
