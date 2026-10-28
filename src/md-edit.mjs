@@ -52,6 +52,11 @@ const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };
+// Latin letters, digits and underscore at an edge make the boundary matter;
+// dashes also count as inside a word ("two-dimensional"). Other scripts run
+// without spaces, so no boundary is checked for them.
+const WORD_EDGE = /[\p{Script=Latin}\p{N}_]/u;
+const WORD_CLASS = '\\p{Script=Latin}\\p{N}_\\-\\u2010-\\u2015';
 const wordPattern = (word) => [...word].map((character) => SMART[character] ?? escapeRegExp(character)).join('');
 
 /// Where the selected rendered text stands in the source, within its block.
@@ -64,7 +69,10 @@ export function sourceSpan(raw, line, end, quote) {
   if (!words.length) return { error: 'empty' };
   const block = blockSpan(raw, line, end);
   const region = raw.slice(block.start, block.end);
-  const pattern = new RegExp(words.map(wordPattern).join('\\s+'), 'g');
+  // A word at either edge must not sit inside a longer word: "is" is not in "This".
+  const lead = WORD_EDGE.test(words[0].charAt(0)) ? `(?<![${WORD_CLASS}])` : '';
+  const tail = WORD_EDGE.test(words.at(-1).slice(-1)) ? `(?![${WORD_CLASS}])` : '';
+  const pattern = new RegExp(lead + words.map(wordPattern).join('\\s+') + tail, 'gu');
   const found = [...region.matchAll(pattern)];
   if (found.length === 0) return { error: 'markup', block };
   if (found.length > 1) return { error: 'repeated', block };
@@ -94,4 +102,79 @@ export function formatEdit(raw, span, format) {
     };
   }
   return { start: span.start, expected: text, replacement: `${open}${text}${close}`, removed: false };
+}
+
+/// The edit that removes `span` from `raw`, tidying an adjacent space so
+/// deleting a word mid-sentence does not leave a double space or a space
+/// before punctuation.
+export function deleteEdit(raw, span) {
+  let { start, end } = span;
+  const before = raw[start - 1];
+  const after = raw[end];
+  if (before === ' ' && (after === ' ' || (after && ',.;:!?)]}'.includes(after)))) {
+    start -= 1;
+  } else if (after === ' ' && (start === 0 || raw[start - 1] === '\n')) {
+    end += 1;
+  }
+  return {
+    start,
+    expected: raw.slice(start, end),
+    replacement: '',
+  };
+}
+
+/// The edit that appends a parenthetical explanation `term (explanation)`
+/// right after `span` in `raw`.
+export function parentheticalEdit(raw, span, explanation) {
+  // One line: a blank line in the explanation would split the paragraph.
+  const clean = String(explanation || '').replace(/\s+/g, ' ').trim().replace(/^\(\s*(.*?)\s*\)$/, '$1').trim();
+  if (!clean) return null;
+  const expected = raw.slice(span.start, span.end);
+  return {
+    start: span.start,
+    expected,
+    replacement: `${expected} (${clean})`,
+  };
+}
+
+/// The edit that sets or updates `{width=N%}` on the Markdown image in the
+/// block at 1-based `line`.
+export function figureWidthEdit(raw, line, widthPct) {
+  const pct = Math.min(100, Math.max(10, Math.round(Number(widthPct) || 100)));
+  const block = blockSpan(raw, line, line);
+  const region = raw.slice(block.start, block.end);
+  // A path may hold one pair of parentheses: ![a](img(1).png).
+  const images = [...region.matchAll(/(!\[[^\]]*\]\((?:[^()\n]|\([^()\n]*\))+\))(\{[^}\n]*\})?/g)];
+  if (images.length === 0) return { error: 'no-image', block };
+  // Two images in one block: which one is meant is not known, so leave both alone.
+  if (images.length > 1) return { error: 'several-images', block };
+  const match = images[0];
+  const [full, imagePart, attrs] = match;
+  let nextAttrs;
+  if (attrs) {
+    const inner = attrs.slice(1, -1).trim();
+    // Quoted text is masked out, so a "width=" inside a title or alt text is never the size.
+    const masked = inner.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|“[^”]*”|‘[^’]*’/g, (quoted) => '_'.repeat(quoted.length));
+    if (/(^|\s)width\s*=/.test(masked)) {
+      // A plain size only, in the units the renderer reads: a number, optionally with a unit,
+      // ending at a space. "width=#id" and "width=80%height=3" are refused.
+      // A quote left after masking is unclosed or escaped: where the quoted text ends is not known.
+      if (/["'“”‘’]/.test(masked)) return { error: 'malformed-attribute', block };
+      const plain = /(^|\s)width\s*=\s*\d+(?:\.\d+)?(?:%|px|cm|mm|in|pt)?(?=\s|$)/;
+      const hit = plain.exec(masked);
+      if (!hit) return { error: 'malformed-attribute', block };
+      const at = hit.index + hit[1].length;
+      nextAttrs = `{${inner.slice(0, at)}width=${pct}%${inner.slice(hit.index + hit[0].length)}}`;
+    } else {
+      nextAttrs = inner ? `{width=${pct}% ${inner}}` : `{width=${pct}%}`;
+    }
+  } else {
+    nextAttrs = `{width=${pct}%}`;
+  }
+  const start = block.start + match.index;
+  return {
+    start,
+    expected: full,
+    replacement: `${imagePart}${nextAttrs}`,
+  };
 }

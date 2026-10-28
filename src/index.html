@@ -212,10 +212,23 @@
           <option value="48">48 px</option>
         </select>
         <select id="mdWidth" class="md-only" data-md="width" title="Markdown column width" aria-label="Markdown column width">
-          <option value="narrow">Narrow</option>
-          <option value="normal" selected>Normal</option>
-          <option value="wide">Wide</option>
-          <option value="full">Full</option>
+          <option value="520">520 px</option>
+          <option value="600">600 px</option>
+          <option value="680">680 px</option>
+          <option value="720" selected>720 px</option>
+          <option value="800">800 px</option>
+          <option value="900">900 px</option>
+          <option value="1000">1000 px</option>
+          <option value="1120">1120 px</option>
+          <option value="1280">1280 px</option>
+          <option value="1440">1440 px</option>
+          <option value="1600">1600 px</option>
+          <option value="100%">100%</option>
+        </select>
+        <select id="splitView" class="md-only" title="Split view for two Markdown files" aria-label="Split view for two Markdown files">
+          <option value="off" selected>1 pane</option>
+          <option value="right">Side by side</option>
+          <option value="bottom">Top / Bottom</option>
         </select>
         <button id="ask" type="button" class="review-only" title="Copy the selection as a review quote (Ctrl+Shift+A)" aria-label="Copy selection for a session">
           <svg class="icon"><use href="#i-ask"/></svg>
@@ -290,6 +303,21 @@
       <div id="markdownStage">
         <article id="markdown"></article>
         <pre id="markdownRaw" hidden></pre>
+        <div id="figureResizer" hidden aria-hidden="true">
+          <span id="figureResizerLabel" class="figure-resizer-label"></span>
+          <span id="figureResizerGrip" class="figure-resizer-grip" title="Drag to resize figure (double-click figure to open in new tab)"></span>
+        </div>
+      </div>
+      <div id="splitDivider" hidden role="separator" aria-label="Resize split panes"></div>
+      <div id="markdownStageSplit" hidden>
+        <div id="splitBar" class="split-bar">
+          <select id="splitTabSelect" aria-label="Second Markdown file"></select>
+          <button id="splitClose" type="button" title="Close split view" aria-label="Close split view">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <article id="markdownSplit"></article>
+        <pre id="markdownRawSplit" hidden></pre>
       </div>
 
       <div id="find" hidden>
@@ -318,6 +346,7 @@
           <label>Action <select id="reviewActionFilter" aria-label="Filter reviews by action">
             <option value="all">All</option><option value="improve">Improve</option><option value="polish">Polish</option>
             <option value="shorten">Shorten</option><option value="expand">Expand</option><option value="check">Check</option>
+            <option value="define">Parenthetical definition</option><option value="gloss">Gloss</option>
             <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
           </select></label>
           <label>Status <select id="reviewStatusFilter" aria-label="Filter reviews by status">
@@ -364,7 +393,7 @@
             <option value="plain">Without number</option>
             <option value="off">None</option>
           </select></label>
-          <p class="dim settings-note">In the file: <code>![Caption](fig.png){width=60% .left}</code>. Click a figure to open it full size.</p>
+          <p class="dim settings-note">In the file: <code>![Caption](fig.png){width=60% .left}</code>. Click a figure to resize it; double-click to open it full size.</p>
         </section>
         <section>
           <h3>Window</h3>
@@ -425,6 +454,8 @@
             <option value="shorten">Shorten</option>
             <option value="expand">Expand</option>
             <option value="check">Check (fact, number, equation)</option>
+            <option value="define">Parenthetical definition ()</option>
+            <option value="gloss">Gloss</option>
             <option value="bold">Make bold</option>
             <option value="italic">Make italic</option>
             <option value="delete">Delete selection</option>
@@ -433,6 +464,7 @@
         <input id="noteText" type="text" placeholder="Comment (Enter to save, Esc to cancel)" />
         <div class="note-buttons">
           <button id="noteCancel" type="button">Cancel</button>
+          <button id="noteInsert" type="button" hidden title="Insert parenthetical directly in the Markdown file">Insert () in file</button>
           <button id="noteSave" type="button">Save</button>
         </div>
       </div>
@@ -441,17 +473,19 @@
         <svg class="icon"><use href="#i-add-review"/></svg>
       </button>
       <div id="reviewMenu" hidden role="menu">
+        <button id="reviewMenuDelete" type="button" role="menuitem">Delete <kbd>Del</kbd></button>
         <button id="reviewMenuCopy" type="button" role="menuitem">Copy</button>
         <div id="reviewMenuReview" class="menu-group">
           <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
-          <button id="reviewMenuDelete" type="button" role="menuitem">Delete selection</button>
         </div>
+        <button id="reviewMenuDefine" type="button" role="menuitem">Parenthetical definition ()…</button>
+        <button id="reviewMenuGloss" type="button" role="menuitem">Gloss…</button>
         <div id="reviewMenuEdit" class="menu-group" role="group" aria-label="Edit the Markdown file">
           <hr class="menu-rule" />
           <button type="button" role="menuitem" data-format="bold">Bold <kbd>Ctrl+B</kbd></button>
           <button type="button" role="menuitem" data-format="italic">Italic <kbd>Ctrl+I</kbd></button>
-          <button type="button" role="menuitem" data-format="underline">Underline</button>
-          <button type="button" role="menuitem" data-format="strike">Strikethrough</button>
+          <button type="button" role="menuitem" data-format="underline">Underline <kbd>Ctrl+U</kbd></button>
+          <button type="button" role="menuitem" data-format="strike">Strikethrough <kbd>Ctrl+S</kbd></button>
           <button type="button" role="menuitem" data-format="code">Code</button>
           <button id="reviewMenuEditText" type="button" role="menuitem">Edit text… <kbd>Ctrl+E</kbd></button>
         </div>
