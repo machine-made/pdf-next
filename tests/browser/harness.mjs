@@ -3,7 +3,7 @@
 
 import { chromium } from 'playwright';
 import http from 'node:http';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
@@ -146,6 +146,7 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.addInitScript(mockTauri, { files, initial, theme, store });
+  if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   await page.goto(url);
   if (initial?.endsWith('.md')) await page.waitForSelector('#markdown p');
@@ -173,6 +174,10 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const close = async () => {
     if (tally.fail) await shot(`failed-${Date.now()}`).catch(() => {});
     tally.errors.push(...errors);
+    if (process.env.PDF_NEXT_COVERAGE) {
+      const own = (await page.coverage.stopJSCoverage()).filter((entry) => /^\/[^/]+\.mjs$/.test(new URL(entry.url).pathname));
+      writeFileSync(join(process.env.PDF_NEXT_COVERAGE, `${process.pid}-${Date.now()}.json`), JSON.stringify(own));
+    }
     await browser.close();
     server.close();
   };
@@ -183,4 +188,38 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     process.exit(tally.fail || tally.errors.length ? 1 : 0);
   };
   return { page, ok, errors, selectText, shot, close, finish };
+}
+
+/// Per-file line coverage of src/*.mjs from the V8 coverage each test wrote.
+/// A line counts as run when any of its non-blank characters ran in any test.
+export function coverageReport(dir) {
+  const files = new Map();
+  for (const name of readdirSync(dir)) {
+    for (const entry of JSON.parse(readFileSync(join(dir, name), 'utf8'))) {
+      const file = new URL(entry.url).pathname.slice(1);
+      const ran = new Uint8Array(entry.source.length);
+      const ranges = entry.functions.flatMap((f) => f.ranges)
+        .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
+      for (const range of ranges) ran.fill(range.count > 0 ? 1 : 0, range.startOffset, range.endOffset);
+      const seen = files.get(file) ?? { source: entry.source, ran: new Uint8Array(entry.source.length) };
+      for (let i = 0; i < ran.length; i += 1) seen.ran[i] |= ran[i];
+      files.set(file, seen);
+    }
+  }
+  const rows = [];
+  for (const [file, { source, ran }] of [...files].sort()) {
+    let at = 0;
+    let lines = 0;
+    let covered = 0;
+    for (const line of source.split('\n')) {
+      const text = [...line].map((c, i) => [c, at + i]).filter(([c]) => c.trim());
+      if (text.length) {
+        lines += 1;
+        if (text.some(([, i]) => ran[i])) covered += 1;
+      }
+      at += line.length + 1;
+    }
+    rows.push({ file, lines, covered });
+  }
+  return rows;
 }

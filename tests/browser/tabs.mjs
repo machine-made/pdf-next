@@ -47,12 +47,13 @@ ok(await both('c.md'), 'Wheel down on the strip goes to the next tab');
 await page.mouse.wheel(0, -100);
 await settle();
 ok(await both('b.md'), 'Wheel up goes back');
+await page.waitForTimeout(350);
 await page.mouse.wheel(0, 20);
-await settle();
-ok(await both('b.md'), 'A small trackpad delta does not step alone');
+await page.waitForTimeout(30);
+ok(await current() === 'b.md', 'A small trackpad delta does not step alone');
 await page.mouse.wheel(0, 40);
 await settle();
-ok(await both('c.md'), 'Deltas add up to one step');
+ok(await both('c.md'), 'Deltas within 300 ms add up to one step');
 
 await page.evaluate(() => { document.getElementById('markdownStage').scrollTop = 0; });
 await page.keyboard.press('Control+w');
