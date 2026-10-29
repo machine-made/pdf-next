@@ -6,6 +6,8 @@
 // live in the frontend.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(test)]
+mod properties;
 mod review_command;
 mod review_directory;
 mod review_locate;

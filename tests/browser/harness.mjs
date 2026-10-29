@@ -3,7 +3,7 @@
 
 import { chromium } from 'playwright';
 import http from 'node:http';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
@@ -44,44 +44,88 @@ export const defaultFiles = {
   '/d/c.md': 'Third file.\n',
 };
 
+// A file is its raw text, or { raw, html } to hand the page markup shaped like
+// the Rust renderer's. `window.__fail[cmd] = 'message'` makes a command reject
+// (sessionStorage `fail`, as JSON, does the same across a reload).
 function mockTauri({ files, initial, theme, store }) {
   if (store) window.__store = store;
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
-    const line = raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + (i ? 1 : 0);
-    return `<p><span class="src" data-line="${i === 0 ? 1 : line}"></span>${block.replace(/\n$/, '')}</p>`;
+    const line = i ? raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + 2 : 1;
+    return `<p><span class="src" data-line="${line}"></span>${block.replace(/\n$/, '')}</p>`;
   }).join('\n');
+  const text = (p) => (typeof files[p] === 'object' ? files[p].raw : files[p]);
   let rev = 1;
   window.__calls = [];
   window.__files = files;
-  const kind = (p) => (p.endsWith('.pdf') ? 'pdf' : p.endsWith('.png') ? 'image' : 'markdown');
+  window.__fail = JSON.parse(sessionStorage.getItem('fail') || '{}');
+  const kind = (p) => (p.endsWith('.pdf') ? 'pdf' : p.endsWith('.png') ? 'image' : p.endsWith('.json') ? 'json' : 'markdown');
   const info = (p) => ({ path: p, name: p.split('/').pop(), kind: kind(p), revision: rev });
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const write = (change) => {
+    const st = window.__store || { format: 3, revision: 0, nextId: 1, reviews: [] };
+    change(st);
+    st.revision += 1;
+    window.__store = st;
+    return copy(st);
+  };
+  const find = (id) => {
+    const review = window.__store?.reviews.find((r) => r.id === id);
+    if (!review) throw new Error('review not found');
+    return review;
+  };
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
       invoke: async (cmd, args = {}) => {
         window.__calls.push([cmd, args]);
+        if (window.__fail[cmd]) throw window.__fail[cmd];
         switch (cmd) {
           case 'launch_options': return { version: '0.0.0-test' };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
           case 'open_path': return info(args.path);
-          case 'read_markdown': return { html: render(files[args.path]), raw: files[args.path], digest: `sha256:${files[args.path].length}:${rev}` };
+          case 'read_markdown': {
+            const f = files[args.path];
+            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: `sha256:${text(args.path).length}:${rev}` };
+          }
+          case 'read_json': return text(args.path);
           case 'edit_markdown': {
-            const f = files[args.path] ?? files['/d/a.md'];
+            const path = args.path ?? '/d/a.md';
+            const f = text(path);
+            if (f.slice(args.start, args.start + args.expectedText.length) !== args.expectedText) throw 'the file changed on disk';
             const s = f.slice(0, args.start) + args.replacement + f.slice(args.start + args.expectedText.length);
-            files[args.path ?? '/d/a.md'] = s;
+            files[path] = s;
             rev += 1;
             return `sha256:${s.length}:${rev}`;
           }
-          case 'read_reviews': return window.__store || null;
-          case 'append_review': {
-            const st = window.__store || { format: 3, revision: 0, nextId: 1, reviews: [] };
-            st.revision += 1;
+          case 'read_reviews': return window.__store ? copy(window.__store) : null;
+          case 'append_review': return write((st) => {
             st.reviews.push({ ...args.review, id: `r${st.nextId}` });
             st.nextId += 1;
-            window.__store = st;
-            return JSON.parse(JSON.stringify(st));
-          }
+          });
+          case 'update_review': return write(() => {
+            const review = find(args.id);
+            if ((review.comment || '') !== args.expectedComment) throw new Error('review conflict: comment changed on disk');
+            review.comment = args.comment.trim();
+          });
+          case 'patch_review': return write((st) => {
+            const review = find(args.id);
+            if (args.expected.$revision !== undefined && args.expected.$revision !== st.revision) throw new Error('review conflict: revision changed');
+            for (const key of Object.keys(args.patch)) {
+              if (key in args.expected && JSON.stringify(args.expected[key]) !== JSON.stringify(review[key] ?? null)) throw new Error(`review conflict: ${key} changed on disk`);
+            }
+            Object.assign(review, args.patch);
+            if (args.patch.reply && review.status === 'question') review.status = 'open';
+          });
+          case 'delete_review': return write((st) => {
+            find(args.id);
+            st.reviews = st.reviews.filter((r) => r.id !== args.id);
+          });
+          case 'restore_review': return write((st) => {
+            if (st.reviews.some((r) => r.id === args.review.id)) throw new Error(`${args.review.id} already exists`);
+            st.reviews.push(args.review);
+            st.reviews.sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+          });
           case 'window_size': return { width: 1500, height: 900 };
           case 'os_theme': return theme;
           case 'siblings': return [];
@@ -110,6 +154,7 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.addInitScript(mockTauri, { files, initial, theme, store });
+  if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   await page.goto(url);
   if (initial?.endsWith('.md')) await page.waitForSelector('#markdown p');
@@ -137,6 +182,10 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const close = async () => {
     if (tally.fail) await shot(`failed-${Date.now()}`).catch(() => {});
     tally.errors.push(...errors);
+    if (process.env.PDF_NEXT_COVERAGE) {
+      const own = (await page.coverage.stopJSCoverage()).filter((entry) => /^\/[^/]+\.mjs$/.test(new URL(entry.url).pathname));
+      writeFileSync(join(process.env.PDF_NEXT_COVERAGE, `${process.pid}-${Date.now()}.json`), JSON.stringify(own));
+    }
     await browser.close();
     server.close();
   };
@@ -147,4 +196,38 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     process.exit(tally.fail || tally.errors.length ? 1 : 0);
   };
   return { page, ok, errors, selectText, shot, close, finish };
+}
+
+/// Per-file line coverage of src/*.mjs from the V8 coverage each test wrote.
+/// A line counts as run when any of its non-blank characters ran in any test.
+export function coverageReport(dir) {
+  const files = new Map();
+  for (const name of readdirSync(dir)) {
+    for (const entry of JSON.parse(readFileSync(join(dir, name), 'utf8'))) {
+      const file = new URL(entry.url).pathname.slice(1);
+      const ran = new Uint8Array(entry.source.length);
+      const ranges = entry.functions.flatMap((f) => f.ranges)
+        .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
+      for (const range of ranges) ran.fill(range.count > 0 ? 1 : 0, range.startOffset, range.endOffset);
+      const seen = files.get(file) ?? { source: entry.source, ran: new Uint8Array(entry.source.length) };
+      for (let i = 0; i < ran.length; i += 1) seen.ran[i] |= ran[i];
+      files.set(file, seen);
+    }
+  }
+  const rows = [];
+  for (const [file, { source, ran }] of [...files].sort()) {
+    let at = 0;
+    let lines = 0;
+    let covered = 0;
+    for (const line of source.split('\n')) {
+      const text = [...line].map((c, i) => [c, at + i]).filter(([c]) => c.trim());
+      if (text.length) {
+        lines += 1;
+        if (text.some(([, i]) => ran[i])) covered += 1;
+      }
+      at += line.length + 1;
+    }
+    rows.push({ file, lines, covered });
+  }
+  return rows;
 }
