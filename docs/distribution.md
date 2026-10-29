@@ -93,6 +93,11 @@ winget validate --manifest winget/RicardoFrantz.pdf-next/0.14.5
 winget install --manifest winget/RicardoFrantz.pdf-next/0.14.5
 ```
 
+Releases start themselves: when a merge to `main` carries a version that has
+no tag yet (the same in `package.json`, `tauri.conf.json` and `Cargo.toml`),
+`.github/workflows/tag.yml` tags it `v<version>` and dispatches `release.yml`
+on that tag. Bump the version in the release PR; merging it is the release.
+
 Each tag submits itself: after the release is published, `release.yml`
 calls `.github/workflows/winget.yml`, which runs `wingetcreate update
 --submit` and opens the pull request from the fork `ricardofrantz/winget-pkgs`.
