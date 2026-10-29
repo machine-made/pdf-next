@@ -3387,7 +3387,6 @@ function renderNoteRequests() {
         chip.className = 'request-chip';
         chip.dataset.request = `${group}:${item}`;
         chip.textContent = text;
-        chip.tabIndex = -1;
         row.append(chip);
       }
       ui.noteRequests.append(name, row);
@@ -3887,6 +3886,7 @@ function renderReviewList() {
 
     const comment = document.createElement('textarea');
     comment.className = 'review-comment';
+    comment.setAttribute('aria-label', 'Review comment');
     comment.rows = 2;
     const act = reviewAction(review);
     if (act === 'define') {
