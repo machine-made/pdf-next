@@ -3170,6 +3170,22 @@ assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.js"><
   assert.ok(!/markdownStageSplit|splitDivider/.test(page), 'The old split view is gone.');
 }
 
+// Every version has its CHANGELOG.md section before it can be released, in
+// the style of Claude Code's changelog: version headings, flat bullets that
+// start with Added, Fixed, Improved or Changed (or a platform prefix).
+{
+  const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+  const changelog = await readFile('CHANGELOG.md', 'utf8');
+  assert.ok(changelog.startsWith('# Changelog\n'), 'CHANGELOG.md starts with its title.');
+  const start = changelog.indexOf(`## ${version}\n`);
+  assert.ok(start >= 0, `CHANGELOG.md has a section for ${version}.`);
+  const section = changelog.slice(start).split(/\n## /)[0].split('\n').slice(1).filter((line) => line.trim());
+  assert.ok(section.length > 0, `The ${version} section has entries.`);
+  for (const line of section) {
+    assert.match(line, /^- ((Added|Fixed|Improved|Changed|Removed) |(Windows|macOS|Linux): )/, `Changelog entry style: ${line}`);
+  }
+}
+
 // The wheel steps through the toolbar menus and zooms over the zoom controls.
 assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select'/,
   'Toolbar and Settings menus take the wheel.');
