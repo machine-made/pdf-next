@@ -431,6 +431,24 @@ inline gloss; `comment` is an optional suggestion), `bold`, `italic` (format the
 source) and `delete` (remove the passage). For the actions other than `improve`, `comment` is an
 optional note or suggestion.
 
+The review card also has buttons, clicked instead of typed. They are saved in `requests` as
+`group:name` words, and the agent view spells each out as an instruction:
+
+| Row | Words | The agent reads |
+| --- | --- | --- |
+| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | explain why, explain how, give more information, give an example, give the source, show the derivation |
+| Change | `change:simplify`, `change:shorten`, `change:expand`, `change:check`, `change:figure` | simplify, shorten, expand, check facts, numbers and equations, add or improve a figure |
+| Scope (one) | `scope:phrase`, `scope:paragraph`, `scope:section` | how much of the text the request covers |
+| Tone (one) | `tone:formal`, `tone:plain`, `tone:jfm` | more formal, plainer, Journal of Fluid Mechanics style |
+
+Buttons with no note save as action `request`; with another action they refine it. An Ask is a
+question to the agent: the answer goes in the done note (`pdf-next reviews done … "<answer>"`),
+and the text changes only when the item also asks for a change. In the agent view:
+
+```text
+r4 L12 request: explain why; explain how; scope: the whole paragraph | "the residual check passes"
+```
+
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
 hyphenation, equations and included files can change how text appears. Check the surrounding
 source before editing; an equation symbol needs its equation context and position, so do not

@@ -6,6 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
+import { REQUEST_GROUPS, REVIEW_REQUESTS, reviewRequests, requestsLabel, toggleRequest } from '../src/review-requests.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
@@ -605,7 +606,7 @@ for (const kind of ['markdown', 'pdf']) {
       document: { activeElement: null, createElement: element, createTextNode: (text) => text },
       draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
       reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
-      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS, reviewRequests, requestsLabel,
       scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
       patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
       reviewRowById: () => null, HTMLTextAreaElement: class {},
@@ -1113,7 +1114,7 @@ for (const pauseAt of ['save', 'close']) {
   let applied = false;
   let appended;
   let statusMessage = '';
-  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS,
+  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS, reviewRequests,
     state,
     noteSaveInFlight: false,
     structuredClone: (value) => JSON.parse(JSON.stringify(value)),
@@ -3133,6 +3134,23 @@ assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).eve
   const menu = page.slice(page.indexOf('<select id="mdFont"'), page.indexOf('</select>', page.indexOf('<select id="mdFont"')));
   const groups = [...menu.matchAll(/<optgroup label="([^"]+)">/g)].map((m) => m[1]);
   assert.deepEqual(groups, ['TeX', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+}
+
+// Review card buttons: the JS list and the Rust list are the same words, and a
+// one-choice group (scope, tone) swaps rather than stacks.
+{
+  const rust = await readFile('src-tauri/src/main.rs', 'utf8');
+  const block = rust.slice(rust.indexOf('const REVIEW_REQUESTS'), rust.indexOf('];', rust.indexOf('const REVIEW_REQUESTS')));
+  assert.deepEqual([...block.matchAll(/\("([a-z]+:[a-z]+)",/g)].map((m) => m[1]), REVIEW_REQUESTS, 'Rust and JS requests match.');
+  let picked = toggleRequest([], 'scope:phrase');
+  picked = toggleRequest(picked, 'ask:why');
+  picked = toggleRequest(picked, 'scope:section');
+  assert.deepEqual(picked, ['ask:why', 'scope:section'], 'Scope takes one choice, kept in menu order.');
+  assert.deepEqual(toggleRequest(picked, 'ask:why'), ['scope:section'], 'A second click turns a button off.');
+  assert.deepEqual(reviewRequests({ requests: ['tone:jfm', 'ask:nope', 'ask:how'] }), ['ask:how', 'tone:jfm'], 'Unknown words are left out of the view.');
+  assert.equal(requestsLabel(['ask:why', 'scope:paragraph']), 'Why? · Paragraph');
+  assert.equal(REQUEST_GROUPS.map((g) => g.group).join(','), 'ask,change,scope,tone');
+  assert.match(app, /chosenAction === 'improve' && requests\.length && !comment \? 'request'/, 'Buttons alone save a request.');
 }
 
 // The wheel steps through the toolbar menus and zooms over the zoom controls.

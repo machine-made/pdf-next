@@ -1,6 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
+import { REQUEST_GROUPS, reviewRequests, requestsLabel, toggleRequest } from './review-requests.mjs';
 import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
@@ -126,6 +127,7 @@ const ui = {
   noteBox: el('noteBox'),
   noteRef: el('noteRef'),
   noteQuote: el('noteQuote'),
+  noteRequests: el('noteRequests'),
   noteAction: el('noteAction'),
   noteText: el('noteText'),
   noteInsert: el('noteInsert'),
@@ -216,6 +218,7 @@ const state = {
   // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
   markdownDigest: null,
   pendingNote: null,
+  pendingRequests: [],
   pendingNotePdf: null,
   reviews: [],
   nextId: 1,
@@ -3271,11 +3274,46 @@ function openNoteBox(action = 'improve') {
   ui.noteQuote.textContent = picked.quote;
   ui.noteAction.value = REVIEW_ACTIONS.includes(action) ? action : 'improve';
   ui.noteText.value = '';
+  state.pendingRequests = [];
+  renderNoteRequests();
   updateNotePlaceholder();
   ui.noteText.hidden = false;
   ui.noteBox.hidden = false;
   placeNoteBox(rect);
   ui.noteText.focus({ preventScroll: true });
+}
+
+/// The review card's buttons: Ask, Change, Scope and Tone rows. Clicking
+/// builds the request; the note stays optional and focus stays in it, so
+/// Enter still saves.
+function renderNoteRequests() {
+  if (!ui.noteRequests) return;
+  const chosen = state.pendingRequests || [];
+  if (!ui.noteRequests.childElementCount) {
+    for (const { group, label, items } of REQUEST_GROUPS) {
+      const name = document.createElement('span');
+      name.className = 'request-group';
+      name.textContent = label;
+      const row = document.createElement('div');
+      row.className = 'request-chips';
+      row.setAttribute('role', 'group');
+      row.setAttribute('aria-label', label);
+      for (const [item, text] of items) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'request-chip';
+        chip.dataset.request = `${group}:${item}`;
+        chip.textContent = text;
+        chip.tabIndex = -1;
+        row.append(chip);
+      }
+      ui.noteRequests.append(name, row);
+    }
+  }
+  for (const chip of ui.noteRequests.querySelectorAll('.request-chip')) {
+    chip.setAttribute('aria-pressed', String(chosen.includes(chip.dataset.request)));
+  }
+  updateNotePlaceholder();
 }
 
 function placeNoteBox(rect) {
@@ -3311,8 +3349,8 @@ function updateNotePlaceholder() {
   if (ui.noteInsert) {
     ui.noteInsert.hidden = true;
   }
-  ui.noteText.placeholder = action === 'improve'
-    ? 'Instruction (Enter to save)'
+  ui.noteText.placeholder = action === 'improve' && !(state.pendingRequests || []).length
+    ? 'Instruction, or click the buttons (Enter to save)'
     : 'Optional note (Enter to save)';
 }
 
@@ -3372,10 +3410,13 @@ async function saveNote() {
     return;
   }
   if (noteSaveInFlight) return;
-  const action = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
+  const requests = reviewRequests({ requests: state.pendingRequests });
+  const chosenAction = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
   const comment = ui.noteText.value.trim();
+  // Buttons alone make a request; Improve still needs words when no button is on.
+  const action = chosenAction === 'improve' && requests.length && !comment ? 'request' : chosenAction;
   if (action === 'improve' && !comment) {
-    setStatus('Add an instruction for this improvement');
+    setStatus('Add an instruction, or click a button on the card');
     ui.noteText.focus();
     return;
   }
@@ -3418,6 +3459,7 @@ async function saveNote() {
       color: ((Math.max(1, Number(state.nextId) || 1) - 1) % REVIEW_TINTS) + 1,
       ...(anchor ? { anchor } : {}),
       ...(source ? { source } : {}),
+      ...(requests.length ? { requests } : {}),
     };
     const store = await invoke('append_review', {
       document: path,
@@ -3693,6 +3735,13 @@ function renderReviewList() {
     action.className = 'review-action-label';
     action.textContent = ACTION_LABELS[reviewAction(review)];
     loc.append(makeReviewBadge(review), action, document.createTextNode(formatSelection(review)));
+    const asked = reviewRequests(review);
+    if (asked.length) {
+      const requests = document.createElement('span');
+      requests.className = 'review-requests-label';
+      requests.textContent = requestsLabel(asked);
+      loc.append(requests);
+    }
     row.append(loc);
 
     const status = document.createElement('div');
@@ -5475,6 +5524,17 @@ ui.reviewStatusFilter.addEventListener('change', () => {
   renderReviewList();
 });
 ui.noteAction.addEventListener('change', updateNotePlaceholder);
+// Clicking a button keeps the caret in the note, so Enter saves right after.
+ui.noteRequests?.addEventListener('mousedown', (event) => {
+  if (event.target.closest?.('.request-chip')) event.preventDefault();
+});
+ui.noteRequests?.addEventListener('click', (event) => {
+  const chip = event.target.closest?.('.request-chip');
+  if (!chip) return;
+  state.pendingRequests = toggleRequest(state.pendingRequests || [], chip.dataset.request);
+  renderNoteRequests();
+  ui.noteText.focus({ preventScroll: true });
+});
 if (ui.noteInsert) {
   ui.noteInsert.addEventListener('click', () => void insertNoteParenthetical());
 }

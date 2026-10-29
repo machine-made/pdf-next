@@ -55,9 +55,10 @@ export function reviewLabel(review, reviews) {
 
 /// What a review asks of the agent. Improve needs an instruction; the others
 /// say what to do by themselves. Unknown actions read as Improve.
-export const REVIEW_ACTIONS = ['improve', 'polish', 'clarify', 'shorten', 'expand', 'check', 'define', 'gloss', 'bold', 'italic', 'delete'];
+export const REVIEW_ACTIONS = ['request', 'improve', 'polish', 'clarify', 'shorten', 'expand', 'check', 'define', 'gloss', 'bold', 'italic', 'delete'];
 
 export const ACTION_LABELS = {
+  request: 'Request',
   improve: 'Improve',
   polish: 'Polish',
   clarify: 'Clarify',
