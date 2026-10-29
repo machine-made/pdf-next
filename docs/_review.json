@@ -1,5 +1,5 @@
 {
-  "$comment": "Format 3 review sidecar example for paper.pdf. The adjacent file is paper_review.json. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. action is one of improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete.",
+  "$comment": "Format 3 review sidecar example for paper.pdf. The adjacent file is paper_review.json. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. action is one of request (the buttons in requests), improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete. requests (optional) lists the review card's buttons as group:name words: ask:why|how|more|example|source|derive, change:simplify|shorten|expand|check|figure, scope:phrase|paragraph|section (one), tone:formal|plain|jfm (one); the agent view spells them out.",
   "format": 3,
   "revision": 12,
   "nextId": 3,

@@ -1,6 +1,8 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
+import { createPanes, snapshotOfStage } from './panes.mjs';
+import { REQUEST_GROUPS, reviewRequests, requestsLabel, toggleRequest } from './review-requests.mjs';
 import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
 import { watchPdfRendering } from './pdf-rendering.mjs';
@@ -55,6 +57,9 @@ const PAGE_COLORS = {
 };
 
 const el = (id) => document.getElementById(id);
+/// The Markdown copies shown in panes that are not live (see src/panes.mjs).
+const paneArticles = () => document.querySelectorAll('#panes .pane-snapshot article#markdown');
+const paneMarkdownStages = () => document.querySelectorAll('#panes .pane-snapshot #markdownStage');
 const ui = {
   bar: el('bar'),
   open: el('open'),
@@ -87,6 +92,7 @@ const ui = {
   },
   tabs: el('tabs'),
   stage: el('stage'),
+  panes: el('panes'),
   imagePrev: el('imagePrev'),
   imageNext: el('imageNext'),
   imageIndex: el('imageIndex'),
@@ -112,12 +118,6 @@ const ui = {
   figureResizer: el('figureResizer'),
   figureResizerLabel: el('figureResizerLabel'),
   figureResizerGrip: el('figureResizerGrip'),
-  splitDivider: el('splitDivider'),
-  markdownStageSplit: el('markdownStageSplit'),
-  splitTabSelect: el('splitTabSelect'),
-  splitClose: el('splitClose'),
-  markdownSplit: el('markdownSplit'),
-  markdownRawSplit: el('markdownRawSplit'),
   print: el('print'),
   printPages: el('printPages'),
   printRules: el('printRules'),
@@ -126,6 +126,7 @@ const ui = {
   noteBox: el('noteBox'),
   noteRef: el('noteRef'),
   noteQuote: el('noteQuote'),
+  noteRequests: el('noteRequests'),
   noteAction: el('noteAction'),
   noteText: el('noteText'),
   noteInsert: el('noteInsert'),
@@ -164,6 +165,7 @@ const ui = {
   setPoll: el('setPoll'),
   setDirectEdits: el('setDirectEdits'),
   setUiFont: el('setUiFont'),
+  setCodeFont: el('setCodeFont'),
   aboutVersion: el('aboutVersion'),
   aboutUpdate: el('aboutUpdate'),
   aboutSource: el('aboutSource'),
@@ -203,9 +205,7 @@ const state = {
   tabs: [],
   active: -1,
   views: new Map(),
-  splitView: 'off',
-  splitPath: null,
-  splitRatio: 0.5,
+  paneDirection: 'right',
   selectedFigure: null,
   restoringMarkdownView: null,
   // Blocks extracted from rendered markdown, per path: { path, texts: string[] }
@@ -215,6 +215,7 @@ const state = {
   // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
   markdownDigest: null,
   pendingNote: null,
+  pendingRequests: [],
   pendingNotePdf: null,
   reviews: [],
   nextId: 1,
@@ -230,6 +231,23 @@ const state = {
   reviewGrown: false,
   reviewSize: REVIEW_SIZE_DEFAULT,
 };
+
+// One pane by default; splitting tiles the window (src/panes.mjs).
+const panes = createPanes({
+  host: ui.panes,
+  stage: ui.stage,
+  library: window['dockview-core'],
+  onActivate: (path) => void focusPane(path),
+  onClose: (path) => {
+    const index = state.tabs.findIndex((tab) => tab.path === path);
+    if (index >= 0) void closeTab(index);
+  },
+  onExit: (order) => onPanesExit(order),
+  onLayout: () => {
+    saveSession();
+    watchVisiblePanes();
+  },
+});
 
 // One worker for the life of the process. getDocument would otherwise spawn a
 // fresh one per load — a whole thread plus a 1.2 MB module compile on every
@@ -820,10 +838,6 @@ function setRaw(on, { persist = true } = {}) {
     ui.figureResizer.hidden = true;
     state.selectedFigure = null;
   }
-  if (ui.markdownSplit && ui.markdownRawSplit) {
-    ui.markdownSplit.hidden = on;
-    ui.markdownRawSplit.hidden = !on;
-  }
   ui.raw.classList.toggle('on', on);
   ui.raw.setAttribute('aria-pressed', String(on));
   if (!on) {
@@ -857,17 +871,15 @@ function setMarkdownStyle(select, value, { persist = true } = {}) {
   const style = select.dataset.md;
   select.value = chosen;
   ui.markdown.dataset[style] = chosen;
-  if (ui.markdownSplit?.dataset) {
-    ui.markdownSplit.dataset[style] = chosen;
-  }
+  for (const article of paneArticles()) article.dataset[style] = chosen;
   if (style === 'width') {
     const cssWidth = chosen === '100%' ? '100%' : /^\d+$/.test(chosen) ? `${chosen}px` : '';
     if (cssWidth) {
       ui.markdownStage?.style?.setProperty?.('--md-width', cssWidth);
-      ui.markdownStageSplit?.style?.setProperty?.('--md-width', cssWidth);
+      for (const stage of paneMarkdownStages()) stage.style.setProperty('--md-width', cssWidth);
     } else {
       ui.markdownStage?.style?.removeProperty?.('--md-width');
-      ui.markdownStageSplit?.style?.removeProperty?.('--md-width');
+      for (const stage of paneMarkdownStages()) stage.style.removeProperty('--md-width');
     }
   }
   if (!persist) {
@@ -886,10 +898,6 @@ function setMarkdownScale(scale) {
   state.markdownScale = scale;
   ui.markdown.style.zoom = String(scale);
   ui.markdownRaw.style.zoom = String(scale);
-  if (ui.markdownSplit && ui.markdownRawSplit) {
-    ui.markdownSplit.style.zoom = String(scale);
-    ui.markdownRawSplit.style.zoom = String(scale);
-  }
   updateZoomControl(String(scale), scale);
   schedulePaginate();
   scheduleWrap();
@@ -1137,9 +1145,7 @@ function applyFigureSettings() {
     const key = `fig${name[0].toUpperCase()}${name.slice(1)}`;
     const val = figureSetting(name);
     ui.markdown.dataset[key] = val;
-    if (ui.markdownSplit?.dataset) {
-      ui.markdownSplit.dataset[key] = val;
-    }
+    for (const article of paneArticles()) article.dataset[key] = val;
   }
 }
 
@@ -2046,9 +2052,8 @@ function saveSession() {
       tabs: state.tabs.map((t) => ({ path: t.path, name: t.name, kind: t.kind })),
       active: state.active,
       views,
-      splitView: state.splitView,
-      splitPath: state.splitPath,
-      splitRatio: state.splitRatio,
+      panes: panes.active ? panes.layout() : null,
+      paneDirection: state.paneDirection,
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
   } catch {
@@ -2087,128 +2092,203 @@ async function restoreSession() {
   if (activeIdx < 0) activeIdx = 0;
   state.tabs = validTabs.map(({ path, name, kind, target }) => ({ path, name, kind, target }));
   state.active = activeIdx;
-  // Set before the tabs are saved again, so a restart right after this keeps the split.
-  state.splitView = saved.splitView === 'right' || saved.splitView === 'bottom' ? saved.splitView : 'off';
-  if (typeof saved.splitRatio === 'number' && saved.splitRatio > 0.15 && saved.splitRatio < 0.85) {
-    state.splitRatio = saved.splitRatio;
-    ui.stage?.style?.setProperty?.('--split-ratio', String(Number(saved.splitRatio.toFixed(3))));
-  }
-  if (typeof saved.splitPath === 'string') {
-    state.splitPath = saved.splitPath;
-  }
-  renderTabs();
+  state.paneDirection = saved.paneDirection === 'bottom' ? 'bottom' : 'right';
   const activeEntry = validTabs[activeIdx];
+  // The layout is rebuilt before the tabs render, so the strip never flashes.
+  const tiled = saved.panes && panes.restore(saved.panes, state.tabs);
+  renderTabs();
+  if (tiled) panes.mount(activeEntry.path);
   await openFile(activeEntry.file, {
     keepWindow: false,
     view: state.views.get(activeEntry.path) || null,
   });
-  if (saved.splitView === 'right' || saved.splitView === 'bottom') {
-    await setSplitView(saved.splitView, { persist: false });
+  if (tiled) {
+    for (const path of panes.visible()) void fillPane(path);
+    watchVisiblePanes();
+    syncPaneControl();
   }
   return true;
 }
 
-// ── Split view (two Markdown files in render mode) ────────────────────────
+// ── Panes (tiles with tabs, src/panes.mjs) ─────────────────────────────
 
-function markdownTabsForSplit() {
-  const activePath = state.tabs[state.active]?.path || state.file?.path;
-  return state.tabs.filter((t) => t.kind === 'markdown' && t.path !== activePath);
+/// Paths shown in a pane but not live: kept current when their file changes.
+function watchVisiblePanes() {
+  const paths = panes.active ? panes.visible().filter((path) => path !== state.file?.path) : [];
+  invoke('watch_secondary', { paths }).catch(() => {});
 }
 
-async function renderSplitMarkdown(revision = 0) {
-  if (state.splitView === 'off' || !state.splitPath || !ui.markdownSplit) {
-    if (ui.markdownSplit) ui.markdownSplit.textContent = '';
-    if (ui.markdownRawSplit) ui.markdownRawSplit.textContent = '';
-    invoke('watch_secondary', { path: null }).catch(() => {});
-    return;
-  }
-  const path = state.splitPath;
-  try {
-    await invoke('watch_secondary', { path });
-    const doc = await invoke('read_markdown', { path });
-    if (state.splitPath !== path || state.splitView === 'off') return;
-    ui.markdownSplit.innerHTML = doc.html;
-    embedMarkdownImages(ui.markdownSplit, revision);
-    colourCode(ui.markdownSplit);
-    markFigures(ui.markdownSplit);
-    if (ui.markdownRawSplit) {
-      ui.markdownRawSplit.textContent = doc.raw;
+/// Leave a still copy of the live view in its pane before the stage moves on.
+function freezeLivePane() {
+  const path = panes.livePath;
+  if (!panes.active || !path || state.file?.path !== path) return;
+  panes.freeze(path, snapshotOfStage({
+    kind: state.file.kind,
+    markdownStage: ui.markdownStage,
+    viewerContainer: ui.container,
+    imageStage: ui.imageStage,
+    onPick: () => void focusPane(path),
+  }));
+}
+
+/// A pane that has never been live this session (a restored layout): Markdown
+/// is rendered for real, anything else shows its name until it is clicked.
+async function fillPane(path, revision = 0) {
+  const tab = state.tabs.find((item) => item.path === path);
+  if (!tab || !panes.has(path) || path === panes.livePath) return;
+  let snapshot = panes.snapshotOf(path);
+  if (tab.kind === 'markdown') {
+    try {
+      const doc = await invoke('read_markdown', { path });
+      if (!panes.has(path) || path === panes.livePath) return;
+      if (!snapshot?.querySelector('article#markdown')) {
+        snapshot = snapshotOfStage({
+          kind: 'markdown',
+          markdownStage: ui.markdownStage,
+          onPick: () => void focusPane(path),
+        });
+        panes.freeze(path, snapshot);
+      }
+      const article = snapshot.querySelector('article#markdown');
+      const scroller = snapshot.querySelector('#markdownStage');
+      const top = scroller?.scrollTop ?? 0;
+      article.hidden = false;
+      article.innerHTML = doc.html;
+      embedMarkdownImages(article, revision);
+      colourCode(article);
+      markFigures(article);
+      if (scroller) scroller.scrollTop = top;
+    } catch {
+      // The file may have gone; the pane keeps what it had.
     }
-  } catch (error) {
-    setStatus(`Could not load split view: ${String(error)}`, { error: true });
-  }
-}
-
-function syncSplitTabSelect() {
-  if (!ui.splitTabSelect || !ui.markdownStageSplit || !ui.splitDivider) return;
-  const activeIsMarkdown = (state.tabs[state.active]?.kind || state.file?.kind) === 'markdown';
-  const active = state.splitView !== 'off' && activeIsMarkdown;
-  document.body.classList.toggle('split-right', active && state.splitView === 'right');
-  document.body.classList.toggle('split-bottom', active && state.splitView === 'bottom');
-  ui.splitDivider.hidden = !active;
-  ui.markdownStageSplit.hidden = !active;
-  if (ui.splitView) {
-    ui.splitView.value = state.splitView;
-  }
-  if (!active) {
-    invoke('watch_secondary', { path: null }).catch(() => {});
     return;
   }
-  const candidates = markdownTabsForSplit();
-  ui.splitTabSelect.textContent = '';
-  if (!candidates.length) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = 'Open another .md file…';
-    ui.splitTabSelect.append(opt);
-    state.splitPath = null;
-    ui.markdownSplit.textContent = '';
-    if (ui.markdownRawSplit) ui.markdownRawSplit.textContent = '';
-    invoke('watch_secondary', { path: null }).catch(() => {});
-    return;
-  }
-  if (!state.splitPath || !candidates.some((t) => t.path === state.splitPath)) {
-    state.splitPath = candidates[0].path;
-  }
-  for (const tab of candidates) {
-    const opt = document.createElement('option');
-    opt.value = tab.path;
-    opt.textContent = tab.name;
-    opt.selected = tab.path === state.splitPath;
-    ui.splitTabSelect.append(opt);
-  }
-  void renderSplitMarkdown();
+  if (snapshot) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'pane-snapshot';
+  const card = document.createElement('div');
+  card.className = 'pane-placeholder';
+  const name = document.createElement('strong');
+  name.textContent = tab.name;
+  const hint = document.createElement('span');
+  hint.className = 'dim';
+  hint.textContent = 'Click to show';
+  card.append(name, hint);
+  const cover = document.createElement('div');
+  cover.className = 'pane-cover';
+  cover.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    void focusPane(path);
+  });
+  wrap.append(card, cover);
+  panes.freeze(path, wrap);
 }
 
-async function setSplitView(mode, { persist = true } = {}) {
-  const valid = ['off', 'right', 'bottom'].includes(mode) ? mode : 'off';
-  state.splitView = valid;
-  if (valid !== 'off' && !markdownTabsForSplit().length) {
+async function focusPane(path) {
+  const index = state.tabs.findIndex((tab) => tab.path === path);
+  if (index >= 0) await activateTab(index, { force: index !== state.active });
+}
+
+/// Open a pane beside the live one, in `direction` (right or bottom). It
+/// shows the next tab that is not on screen yet, or a file you pick, and
+/// becomes the live pane.
+async function splitPane(direction = 'right') {
+  if (!state.file) {
+    setStatus('Open a file first');
+    syncPaneControl();
+    return;
+  }
+  const shown = new Set(panes.active ? panes.visible() : [state.tabs[state.active]?.path]);
+  const order = [...state.tabs.slice(state.active + 1), ...state.tabs.slice(0, state.active)];
+  let next = order.find((tab) => !shown.has(tab.path))?.path;
+  if (!next) {
     const picked = await invoke('pick_file').catch(() => null);
-    if (picked) {
-      // The tab holds the canonical path; the picker's path may differ in form.
-      const opened = await openPath(picked, { activate: false });
-      state.splitPath = opened?.path ?? picked;
+    if (!picked) {
+      syncPaneControl();
+      return;
     }
-    if (!markdownTabsForSplit().length) {
-      state.splitView = 'off';
-      if (ui.splitView) ui.splitView.value = 'off';
-      setStatus('Open a second Markdown file to use split view');
-      syncSplitTabSelect();
+    const file = await invoke('open_path', { path: picked, activate: false }).catch((error) => {
+      setStatus(String(error), { error: true });
+      return null;
+    });
+    if (!file) {
+      syncPaneControl();
+      return;
+    }
+    if (!state.tabs.some((tab) => tab.path === file.path)) {
+      state.tabs.push({ path: file.path, name: file.name, kind: file.kind, target: null });
+      // In a tiled window the new tab needs its panel before it can move.
+      renderTabs();
+    }
+    next = file.path;
+    if (shown.has(next)) {
+      setStatus(`${file.name} is already on screen`);
+      syncPaneControl();
       return;
     }
   }
-  syncSplitTabSelect();
-  if (persist) {
-    saveSession();
+  const activePath = state.tabs[state.active]?.path;
+  if (!panes.active) {
+    panes.enter({
+      paths: state.tabs.map((tab) => tab.path),
+      titles: new Map(state.tabs.map((tab) => [tab.path, tab.name])),
+      activePath,
+      newPath: next,
+      direction,
+    });
+    // The stage was in the window; the pane that had it is the live one now.
+    panes.mount(activePath);
+  } else {
+    panes.split(next, direction);
+  }
+  state.paneDirection = direction;
+  await focusPane(next);
+  syncPaneControl();
+  saveSession();
+}
+
+/// Back to one pane, keeping every tab.
+function mergePanes() {
+  if (panes.active) panes.exit();
+}
+
+function onPanesExit(order) {
+  const live = state.tabs[state.active]?.path;
+  const rank = new Map(order.map((path, index) => [path, index]));
+  state.tabs.sort((a, b) => (rank.get(a.path) ?? 1e9) - (rank.get(b.path) ?? 1e9));
+  state.active = Math.max(0, state.tabs.findIndex((tab) => tab.path === live));
+  ui.panes.after(ui.stage);
+  invoke('watch_secondary', { paths: [] }).catch(() => {});
+  renderTabs();
+  syncPaneControl();
+}
+
+function syncPaneControl() {
+  if (ui.splitView) ui.splitView.value = panes.active ? (state.paneDirection === 'bottom' ? 'bottom' : 'right') : 'off';
+}
+
+async function setSplitView(mode) {
+  if (mode === 'right' || mode === 'bottom') {
+    await splitPane(mode);
+  } else {
+    mergePanes();
+    syncPaneControl();
   }
 }
 
+async function movePaneFocus(direction) {
+  const path = panes.neighbour(direction);
+  if (path) await focusPane(path);
+}
+
 function renderTabs() {
-  document.body.classList.toggle('has-tabs', state.tabs.length > 1);
+  document.body.classList.toggle('has-tabs', state.tabs.length > 1 && !panes.active);
   ui.tabs.textContent = '';
-  syncSplitTabSelect();
   saveSession();
+  if (panes.active) {
+    panes.sync(state.tabs);
+    return;
+  }
   if (state.tabs.length < 2) {
     return;
   }
@@ -2283,10 +2363,12 @@ async function openInTab(file, { activate = true, target = null } = {}) {
     return;
   }
   const at = state.active < 0 ? state.tabs.length : state.active + 1;
+  freezeLivePane();
   stashView();
   state.tabs.splice(at, 0, entry);
   state.active = at;
   renderTabs();
+  if (panes.active) panes.mount(file.path);
   await openFile(file, { keepWindow: state.tabs.length > 1 });
   await consumeTarget(entry);
 }
@@ -2309,9 +2391,11 @@ async function activateTab(index, { force = false } = {}) {
   if (!tab || (index === state.active && !force)) {
     return;
   }
+  freezeLivePane();
   stashView();
   state.active = index;
   renderTabs();
+  if (panes.active) panes.mount(tab.path);
   try {
     const file = await invoke('open_path', { path: tab.path });
     // Keep the name fresh in case the file moved out from under the tab.
@@ -2321,6 +2405,7 @@ async function activateTab(index, { force = false } = {}) {
       keepWindow: true,
       view: state.views.get(tab.path) || null,
     });
+    if (panes.active) watchVisiblePanes();
     // After the remembered view, not before: an explicit page wins over where
     // this tab was last left.
     await consumeTarget(tab);
@@ -2367,6 +2452,7 @@ async function closeAll() {
   if (state.generation !== generation) {
     return;
   }
+  if (panes.active) panes.exit();
   state.tabs = [];
   state.active = -1;
   state.views.clear();
@@ -2442,6 +2528,66 @@ ui.tabs.addEventListener('wheel', (event) => {
   tabWheel = 0;
   cycleTab(step);
 }, { passive: false });
+
+// The wheel over a toolbar menu steps through its choices without opening it:
+// up for the next choice (bigger, for size, width and zoom), down for the one
+// before. Over the zoom menu and its buttons it zooms through the same ladder
+// as + and -. Trackpad deltas are summed to one notch, as on the tab strip.
+const wheelNotches = new WeakMap();
+function wheelNotch(target, event) {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : -event.deltaX;
+  const unit = event.deltaMode === 1 ? 3 : event.deltaMode === 2 ? 1 : 100;
+  const last = wheelNotches.get(target) ?? { sum: 0, at: 0 };
+  const sum = (event.timeStamp - last.at > 300 ? 0 : last.sum) + delta / unit;
+  if (Math.abs(sum) < 0.5) {
+    wheelNotches.set(target, { sum, at: event.timeStamp });
+    return 0;
+  }
+  wheelNotches.set(target, { sum: 0, at: event.timeStamp });
+  return sum < 0 ? 1 : -1;
+}
+
+/// Move `select` one usable choice in `direction` and announce the change, so
+/// every menu keeps its own change handler as the one place it takes effect.
+function stepSelect(select, direction) {
+  const options = Array.from(select.options);
+  let index = select.selectedIndex;
+  for (let guard = 0; guard < options.length; guard += 1) {
+    index += direction;
+    if (index < 0 || index >= options.length) return false;
+    const option = options[index];
+    if (!option.hidden && !option.disabled) {
+      select.selectedIndex = index;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+  }
+  return false;
+}
+
+function onMenuWheel(event) {
+  const control = event.currentTarget;
+  if (control.disabled || event.ctrlKey) return;
+  event.preventDefault();
+  const direction = wheelNotch(control, event);
+  if (!direction) return;
+  if (control === ui.zoom || control === ui.zoomIn || control === ui.zoomOut) {
+    stepZoom(direction);
+  } else {
+    stepSelect(control, direction);
+  }
+}
+
+function wireMenuWheel() {
+  const controls = new Set([
+    ...document.querySelectorAll('#bar select, #settingsPanel select'),
+    ui.zoomIn,
+    ui.zoomOut,
+  ]);
+  for (const control of controls) {
+    if (control) control.addEventListener('wheel', onMenuWheel, { passive: false });
+  }
+}
 
 // ── Page and zoom controls ────────────────────────────────────────────────
 
@@ -3210,11 +3356,46 @@ function openNoteBox(action = 'improve') {
   ui.noteQuote.textContent = picked.quote;
   ui.noteAction.value = REVIEW_ACTIONS.includes(action) ? action : 'improve';
   ui.noteText.value = '';
+  state.pendingRequests = [];
+  renderNoteRequests();
   updateNotePlaceholder();
   ui.noteText.hidden = false;
   ui.noteBox.hidden = false;
   placeNoteBox(rect);
   ui.noteText.focus({ preventScroll: true });
+}
+
+/// The review card's buttons: Ask, Change, Scope and Tone rows. Clicking
+/// builds the request; the note stays optional and focus stays in it, so
+/// Enter still saves.
+function renderNoteRequests() {
+  if (!ui.noteRequests) return;
+  const chosen = state.pendingRequests || [];
+  if (!ui.noteRequests.childElementCount) {
+    for (const { group, label, items } of REQUEST_GROUPS) {
+      const name = document.createElement('span');
+      name.className = 'request-group';
+      name.textContent = label;
+      const row = document.createElement('div');
+      row.className = 'request-chips';
+      row.setAttribute('role', 'group');
+      row.setAttribute('aria-label', label);
+      for (const [item, text] of items) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'request-chip';
+        chip.dataset.request = `${group}:${item}`;
+        chip.textContent = text;
+        chip.tabIndex = -1;
+        row.append(chip);
+      }
+      ui.noteRequests.append(name, row);
+    }
+  }
+  for (const chip of ui.noteRequests.querySelectorAll('.request-chip')) {
+    chip.setAttribute('aria-pressed', String(chosen.includes(chip.dataset.request)));
+  }
+  updateNotePlaceholder();
 }
 
 function placeNoteBox(rect) {
@@ -3250,8 +3431,8 @@ function updateNotePlaceholder() {
   if (ui.noteInsert) {
     ui.noteInsert.hidden = true;
   }
-  ui.noteText.placeholder = action === 'improve'
-    ? 'Instruction (Enter to save)'
+  ui.noteText.placeholder = action === 'improve' && !(state.pendingRequests || []).length
+    ? 'Instruction, or click the buttons (Enter to save)'
     : 'Optional note (Enter to save)';
 }
 
@@ -3311,10 +3492,13 @@ async function saveNote() {
     return;
   }
   if (noteSaveInFlight) return;
-  const action = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
+  const requests = reviewRequests({ requests: state.pendingRequests });
+  const chosenAction = REVIEW_ACTIONS.includes(ui.noteAction.value) ? ui.noteAction.value : 'improve';
   const comment = ui.noteText.value.trim();
+  // Buttons alone make a request; Improve still needs words when no button is on.
+  const action = chosenAction === 'improve' && requests.length && !comment ? 'request' : chosenAction;
   if (action === 'improve' && !comment) {
-    setStatus('Add an instruction for this improvement');
+    setStatus('Add an instruction, or click a button on the card');
     ui.noteText.focus();
     return;
   }
@@ -3357,6 +3541,7 @@ async function saveNote() {
       color: ((Math.max(1, Number(state.nextId) || 1) - 1) % REVIEW_TINTS) + 1,
       ...(anchor ? { anchor } : {}),
       ...(source ? { source } : {}),
+      ...(requests.length ? { requests } : {}),
     };
     const store = await invoke('append_review', {
       document: path,
@@ -3632,6 +3817,13 @@ function renderReviewList() {
     action.className = 'review-action-label';
     action.textContent = ACTION_LABELS[reviewAction(review)];
     loc.append(makeReviewBadge(review), action, document.createTextNode(formatSelection(review)));
+    const asked = reviewRequests(review);
+    if (asked.length) {
+      const requests = document.createElement('span');
+      requests.className = 'review-requests-label';
+      requests.textContent = requestsLabel(asked);
+      loc.append(requests);
+    }
     row.append(loc);
 
     const status = document.createElement('div');
@@ -4840,6 +5032,18 @@ function directEditsEnabled() {
 
 /// The selection, when it can be edited in place: rendered Markdown (not the
 /// raw view), on a source line, with direct edits on.
+/// Which rendered Markdown pane holds a non-empty selection: 'main', 'split' or null.
+function renderedMarkdownSelection() {
+  if (state.file?.kind !== 'markdown') return null;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const node = selection.getRangeAt(0).commonAncestorContainer;
+  const element = node.nodeType === 3 ? node.parentElement : node;
+  if (!(element instanceof Element)) return null;
+  if (ui.markdown.contains(element)) return 'main';
+  return null;
+}
+
 function markdownEditTarget() {
   if (state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
       typeof state.markdownSource !== 'string') {
@@ -4856,9 +5060,11 @@ async function applyDirectFormat(format) {
   hideReviewChrome();
   const target = markdownEditTarget();
   if (!target) {
-    setStatus(state.file?.kind === 'markdown'
-      ? 'Select text in the rendered Markdown to format it'
-      : 'Formatting edits Markdown files only; add a review instead');
+    setStatus(state.file?.kind !== 'markdown'
+      ? 'Formatting edits Markdown files only; add a review instead'
+      : renderedMarkdownSelection()
+        ? 'This selection cannot be traced to a line of the source: add a review instead'
+        : 'Select text in the rendered Markdown to format it', { error: Boolean(renderedMarkdownSelection()) });
     return;
   }
   const node = target.range.commonAncestorContainer;
@@ -5018,11 +5224,37 @@ function applyUiFont(value, { persist = true } = {}) {
   }
 }
 
+const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon', 'monaspace-radon', 'monaspace-krypton'];
+
+/// The font for code blocks, inline code and the raw Markdown view.
+function applyCodeFont(value, { persist = true } = {}) {
+  const chosen = CODE_FONTS.includes(value) ? value : 'system';
+  if (chosen === 'system') {
+    delete document.documentElement.dataset.codeFont;
+  } else {
+    document.documentElement.dataset.codeFont = chosen;
+  }
+  if (ui.setCodeFont) ui.setCodeFont.value = chosen;
+  if (!persist) return;
+  try {
+    localStorage.setItem('pdf-next.code-font', chosen);
+  } catch {
+    // Preference only.
+  }
+}
+
 function syncSettings() {
   for (const [mine, theirs] of SETTINGS_MIRRORS) {
     const select = ui[mine];
     if (!select.options.length) {
-      for (const option of ui[theirs].options) select.append(new Option(option.textContent, option.value));
+      // Copy the menu with its groups, so Settings shows the fonts clustered too.
+      for (const child of ui[theirs].children) {
+        const copy = child.cloneNode(true);
+        for (const option of copy.tagName === 'OPTION' ? [copy] : copy.querySelectorAll('option')) {
+          option.removeAttribute('selected');
+        }
+        select.append(copy);
+      }
     }
     select.value = ui[theirs].value;
   }
@@ -5064,6 +5296,7 @@ ui.setDirectEdits.addEventListener('change', () => {
   }
 });
 ui.setUiFont.addEventListener('change', () => applyUiFont(ui.setUiFont.value));
+ui.setCodeFont.addEventListener('change', () => applyCodeFont(ui.setCodeFont.value));
 for (const select of ui.figureSelects) {
   select.addEventListener('change', () => {
     const name = select.dataset.figure;
@@ -5077,9 +5310,7 @@ for (const select of ui.figureSelects) {
     // Captions are text in the article: adding or removing them re-renders.
     if (name === 'caption' && state.file?.kind === 'markdown') {
       void openFile(state.file, { preserveView: true });
-      if (state.splitView !== 'off' && state.splitPath) {
-        void renderSplitMarkdown();
-      }
+      for (const path of panes.visible()) void fillPane(path);
     }
   });
 }
@@ -5132,6 +5363,7 @@ ui.zoom.addEventListener('change', () => {
 
 ui.zoomIn.addEventListener('click', () => stepZoom(1));
 ui.zoomOut.addEventListener('click', () => stepZoom(-1));
+wireMenuWheel();
 ui.copyPath.addEventListener('click', () => void copyFileText('path'));
 ui.copyName.addEventListener('click', () => void copyFileText('name'));
 ui.mode.addEventListener('click', (event) => cycleMode(event.shiftKey || event.altKey));
@@ -5294,48 +5526,7 @@ ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
 ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
-if (ui.splitView) {
-  ui.splitView.addEventListener('change', () => void setSplitView(ui.splitView.value));
-}
-if (ui.splitTabSelect) {
-  ui.splitTabSelect.addEventListener('change', () => {
-    state.splitPath = ui.splitTabSelect.value || null;
-    saveSession();
-    void renderSplitMarkdown();
-  });
-}
-if (ui.splitClose) {
-  ui.splitClose.addEventListener('click', () => void setSplitView('off'));
-}
-if (ui.splitDivider) {
-  ui.splitDivider.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0 || state.splitView === 'off') return;
-    event.preventDefault();
-    ui.splitDivider.classList.add('dragging');
-    ui.splitDivider.setPointerCapture(event.pointerId);
-    const onMove = (moveEvent) => {
-      const rect = ui.stage.getBoundingClientRect();
-      const availWidth = Math.max(1, rect.width - (state.reviewOpen ? REVIEW_PANE_WIDTH : 0));
-      const ratio =
-        state.splitView === 'right'
-          ? (moveEvent.clientX - rect.left) / availWidth
-          : (moveEvent.clientY - rect.top) / Math.max(1, rect.height);
-      const clamped = Math.min(0.82, Math.max(0.18, ratio));
-      state.splitRatio = clamped;
-      ui.stage.style.setProperty('--split-ratio', String(Number(clamped.toFixed(3))));
-    };
-    const onUp = () => {
-      ui.splitDivider.classList.remove('dragging');
-      ui.splitDivider.removeEventListener('pointermove', onMove);
-      ui.splitDivider.removeEventListener('pointerup', onUp);
-      ui.splitDivider.removeEventListener('pointercancel', onUp);
-      saveSession();
-    };
-    ui.splitDivider.addEventListener('pointermove', onMove);
-    ui.splitDivider.addEventListener('pointerup', onUp);
-    ui.splitDivider.addEventListener('pointercancel', onUp);
-  });
-}
+ui.splitView?.addEventListener('change', () => void setSplitView(ui.splitView.value));
 // A figure that arrives after the cut changes its block's height.
 ui.markdown.addEventListener('load', () => {
   schedulePaginate();
@@ -5371,6 +5562,17 @@ ui.reviewStatusFilter.addEventListener('change', () => {
   renderReviewList();
 });
 ui.noteAction.addEventListener('change', updateNotePlaceholder);
+// Clicking a button keeps the caret in the note, so Enter saves right after.
+ui.noteRequests?.addEventListener('mousedown', (event) => {
+  if (event.target.closest?.('.request-chip')) event.preventDefault();
+});
+ui.noteRequests?.addEventListener('click', (event) => {
+  const chip = event.target.closest?.('.request-chip');
+  if (!chip) return;
+  state.pendingRequests = toggleRequest(state.pendingRequests || [], chip.dataset.request);
+  renderNoteRequests();
+  ui.noteText.focus({ preventScroll: true });
+});
 if (ui.noteInsert) {
   ui.noteInsert.addEventListener('click', () => void insertNoteParenthetical());
 }
@@ -5561,38 +5763,6 @@ ui.markdown.addEventListener('click', (event) => {
     selectFigureForResize(image);
   }
 });
-if (ui.markdownSplit) {
-  ui.markdownSplit.addEventListener('click', (event) => {
-    const image = event.target instanceof Element ? event.target.closest('img[data-doc]') : null;
-    if (image && event.button === 0 && window.getSelection()?.isCollapsed && (event.detail === 2 || event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void openPath(image.dataset.doc);
-      return;
-    }
-    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
-    if (!anchor) return;
-    event.preventDefault();
-    const href = anchor.getAttribute('href') || '';
-    if (href.startsWith('#')) {
-      markdownFragmentTarget(href.slice(1), ui.markdownSplit)?.scrollIntoView({ block: 'start' });
-      return;
-    }
-    if (/^https?:/i.test(href)) {
-      void invoke('open_link', { url: href }).catch((error) => {
-        setStatus(String(error), { error: true });
-      });
-      return;
-    }
-    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
-      return;
-    }
-    const target = siblingPath(href, state.splitPath);
-    if (target) {
-      void openPath(target);
-    }
-  });
-}
-
 // A link in a markdown file must not leave the page. A relative one —
 // `[notes](other.md)` — resolves against the app origin, which the navigation
 // guard trusts, so following it would replace the viewer with a blank 404 and
@@ -5852,6 +6022,20 @@ window.addEventListener('keydown', (event) => {
     ui.open.click();
     return;
   }
+  // Panes: Ctrl+Shift+D splits right, Ctrl+Shift+E splits down, Ctrl+Alt+arrows move between them.
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && (key === 'd' || key === 'e')) {
+    event.preventDefault();
+    void splitPane(key === 'd' ? 'right' : 'bottom');
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && panes.active) {
+    const paneKeys = { arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down' };
+    if (paneKeys[key]) {
+      event.preventDefault();
+      void movePaneFocus(paneKeys[key]);
+      return;
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
     const dockKeys = {
       arrowleft: 'left',
@@ -5908,12 +6092,24 @@ window.addEventListener('keydown', (event) => {
   // Ctrl+B (bold), Ctrl+I (italic), Ctrl+S (strike), Ctrl+U (underline) and
   // Ctrl+E (edit text) edit a Markdown selection in place. Checked before
   // Ctrl+U's raw-view toggle so selecting text and pressing Ctrl+U underlines.
-  if (!typing && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
-      (key === 'b' || key === 'i' || key === 's' || key === 'u' || key === 'e') && markdownEditTarget()) {
+  // A selection in rendered Markdown always means "format this": when the edit
+  // cannot be made, the status line says why, rather than Ctrl+U falling
+  // through to the raw view and hiding the text that was just selected.
+  const formatKey = key === 'b' || key === 'i' || key === 's' || key === 'u' || key === 'e';
+  const selectedPane = formatKey && !typing && (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey && !event.altKey && !state.markdownRaw ? renderedMarkdownSelection() : null;
+  if (selectedPane) {
     event.preventDefault();
     const formatByKey = { b: 'bold', i: 'italic', s: 'strike', u: 'underline' };
-    if (key === 'e') openEditBox();
-    else void applyDirectFormat(formatByKey[key]);
+    if (selectedPane === 'split') {
+      setStatus('Formatting edits the file in the main pane: open this file there to format it', { error: true });
+    } else if (!directEditsEnabled()) {
+      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+    } else if (key === 'e') {
+      openEditBox();
+    } else {
+      void applyDirectFormat(formatByKey[key]);
+    }
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === 'u') {
@@ -6137,9 +6333,9 @@ listen('reviews-changed', async (event) => {
 
 listen('file-changed', async (event) => {
   const { path, kind, revision } = event.payload || {};
-  if (state.splitView !== 'off' && path && path === state.splitPath && path !== state.file?.path) {
+  if (panes.active && path && path !== state.file?.path && panes.visible().includes(path)) {
     if (kind !== 'missing' && document.visibilityState !== 'hidden') {
-      await renderSplitMarkdown(revision);
+      await fillPane(path, revision);
     }
     return;
   }
@@ -6239,6 +6435,11 @@ try {
   applyUiFont(localStorage.getItem('pdf-next.ui-font'), { persist: false });
 } catch {
   applyUiFont('system', { persist: false });
+}
+try {
+  applyCodeFont(localStorage.getItem('pdf-next.code-font'), { persist: false });
+} catch {
+  applyCodeFont('system', { persist: false });
 }
 applyFigureSettings();
 

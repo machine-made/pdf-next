@@ -58,6 +58,14 @@ that survives a build deleting and recreating the file mid-compile.
   loaded document — only the file you are looking at is in memory, so six open papers cost what
   one costs, and a background tab is read fresh from disk when you come back to it rather than
   going stale. Switching costs a re-parse, against a worker that is already warm.
+- **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
+  splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
+  drag a tab to another pane, to a pane's edge to split it again, or onto a pane's tab strip to
+  merge; drag the line between panes to resize. `Ctrl+Alt+←/→/↑/↓` moves between panes. Any file
+  kind works in any pane. The pane you click is the live one, with reviews, editing, find and
+  zoom; the others keep a copy of where you left them, and a Markdown copy follows its file as
+  it changes. The layout is saved with the session; with one pane left, the plain tab strip
+  comes back.
 - **Walk a folder of figures.** With a single file open, `←` / `→` (or the toolbar arrows) step
   through every image next to it, in reading order — `fig2` before `fig10`, not after it. The
   toolbar shows your position, and the window stays where it is instead of resizing on every
@@ -86,7 +94,7 @@ that survives a build deleting and recreating the file mid-compile.
   or exceeds the rendering limits is shown as escaped TeX source; an unknown command is marked in
   red and the rest of the equation still renders. A `\eqref` to an equation further down the file
   shows `(??)`.
-- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono), the text size (14 px to 48 px) and the column width (a number of pixels, or 100%; 720 px by default); each choice is remembered. Zoom reflows the text rather than scaling it.
+- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono, and the five Monaspace faces Neon, Argon, Xenon, Radon and Krypton), the text size (14 px to 48 px) and the column width (a number of pixels, or 100%; 720 px by default); each choice is remembered. Zoom reflows the text rather than scaling it. The mouse wheel over any toolbar menu (zoom, page view, font, size, width, panes, reload interval) steps through its choices without opening it; over the zoom menu or its buttons it zooms.
 - **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
@@ -137,7 +145,7 @@ that survives a build deleting and recreating the file mid-compile.
   figures that give no size: natural size, the column width, 75% or 50% of it; no height limit,
   the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
   select it, and drag its corner to resize it (the width is written as `{width=N%}`); double-click, or Ctrl+click, to open it full size in a tab of its own, with zoom and the folder walk.
-- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), how often to check for changes, and About, with the version and the update check.
+- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), the code font for code blocks, inline code and the raw view (System mono or a Monaspace face), how often to check for changes, and About, with the version and the update check.
 - **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
 - **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` deletes a selection in rendered Markdown (undo with `Ctrl+Z`), otherwise moves the shown file to the trash after confirmation, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
@@ -431,6 +439,24 @@ inline gloss; `comment` is an optional suggestion), `bold`, `italic` (format the
 source) and `delete` (remove the passage). For the actions other than `improve`, `comment` is an
 optional note or suggestion.
 
+The review card also has buttons, clicked instead of typed. They are saved in `requests` as
+`group:name` words, and the agent view spells each out as an instruction:
+
+| Row | Words | The agent reads |
+| --- | --- | --- |
+| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | explain why, explain how, give more information, give an example, give the source, show the derivation |
+| Change | `change:simplify`, `change:shorten`, `change:expand`, `change:check`, `change:figure` | simplify, shorten, expand, check facts, numbers and equations, add or improve a figure |
+| Scope (one) | `scope:phrase`, `scope:paragraph`, `scope:section` | how much of the text the request covers |
+| Tone (one) | `tone:formal`, `tone:plain`, `tone:jfm` | more formal, plainer, Journal of Fluid Mechanics style |
+
+Buttons with no note save as action `request`; with another action they refine it. An Ask is a
+question to the agent: the answer goes in the done note (`pdf-next reviews done … "<answer>"`),
+and the text changes only when the item also asks for a change. In the agent view:
+
+```text
+r4 L12 request: explain why; explain how; scope: the whole paragraph | "the residual check passes"
+```
+
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
 hyphenation, equations and included files can change how text appears. Check the surrounding
 source before editing; an equation symbol needs its equation context and position, so do not
@@ -593,6 +619,8 @@ file that records its source and checksum.
 | Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
 | [highlight.js](https://highlightjs.org) | 11.12.0 | Colours code blocks: Bash, C, C++, CMake, diff, Fortran, INI, JavaScript, JSON, Julia, LaTeX, Makefile, MATLAB, Python, Rust, shell, YAML. | BSD 3-Clause |
 | [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
+| [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon, Xenon, Radon and Krypton: optional Markdown and code fonts. | SIL OFL 1.1 |
+| [dockview](https://github.com/dockview/dockview) | 8.8.0 | The pane layout: tiles with tabs, split and moved by dragging. | MIT |
 
 **PDF**
 
@@ -642,5 +670,7 @@ pdf-next is not affiliated with or endorsed by Mozilla. PDF.js is © Mozilla and
 contributors, under the Apache License 2.0.
 
 The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https://github.com/machine-made/type) under the SIL Open Font License 1.1; their licences are in `src/vendor/machine-made-type/`.
+
+The Monaspace fonts are © 2023 GitHub, from [githubnext/monaspace](https://github.com/githubnext/monaspace) under the SIL Open Font License 1.1; the licence is in `src/vendor/monaspace/OFL.txt`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.

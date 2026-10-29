@@ -6,6 +6,7 @@ import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
+import { REQUEST_GROUPS, REVIEW_REQUESTS, reviewRequests, requestsLabel, toggleRequest } from '../src/review-requests.mjs';
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
@@ -210,7 +211,7 @@ function appFunction(name, next, context, source = app) {
   const width = menu('width', ['narrow', 'normal', 'wide', 'full'], 'normal');
   const ui = { markdown: { dataset: {} } };
   const localStorage = { setItem: (key, value) => stored.set(key, value) };
-  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage });
+  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage, paneArticles: () => [], paneMarkdownStages: () => [] });
   setStyle(font, 'sans');
   assert.equal(ui.markdown.dataset.font, 'sans', 'The chosen face reaches the article.');
   assert.equal(font.value, 'sans', 'The menu shows the chosen face.');
@@ -225,7 +226,7 @@ function appFunction(name, next, context, source = app) {
   assert.equal(stored.get('pdf-next.md-size'), '22', 'The size is remembered.');
   assert.deepEqual([ui.markdown.dataset.size, ui.markdown.dataset.width], ['22', 'wide'], 'Size and width reach the article.');
   const failing = { setItem() { throw new Error('storage off'); } };
-  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing })(font, 'mono');
+  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing, paneArticles: () => [], paneMarkdownStages: () => [] })(font, 'mono');
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
 }
 
@@ -605,7 +606,7 @@ for (const kind of ['markdown', 'pdf']) {
       document: { activeElement: null, createElement: element, createTextNode: (text) => text },
       draftsForPath: () => new Map(), pendingComments: new Map(), commentDraftKey: () => 'k',
       reviewStateKey: (path, id) => `${path}\u0000${id}`, reviewTint: () => 1, makeReviewBadge: element,
-      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS,
+      formatSelection: () => 'a.md:1', reviewAction, reviewStatus, madeOnOlderVersion, ACTION_LABELS, reviewRequests, requestsLabel,
       scheduleCommentSave() {}, flushCommentSave() {}, discardReviewDraft() {}, saveDraftAfterConflict() {},
       patchReview() {}, deleteReview() {}, selectReview() {}, jumpToReview() {}, reattachReview() {}, setStatus() {},
       reviewRowById: () => null, HTMLTextAreaElement: class {},
@@ -966,6 +967,7 @@ for (const pauseAt of ['save', 'close']) {
   const pause = () => new Promise((resolve) => { finish = resolve; started(); });
   const close = appFunction('closeAll', 'function cycleTab(', {
     state,
+    panes: { active: false },
     noteSaveInFlight: false,
     flushCommentSave: pauseAt === 'save' ? pause : async () => {},
     invoke: pauseAt === 'close' ? pause : async () => {
@@ -1113,7 +1115,7 @@ for (const pauseAt of ['save', 'close']) {
   let applied = false;
   let appended;
   let statusMessage = '';
-  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS,
+  const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS, reviewRequests,
     state,
     noteSaveInFlight: false,
     structuredClone: (value) => JSON.parse(JSON.stringify(value)),
@@ -1976,6 +1978,12 @@ for (const file of [
   'machine-made-type/OFL-Weft.txt',
   'machine-made-type/OFL-Sans.txt',
   'machine-made-type/OFL-Heddle.txt',
+  'monaspace/MonaspaceNeon-Variable.woff2',
+  'monaspace/MonaspaceArgon-Variable.woff2',
+  'monaspace/MonaspaceXenon-Variable.woff2',
+  'monaspace/MonaspaceRadon-Variable.woff2',
+  'monaspace/MonaspaceKrypton-Variable.woff2',
+  'monaspace/OFL.txt',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -3110,6 +3118,68 @@ for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machi
   assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "${family}";`), `${family} has a font face.`);
 }
 assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
+// Monaspace: each face is declared, offered for the body text and for code.
+for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
+  const value = `monaspace-${face.toLowerCase()}`;
+  assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "Monaspace ${face}";`), `Monaspace ${face} has a font face.`);
+  assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "Monaspace ${face}"`));
+  assert.match(styles, new RegExp(`:root\\[data-code-font="${value}"\\] \\{ --code-font: "Monaspace ${face}"`));
+  assert.equal((page.match(new RegExp(`<option value="${value}">Monaspace ${face}</option>`, 'g')) || []).length, 2,
+    `Monaspace ${face} is in the Markdown font menu and the code font menu.`);
+}
+assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).every((line) => line.includes('--code-font:')),
+  'Every monospace stack goes through --code-font.');
+
+// The Markdown font menu is clustered: TeX, System, Monaspace, then machine-made.
+{
+  const menu = page.slice(page.indexOf('<select id="mdFont"'), page.indexOf('</select>', page.indexOf('<select id="mdFont"')));
+  const groups = [...menu.matchAll(/<optgroup label="([^"]+)">/g)].map((m) => m[1]);
+  assert.deepEqual(groups, ['TeX', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+}
+
+// Review card buttons: the JS list and the Rust list are the same words, and a
+// one-choice group (scope, tone) swaps rather than stacks.
+{
+  const rust = await readFile('src-tauri/src/main.rs', 'utf8');
+  const block = rust.slice(rust.indexOf('const REVIEW_REQUESTS'), rust.indexOf('];', rust.indexOf('const REVIEW_REQUESTS')));
+  assert.deepEqual([...block.matchAll(/\("([a-z]+:[a-z]+)",/g)].map((m) => m[1]), REVIEW_REQUESTS, 'Rust and JS requests match.');
+  let picked = toggleRequest([], 'scope:phrase');
+  picked = toggleRequest(picked, 'ask:why');
+  picked = toggleRequest(picked, 'scope:section');
+  assert.deepEqual(picked, ['ask:why', 'scope:section'], 'Scope takes one choice, kept in menu order.');
+  assert.deepEqual(toggleRequest(picked, 'ask:why'), ['scope:section'], 'A second click turns a button off.');
+  assert.deepEqual(reviewRequests({ requests: ['tone:jfm', 'ask:nope', 'ask:how'] }), ['ask:how', 'tone:jfm'], 'Unknown words are left out of the view.');
+  assert.equal(requestsLabel(['ask:why', 'scope:paragraph']), 'Why? · Paragraph');
+  assert.equal(REQUEST_GROUPS.map((g) => g.group).join(','), 'ask,change,scope,tone');
+  assert.match(app, /chosenAction === 'improve' && requests\.length && !comment \? 'request'/, 'Buttons alone save a request.');
+}
+
+// Panes: dockview is vendored and loads before the app; its tabs drag with
+// pointer events (HTML5 drops never arrive on Windows, where the window takes
+// file drops); every split, merge and move path is wired.
+await assert.doesNotReject(access('src/vendor/dockview/dockview-core.min.js'), 'dockview must be vendored.');
+await assert.doesNotReject(access('src/vendor/dockview/LICENSE.md'), 'dockview licence must be vendored.');
+assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.js"><\/script>\s*<script type="module" src="\.\/smoke\.mjs">/,
+  'dockview loads before the modules.');
+{
+  const panesSource = await readFile('src/panes.mjs', 'utf8');
+  assert.match(panesSource, /dndStrategy: 'pointer'/, 'Tabs drag with pointer events.');
+  assert.match(app, /key === 'd' \|\| key === 'e'\)\) \{\s*event\.preventDefault\(\);\s*void splitPane\(key === 'd' \? 'right' : 'bottom'\)/, 'Ctrl+Shift+D and E split.');
+  assert.match(app, /function activateTab[\s\S]*?freezeLivePane\(\);[\s\S]*?if \(panes\.active\) panes\.mount\(tab\.path\)/, 'Switching tabs leaves a copy and moves the live view.');
+  assert.match(app, /panes\.visible\(\)\.includes\(path\)\) \{[\s\S]*?await fillPane\(path, revision\)/, 'A copy follows its file.');
+  assert.ok(!/markdownStageSplit|splitDivider/.test(page), 'The old split view is gone.');
+}
+
+// The wheel steps through the toolbar menus and zooms over the zoom controls.
+assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select'/,
+  'Toolbar and Settings menus take the wheel.');
+assert.match(app, /control === ui\.zoom \|\| control === ui\.zoomIn \|\| control === ui\.zoomOut\) \{\s*stepZoom\(direction\)/,
+  'The wheel over zoom zooms through the preset ladder.');
+
+// Ctrl+U with text selected in rendered Markdown formats it (or says why it
+// cannot) and never falls through to the raw view.
+assert.match(app, /const selectedPane = formatKey[\s\S]*?renderedMarkdownSelection\(\)[\s\S]*?if \(selectedPane\) \{[\s\S]*?return;\s*\}\s*if \(\(event\.ctrlKey \|\| event\.metaKey\) && key === 'u'\)/,
+  'A Markdown selection is handled before Ctrl+U toggles the raw view.');
 assert.match(page, /<strong>pdf-next<\/strong> by machine-made/, 'About names the maker.');
 assert.match(page, /<summary>Details: what pdf-next is built with<\/summary>/, 'About lists what pdf-next is built with.');
 assert.ok(page.includes(`PDF.js ${vendored}`),

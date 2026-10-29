@@ -66,11 +66,9 @@ struct WatchState {
     images: Vec<(PathBuf, Option<Stamp>)>,
     /// Where the next watcher tick starts in `images`.
     image_cursor: usize,
-    /// Optional secondary Markdown file shown in split view.
-    secondary_path: Option<PathBuf>,
-    secondary_modified: Option<SystemTime>,
-    secondary_len: u64,
-    secondary_missing: bool,
+    /// Files shown in panes other than the live one, watched so their
+    /// copies stay current.
+    secondaries: Vec<Secondary>,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -85,6 +83,18 @@ struct Watched(Mutex<WatchState>);
 /// Bumped on every detected change so the frontend can bust the webview's
 /// cache for a path that never changes.
 static REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// A file shown in a pane that is not live, with its last `stat`.
+#[derive(Clone, Debug)]
+struct Secondary {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    missing: bool,
+}
+
+/// At most this many panes are watched besides the live one.
+const MAX_SECONDARIES: usize = 8;
 
 #[derive(Clone, Serialize)]
 struct FileInfo {
@@ -361,27 +371,36 @@ fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.path = None;
     state.images.clear();
-    state.secondary_path = None;
+    state.secondaries.clear();
     Ok(())
 }
 
 #[tauri::command]
-fn watch_secondary(path: Option<String>, watched: State<'_, Watched>) -> Result<(), String> {
-    let Some(raw) = path.filter(|s| !s.trim().is_empty()) else {
-        let mut state = watched.0.lock().map_err(|error| error.to_string())?;
-        state.secondary_path = None;
-        return Ok(());
-    };
-    let canonical = std::fs::canonicalize(PathBuf::from(raw)).map_err(|error| error.to_string())?;
-    let (modified, len) = stat(&canonical).unwrap_or((None, 0));
+fn watch_secondary(paths: Vec<String>, watched: State<'_, Watched>) -> Result<(), String> {
+    let mut list = Vec::new();
+    for raw in paths
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .take(MAX_SECONDARIES)
+    {
+        let canonical =
+            std::fs::canonicalize(PathBuf::from(raw)).map_err(|error| error.to_string())?;
+        if list.iter().any(|known: &Secondary| known.path == canonical) {
+            continue;
+        }
+        let (modified, len) = stat(&canonical).unwrap_or((None, 0));
+        list.push(Secondary {
+            path: canonical,
+            modified,
+            len,
+            missing: false,
+        });
+    }
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
-    if !state.allowed.contains(&canonical) {
+    if list.iter().any(|item| !state.allowed.contains(&item.path)) {
         return Err("file was never opened".into());
     }
-    state.secondary_path = Some(canonical);
-    state.secondary_modified = modified;
-    state.secondary_len = len;
-    state.secondary_missing = false;
+    state.secondaries = list;
     Ok(())
 }
 
@@ -3247,48 +3266,57 @@ fn spawn_watcher(app: AppHandle) {
 }
 
 fn check_secondary_watched(app: &AppHandle, watched: &Watched) {
-    let snapshot = {
+    let list = {
         let Ok(state) = watched.0.lock() else {
             return;
         };
-        let Some(sec_path) = state.secondary_path.clone() else {
-            return;
-        };
-        if state.path.as_deref() == Some(sec_path.as_path()) {
-            return;
-        }
-        (
-            sec_path,
-            state.secondary_modified,
-            state.secondary_len,
-            state.secondary_missing,
-        )
+        state
+            .secondaries
+            .iter()
+            .filter(|item| state.path.as_deref() != Some(item.path.as_path()))
+            .cloned()
+            .collect::<Vec<_>>()
     };
-    let (sec_path, recorded_modified, recorded_len, missing) = snapshot;
-    match stat(&sec_path) {
+    for item in list {
+        check_one_secondary(app, watched, item);
+    }
+}
+
+fn check_one_secondary(app: &AppHandle, watched: &Watched, item: Secondary) {
+    let update = |change: &dyn Fn(&mut Secondary)| -> bool {
+        let Ok(mut state) = watched.0.lock() else {
+            return false;
+        };
+        match state
+            .secondaries
+            .iter_mut()
+            .find(|known| known.path == item.path)
+        {
+            Some(known) => {
+                change(known);
+                true
+            }
+            None => false,
+        }
+    };
+    match stat(&item.path) {
         Some((modified, len)) => {
-            let changed = modified != recorded_modified || len != recorded_len;
-            let reappeared = missing;
-            if (changed || reappeared) && !is_complete(&sec_path) {
+            let changed = modified != item.modified || len != item.len;
+            let reappeared = item.missing;
+            if (changed || reappeared) && !is_complete(&item.path) {
                 return;
             }
-            {
-                let Ok(mut state) = watched.0.lock() else {
-                    return;
-                };
-                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
-                    return;
-                }
-                state.secondary_modified = modified;
-                state.secondary_len = len;
-                state.secondary_missing = false;
-            }
-            if changed || reappeared {
+            let still_watched = update(&|known| {
+                known.modified = modified;
+                known.len = len;
+                known.missing = false;
+            });
+            if still_watched && (changed || reappeared) {
                 let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = app.emit(
                     "file-changed",
                     WatchEvent {
-                        path: display_path(&sec_path),
+                        path: display_path(&item.path),
                         kind: if reappeared { "restored" } else { "changed" },
                         revision,
                     },
@@ -3296,17 +3324,8 @@ fn check_secondary_watched(app: &AppHandle, watched: &Watched) {
             }
         }
         None => {
-            if missing {
-                return;
-            }
-            {
-                let Ok(mut state) = watched.0.lock() else {
-                    return;
-                };
-                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
-                    return;
-                }
-                state.secondary_missing = true;
+            if !item.missing {
+                update(&|known| known.missing = true);
             }
         }
     }
@@ -3436,6 +3455,10 @@ struct Review {
     source: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     build: Option<serde_json::Value>,
+    /// The buttons clicked on the review card, as `group:name`
+    /// (REVIEW_REQUESTS). The agent view spells each out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requests: Vec<String>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -3485,11 +3508,67 @@ fn review_basename(name: &str) -> bool {
 /// What a review asks of the agent. Improve carries its instruction in
 /// `comment`; the others are complete on their own, a comment optional.
 const REVIEW_ACTIONS: &[&str] = &[
-    "improve", "polish", "clarify", "shorten", "expand", "check", "define", "gloss", "bold",
-    "italic", "delete",
+    "request", "improve", "polish", "clarify", "shorten", "expand", "check", "define", "gloss",
+    "bold", "italic", "delete",
 ];
 
+/// The review card's buttons, with what each asks of the agent. Same list as
+/// src/review-requests.mjs. `scope:*` and `tone:*` take one choice each.
+const REVIEW_REQUESTS: &[(&str, &str)] = &[
+    ("ask:why", "explain why"),
+    ("ask:how", "explain how"),
+    ("ask:more", "give more information"),
+    ("ask:example", "give an example"),
+    ("ask:source", "give the source (reference or citation)"),
+    ("ask:derive", "show the derivation"),
+    ("change:simplify", "simplify"),
+    ("change:shorten", "shorten"),
+    ("change:expand", "expand"),
+    ("change:check", "check facts, numbers and equations"),
+    ("change:figure", "add or improve a figure"),
+    ("scope:phrase", "scope: this phrase only"),
+    ("scope:paragraph", "scope: the whole paragraph"),
+    ("scope:section", "scope: the whole section"),
+    ("tone:formal", "tone: more formal"),
+    ("tone:plain", "tone: plainer"),
+    ("tone:jfm", "tone: Journal of Fluid Mechanics style"),
+];
+
+fn validate_requests(requests: &[String]) -> Result<(), String> {
+    if requests.len() > REVIEW_REQUESTS.len() {
+        return Err("too many requests".into());
+    }
+    for (index, request) in requests.iter().enumerate() {
+        if !REVIEW_REQUESTS.iter().any(|(name, _)| name == request) {
+            return Err(format!("unknown request {request:?}"));
+        }
+        if requests[..index].contains(request) {
+            return Err(format!("request {request} is repeated"));
+        }
+    }
+    for group in ["scope:", "tone:"] {
+        if requests.iter().filter(|r| r.starts_with(group)).count() > 1 {
+            return Err(format!("only one {} request", group.trim_end_matches(':')));
+        }
+    }
+    Ok(())
+}
+
+/// What the requests ask, in the agent view's words: "explain why; shorten; scope: …".
+fn requests_text(requests: &[String]) -> String {
+    REVIEW_REQUESTS
+        .iter()
+        .filter(|(name, _)| requests.iter().any(|r| r == name))
+        .map(|(_, text)| *text)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn validate_review(review: &Review) -> Result<(), String> {
+    validate_requests(&review.requests)?;
+    if review.action == "request" && review.requests.is_empty() {
+        return Err("a request review needs at least one request".into());
+    }
     if review.quote.len() > 20_000 {
         return Err("quote is too long (max 20 000 chars)".into());
     }
@@ -4095,6 +4174,16 @@ fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
         count("applied"),
         count("resolved"),
     );
+    if store
+        .reviews
+        .iter()
+        .any(|r| r.status == "open" && r.requests.iter().any(|q| q.starts_with("ask:")))
+    {
+        out.push_str(
+            ". Questions (explain why, explain how, more information, example, source, derivation): \
+             write the answer as the done note, and change the text only when the item also asks for a change",
+        );
+    }
     let unread = inbox_unread(inbox);
     if !unread.is_empty() {
         let list: Vec<String> = unread.iter().map(usize::to_string).collect();
@@ -4145,15 +4234,24 @@ fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
         } else {
             String::new()
         };
+        let asked = requests_text(&review.requests);
         let note = match (review.action.as_str(), comment.is_empty()) {
+            ("request", true) => asked.clone(),
+            ("request", false) => format!("{asked}; note \"{comment}\""),
             ("define", true) => "add parenthetical definition () after term".to_string(),
             ("define", false) => {
                 format!("suggestion \"{comment}\" (parenthetical definition () after term)")
             }
             ("gloss", true) => "add brief gloss in text".to_string(),
             ("gloss", false) => format!("suggestion \"{comment}\" (brief gloss in text)"),
+            (_, true) if !asked.is_empty() => asked.clone(),
             (_, true) => "(no comment)".to_string(),
             (_, false) => comment,
+        };
+        let note = if review.action != "request" && !asked.is_empty() && !note.contains(&asked) {
+            format!("{note} ({asked})")
+        } else {
+            note
         };
         out.push_str(&format!(
             "{} {file}{location} {}: {} | \"{}\"\n",
@@ -7407,6 +7505,7 @@ mod tests {
             anchor: None,
             source: None,
             build: None,
+            requests: Vec::new(),
             extra: serde_json::Map::new(),
         }
     }
@@ -7431,6 +7530,7 @@ mod tests {
             anchor: None,
             source: None,
             build: None,
+            requests: Vec::new(),
             extra: serde_json::Map::new(),
         }
     }
@@ -8087,6 +8187,74 @@ mod tests {
         let mut review = markdown_review();
         review.action = "rewrite-everything".into();
         assert!(super::validate_review(&review).is_err());
+    }
+
+    #[test]
+    fn review_requests_are_checked_and_spelled_out_for_the_agent() {
+        let mut ok = markdown_review();
+        ok.action = "request".into();
+        ok.comment = String::new();
+        ok.requests = vec!["ask:why".into(), "ask:how".into(), "scope:paragraph".into()];
+        assert!(super::validate_review(&ok).is_ok());
+
+        let mut empty = ok.clone();
+        empty.requests.clear();
+        assert!(
+            super::validate_review(&empty).is_err(),
+            "a request needs a button"
+        );
+        let mut unknown = ok.clone();
+        unknown.requests.push("ask:vibes".into());
+        assert!(super::validate_review(&unknown).is_err());
+        let mut twice = ok.clone();
+        twice.requests.push("ask:why".into());
+        assert!(super::validate_review(&twice).is_err());
+        let mut two_scopes = ok.clone();
+        two_scopes.requests.push("scope:section".into());
+        assert!(super::validate_review(&two_scopes).is_err());
+
+        let mut r1 = ok;
+        r1.id = "r1".into();
+        let mut r2 = markdown_review();
+        r2.id = "r2".into();
+        r2.action = "request".into();
+        r2.comment = "keep the equation".into();
+        r2.requests = vec!["change:shorten".into(), "tone:jfm".into()];
+        let mut r3 = markdown_review();
+        r3.id = "r3".into();
+        r3.action = "polish".into();
+        r3.comment = String::new();
+        r3.requests = vec!["scope:section".into()];
+        let store = super::ReviewFile {
+            format: 3,
+            revision: 1,
+            next_id: 4,
+            document: None,
+            reviews: vec![r1, r2, r3],
+            migration_backup: None,
+            extra: serde_json::Map::new(),
+        };
+        let view = super::agent_view(&store, "notes.md", "");
+        assert!(view.contains("write the answer as the done note"), "{view}");
+        assert!(
+            view.contains(
+                "r1 L12-18 request: explain why; explain how; scope: the whole paragraph | \""
+            ),
+            "{view}"
+        );
+        assert!(
+            view.contains("r2 L12-18 request: shorten; tone: Journal of Fluid Mechanics style; note \"keep the equation\" |"),
+            "{view}"
+        );
+        assert!(
+            view.contains("r3 L12-18 polish: scope: the whole section |"),
+            "{view}"
+        );
+
+        let json = serde_json::to_value(&store.reviews[0]).unwrap();
+        assert_eq!(json["requests"][0], "ask:why");
+        let plain = serde_json::to_value(markdown_review()).unwrap();
+        assert!(plain.get("requests").is_none(), "no requests, no field");
     }
 
     #[test]
