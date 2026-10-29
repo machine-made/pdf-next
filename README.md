@@ -565,6 +565,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev build-essential curl wget file \
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml   # the Rust side
 node tools/check_frontend.mjs                     # the frontend contracts
+node tests/browser/run.mjs                        # the page in Chromium, with axe-core
 bun run build && node tools/smoke.mjs             # open every fixture, for real
 ```
 
@@ -577,7 +578,13 @@ with `PDF_NEXT_SMOKE=1` in the environment. In that mode the app answers for its
 for a page to be drawn with pixels in it, then reports through a Tauri command and exits on
 that answer, so a window that opens and stays empty fails the run instead of passing it.
 `PDF_NEXT_SMOKE_TIMEOUT` bounds a launch that never reports; `PDF_NEXT_BIN` names a binary
-somewhere else.
+somewhere else. It also prints how long the first page took to draw and how long a changed file
+took to reload, and fails when either is over its budget for the platform.
+
+`tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend: panes,
+the review card, the toolbar and the editing keys, plus axe-core accessibility checks (contrast,
+labels, keyboard reach) on the main views. Run `bun install` and `bunx playwright install
+chromium` once first.
 
 The fixtures are built by `python3 tests/make_fixtures.py`, which writes the same bytes on
 every machine, so a change to them is a change someone made.
@@ -638,6 +645,7 @@ file that records its source and checksum.
 | [Tauri CLI](https://tauri.app) 2.11.4, run with [Bun](https://bun.sh) | Builds the app and its installers. | MIT / Apache-2.0 |
 | NSIS (Windows), DMG (macOS), deb, rpm and AppImage (Linux) | The installers Tauri makes. | zlib / various |
 | Node.js | Runs `tools/check_frontend.mjs` and the smoke test. | MIT |
+| [Playwright](https://playwright.dev) 1.63 and [axe-core](https://github.com/dequelabs/axe-core) 4.14 | Browser tests and accessibility checks; test-only, not shipped. | Apache-2.0 / MPL-2.0 |
 
 The page itself is plain JavaScript modules, HTML and CSS: no framework and no build step.
 
