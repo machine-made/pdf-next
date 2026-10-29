@@ -322,3 +322,19 @@ jobs:
       tag: ${{ github.ref_name }}
     secrets:
       APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+
+  # The notes above come from the tag's CHANGELOG.md; this sets every release,
+  # this one included, to main's, which is what release-notes.yml keeps them at.
+  release-notes:
+    needs: publish
+    if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/release-notes.yml
+
+  # Installs what was just published, as a user would. A failure here leaves
+  # the release published and fails this run with what broke.
+  install-check:
+    needs: [publish, apt]
+    if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/install-check.yml
+    with:
+      tag: ${{ github.ref_name }}

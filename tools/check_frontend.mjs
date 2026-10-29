@@ -37,6 +37,25 @@ assert.match(releaseWorkflow, /run: node tools\/check_frontend\.mjs/,
   'Release builds must run frontend regressions before publishing.');
 assert.match(releaseWorkflow, /run: cargo test --locked/,
   'Release builds must run Rust regressions before publishing.');
+for (const [job, workflow] of [['release-notes', 'release-notes'], ['install-check', 'install-check']]) {
+  assert.match(releaseWorkflow, new RegExp(`\\n  ${job}:\\n    needs: [^\\n]*publish[^\\n]*\\n    if: always\\(\\) && needs\\.publish\\.result == 'success'[^\\n]*\\n    uses: \\./\\.github/workflows/${workflow}\\.yml`),
+    `release.yml runs ${workflow}.yml once the release is published.`);
+}
+assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'The install check waits for apt.');
+{
+  const notesWorkflow = await readFile('.github/workflows/release-notes.yml', 'utf8');
+  assert.match(notesWorkflow, /paths: \[CHANGELOG\.md,/, 'Release notes follow CHANGELOG.md changes on main.');
+  assert.match(notesWorkflow, /run: node tools\/sync_release_notes\.mjs\n/, 'Release notes are synced by tools/sync_release_notes.mjs.');
+  const sync = await readFile('tools/sync_release_notes.mjs', 'utf8');
+  assert.match(sync, /'tools\/release_notes\.mjs', tag/, 'Synced notes are exactly what release_notes.mjs prints.');
+  assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
+  assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
+  const winget = await readFile('.github/workflows/winget.yml', 'utf8');
+  assert.match(winget, /Tee-Object -FilePath \$log/, 'winget keeps what wingetcreate printed.');
+  assert.match(winget, /Get-Content \$log -Tail 20[\s\S]*?Replace\(\$env:WINGET_CREATE_GITHUB_TOKEN, '\*\*\*'\)[\s\S]*?::error /,
+    'A winget failure is an ::error:: annotation with the tail of wingetcreate output and no token.');
+  assert.doesNotMatch(winget, /--token/, 'The winget token never goes on a command line.');
+}
 
 // A sharp canvas at the old scroll position must not satisfy the render gate.
 {

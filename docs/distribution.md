@@ -4,6 +4,31 @@ Every tag `v*` builds and publishes installers for Windows, macOS and Linux.
 This page is the rest: how the Windows builds get a signature, and how each
 package manager — winget, the Microsoft Store, Homebrew, apt — is fed.
 
+## After a release is published
+
+`release.yml` then runs, each as its own workflow that can also be started by
+hand with a tag:
+
+- `winget.yml` and `apt.yml`, below.
+- `release-notes.yml`: sets every published release's notes to its
+  `CHANGELOG.md` section on `main` (`tools/release_notes.mjs`). It also runs
+  whenever `CHANGELOG.md` changes on `main`, so fixing a section fixes the
+  release page. Releases without a section, and releases that already match,
+  are left alone. `node tools/sync_release_notes.mjs --dry-run` lists what it
+  would change.
+- `install-check.yml`, after apt: on clean runners it adds the apt repository
+  as the README says and runs `apt install pdf-next` (waiting up to ten
+  minutes for Pages), installs the `_x64-setup.exe` with `/S`, and copies the
+  app out of the `.dmg`; each then checks that `pdf-next --version` prints the
+  tag's version. A failure does not touch the release; the run fails with an
+  `::error::` annotation naming what broke. Homebrew is not checked: the tap
+  updates itself within a day, so right after a release it still has the
+  previous version.
+
+```
+gh workflow run install-check.yml -R machine-made/pdf-next -f tag=v0.16.5
+```
+
 ## Build the Windows installer from Linux/WSL
 
 The Windows NSIS installer can be built without Windows: the Rust code is
@@ -108,6 +133,14 @@ release again, run the workflow by hand with its tag:
 ```
 gh workflow run winget.yml -R machine-made/pdf-next -f tag=v0.14.5
 ```
+
+`wingetcreate update` starts from the newest manifest in winget-pkgs, so a
+version that was never submitted (0.16.2 to 0.16.4) is simply skipped. The
+job does nothing when winget-pkgs already has the version or a pull request
+for it is open. Before running wingetcreate it checks the release, the
+installer asset and the token's `public_repo` scope; any failure, including
+wingetcreate's own (its last 20 lines, token removed), is written as an
+`::error::` annotation, readable through the checks API when the log is not.
 
 The winget-pkgs bots and a moderator still review and merge the pull request.
 The [first submission](https://github.com/microsoft/winget-pkgs/pull/428398)
