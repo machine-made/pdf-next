@@ -41,6 +41,9 @@ jobs:
           "present=$env:HAS_TOKEN" >> $env:GITHUB_OUTPUT
           if ($env:HAS_TOKEN -ne 'true') { Write-Output '::warning::WINGET_TOKEN is not set; skipping winget.' }
 
+      # Any failure is written as an ::error:: annotation, with the last lines
+      # wingetcreate printed: the checks API returns annotations even when the
+      # job log cannot be read.
       - name: Submit
         if: steps.token.outputs.present == 'true'
         env:
@@ -51,23 +54,67 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $release = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isDraft,publishedAt | ConvertFrom-Json
-          if ($release.isDraft) { throw "$env:TAG is still a draft; winget would download a file nobody can see." }
-          $version = $env:TAG.TrimStart('v')
-          $date = ([datetime]$release.publishedAt).ToUniversalTime().ToString('yyyy-MM-dd')
-          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
+          $log = Join-Path $env:RUNNER_TEMP 'wingetcreate.log'
+          function Fail([string]$message) {
+            $text = $message
+            if (Test-Path $log) { $text += "`nwingetcreate output, last lines:`n" + ((Get-Content $log -Tail 20) -join "`n") }
+            if ($env:WINGET_CREATE_GITHUB_TOKEN) { $text = $text.Replace($env:WINGET_CREATE_GITHUB_TOKEN, '***') }
+            $text = ($text -replace '\x1b\[[0-9;]*m', '').Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Output "::error title=winget ${env:TAG}::$text"
+            exit 1
+          }
+          try {
+            $version = $env:TAG.TrimStart('v')
+            $installer = "pdf-next_${version}_x64-setup.exe"
+            $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { Fail "There is no release $env:TAG." }
+            if ($release.draft) { Fail "$env:TAG is still a draft; winget would download a file nobody can see." }
+            if ($release.assets.name -notcontains $installer) { Fail "$env:TAG has no $installer; it has $($release.assets.name -join ', ')." }
+            $date = ([datetime]$release.published_at).ToUniversalTime().ToString('yyyy-MM-dd')
 
-          # Pinned release of Microsoft's manifest tool, checked against the
-          # digest GitHub lists for it.
-          Invoke-WebRequest https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe -OutFile wingetcreate.exe
-          $hash = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash
-          if ($hash -ne '24042BD37915805615E6CF969AC57C6439124C3FE85823327F5F3FB24BD9FFEA') { throw "wingetcreate.exe has an unexpected SHA-256: $hash" }
+            # Run again after its pull request merged: nothing to do, and
+            # wingetcreate would refuse a manifest that changes nothing.
+            gh api "repos/microsoft/winget-pkgs/contents/manifests/r/RicardoFrantz/pdf-next/$version" --silent 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Output "::notice::winget-pkgs already has RicardoFrantz.pdf-next $version."
+              exit 0
+            }
+            $title = "New version: RicardoFrantz.pdf-next version $version"
+            $found = gh api -X GET search/issues -f q="repo:microsoft/winget-pkgs is:pr is:open in:title RicardoFrantz.pdf-next $version" | ConvertFrom-Json
+            $open = $found.items | Where-Object title -eq $title | Select-Object -First 1 -ExpandProperty html_url
+            if ($open) {
+              Write-Output "::notice::A winget-pkgs pull request for $version is already open: $open"
+              exit 0
+            }
 
-          .\wingetcreate.exe update RicardoFrantz.pdf-next `
-            --version $version `
-            --urls "$base/pdf-next_${version}_x64-setup.exe" `
-            --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG" `
-            --release-date $date `
-            --prtitle "New version: RicardoFrantz.pdf-next version $version" `
-            --submit --no-open
-          if ($LASTEXITCODE -ne 0) { throw "wingetcreate exited with code $LASTEXITCODE" }
+            # A refused or under-scoped token fails inside wingetcreate with a
+            # terse line; say which it is.
+            try {
+              $user = Invoke-WebRequest https://api.github.com/user -Headers @{ Authorization = "token $env:WINGET_CREATE_GITHUB_TOKEN" }
+            } catch {
+              Fail "GitHub refused WINGET_TOKEN ($($_.Exception.Response.StatusCode)): it has expired or was revoked. Set a new classic token with the public_repo scope."
+            }
+            $scopes = "$($user.Headers['X-OAuth-Scopes'])"
+            if ($scopes -notmatch '\b(public_repo|repo)\b') { Fail "WINGET_TOKEN has scopes '$scopes', not public_repo. wingetcreate needs a classic token with public_repo." }
+            $expires = "$($user.Headers['GitHub-Authentication-Token-Expiration'])"
+            if ($expires) { Write-Output "::notice::WINGET_TOKEN expires $expires." }
+
+            # Pinned release of Microsoft's manifest tool, checked against the
+            # digest GitHub lists for it.
+            Invoke-WebRequest https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe -OutFile wingetcreate.exe
+            $hash = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash
+            if ($hash -ne '24042BD37915805615E6CF969AC57C6439124C3FE85823327F5F3FB24BD9FFEA') { Fail "wingetcreate.exe has an unexpected SHA-256: $hash" }
+
+            # The newest manifest in winget-pkgs is the base, so versions that
+            # were never submitted are skipped, not needed.
+            .\wingetcreate.exe update RicardoFrantz.pdf-next `
+              --version $version `
+              --urls "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$installer" `
+              --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG" `
+              --release-date $date `
+              --prtitle $title `
+              --submit --no-open 2>&1 | Tee-Object -FilePath $log
+            if ($LASTEXITCODE -ne 0) { Fail "wingetcreate update exited with code $LASTEXITCODE." }
+          } catch {
+            Fail "$($_.Exception.Message) (script line $($_.InvocationInfo.ScriptLineNumber))"
+          }

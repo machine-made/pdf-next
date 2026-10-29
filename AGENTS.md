@@ -33,6 +33,12 @@ tag is made on GitHub's side:
    then starts `release.yml` on the new tag (`gh workflow run release.yml
    --ref v<version>`). `release.yml` builds Windows, macOS and Linux
    installers and publishes the release, then winget and apt follow.
+4. After apt, `install-check.yml` installs the release on clean runners (apt
+   as the README says, the `.exe` with `/S`, the `.dmg`) and checks that
+   `pdf-next --version` names it. A failure leaves the release published,
+   fails the run and says what broke in an `::error::` annotation. Check a
+   release again with
+   `gh workflow run install-check.yml -R machine-made/pdf-next -f tag=v<version>`.
 
 A merge without a version change tags nothing, so ordinary PRs are safe.
 
@@ -57,6 +63,12 @@ Every release has a section in `CHANGELOG.md`, written in the same pull
 request as the version bump. A version without one cannot be released:
 `tools/check_frontend.mjs` fails in CI, `tag.yml` will not tag it, and
 `release.yml` uses the section as the release notes.
+
+The release notes follow `CHANGELOG.md` on `main`. To fix the notes of a
+published release, fix its section in a pull request: when it merges,
+`release-notes.yml` sets every release that has a section to what
+`node tools/release_notes.mjs <tag>` prints, and leaves the rest alone. See
+what it would change with `node tools/sync_release_notes.mjs --dry-run`.
 
 The style is Claude Code's changelog: a `## <version>` heading with no date,
 then flat bullets, one sentence each, starting with `Added`, `Fixed`,
