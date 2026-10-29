@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
 import { REQUEST_GROUPS, REVIEW_REQUESTS, reviewRequests, requestsLabel, toggleRequest } from '../src/review-requests.mjs';
-import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS } from '../src/review-label.mjs';
+import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS, REVIEW_STATUSES } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
@@ -3164,6 +3164,18 @@ assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).eve
   const rust = await readFile('src-tauri/src/main.rs', 'utf8');
   const block = rust.slice(rust.indexOf('const REVIEW_REQUESTS'), rust.indexOf('];', rust.indexOf('const REVIEW_REQUESTS')));
   assert.deepEqual([...block.matchAll(/\("([a-z]+:[a-z]+)",/g)].map((m) => m[1]), REVIEW_REQUESTS, 'Rust and JS requests match.');
+  const statuses = rust.slice(rust.indexOf('const REVIEW_STATUSES'), rust.indexOf(';', rust.indexOf('const REVIEW_STATUSES')));
+  assert.deepEqual([...statuses.matchAll(/"([a-z]+)"/g)].map((m) => m[1]), REVIEW_STATUSES, 'Rust and JS review statuses match.');
+  assert.equal(reviewStatus({ status: 'question' }), 'question', 'A review waiting on the reader keeps its status.');
+  for (const ask of ['why', 'how', 'more', 'example', 'source', 'derive']) {
+    const line = block.match(new RegExp(`\\("ask:${ask}", "([^"]+)"\\)`))?.[1] ?? '';
+    assert.ok(!/^(explain|give)\b/.test(line), `ask:${ask} asks for a rewrite of the text, not an answer: ${line}`);
+  }
+  const readme = await readFile('README.md', 'utf8');
+  assert.ok(!readme.includes('the answer goes in the done note'), 'The README says an Ask means rewrite the text.');
+  for (const command of ['brief', 'next', 'done', 'ask', 'add', 'relocate']) {
+    assert.ok(readme.includes(`pdf-next reviews ${command} `), `The README documents reviews ${command}.`);
+  }
   let picked = toggleRequest([], 'scope:phrase');
   picked = toggleRequest(picked, 'ask:why');
   picked = toggleRequest(picked, 'scope:section');

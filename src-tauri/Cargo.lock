@@ -621,8 +621,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -1013,6 +1015,16 @@ checksum = "8f51888e27b226aeb853c5d1a839504c5f9afa995fad3c5ac9d55f15b19a972d"
 dependencies = [
  "fearless_simd",
  "openjph-core",
+]
+
+[[package]]
+name = "diff-match-patch-rs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1e836eb966678daed8789e698dbdb1016a260c3cdaca6172585e13580c4e4be"
+dependencies = [
+ "chrono",
+ "percent-encoding",
 ]
 
 [[package]]
@@ -3093,6 +3105,7 @@ version = "0.16.5"
 dependencies = [
  "ammonia",
  "cap-std",
+ "diff-match-patch-rs",
  "gio",
  "lopdf",
  "math-core",
