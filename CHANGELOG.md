@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.5
+
+- Fixed apt and winget not getting new releases since 0.16.2; they were skipped whenever Windows signing was not set up
+
 ## 0.16.4
 
 - Added panes: `Ctrl+Shift+D` splits right, `Ctrl+Shift+E` splits down, each pane has its own tabs, and tabs drag to another pane, to an edge to split, or onto a tab strip to merge
