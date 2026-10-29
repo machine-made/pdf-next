@@ -50,8 +50,8 @@ export const defaultFiles = {
 function mockTauri({ files, initial, theme, store }) {
   if (store) window.__store = store;
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
-    const line = raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + (i ? 1 : 0);
-    return `<p><span class="src" data-line="${i === 0 ? 1 : line}"></span>${block.replace(/\n$/, '')}</p>`;
+    const line = i ? raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + 2 : 1;
+    return `<p><span class="src" data-line="${line}"></span>${block.replace(/\n$/, '')}</p>`;
   }).join('\n');
   const text = (p) => (typeof files[p] === 'object' ? files[p].raw : files[p]);
   let rev = 1;
