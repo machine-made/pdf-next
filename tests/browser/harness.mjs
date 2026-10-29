@@ -106,9 +106,17 @@ function mockTauri({ files, initial, theme, store }) {
           case 'update_review': return write(() => {
             const review = find(args.id);
             if ((review.comment || '') !== args.expectedComment) throw new Error('review conflict: comment changed on disk');
-            review.comment = args.comment;
+            review.comment = args.comment.trim();
           });
-          case 'patch_review': return write(() => Object.assign(find(args.id), args.patch));
+          case 'patch_review': return write((st) => {
+            const review = find(args.id);
+            if (args.expected.$revision !== undefined && args.expected.$revision !== st.revision) throw new Error('review conflict: revision changed');
+            for (const key of Object.keys(args.patch)) {
+              if (key in args.expected && JSON.stringify(args.expected[key]) !== JSON.stringify(review[key] ?? null)) throw new Error(`review conflict: ${key} changed on disk`);
+            }
+            Object.assign(review, args.patch);
+            if (args.patch.reply && review.status === 'question') review.status = 'open';
+          });
           case 'delete_review': return write((st) => {
             find(args.id);
             st.reviews = st.reviews.filter((r) => r.id !== args.id);

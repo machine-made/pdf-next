@@ -74,7 +74,11 @@ await page.evaluate(() => {
 await settle();
 await page.click('#reviewList .review-row button:has-text("Resolve")');
 await settle();
-await shows('Review update failed', 'A status change the backend refuses says so');
+await shows('changed on disk; reloaded it', 'A status change that conflicts reloads and says so');
+await fail('patch_review', 'disk is full');
+await page.click('#reviewList .review-row button:has-text("Resolve")');
+await settle();
+await shows('Review update failed: disk is full', 'Any other refusal says why');
 await clear();
 
 await fail('edit_markdown', 'the file changed on disk');
