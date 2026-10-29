@@ -1,0 +1,50 @@
+name: Tag release
+
+# A merge to main that carries a new version tags it and starts the release
+# build. A tag pushed with GITHUB_TOKEN starts no workflow on its own, so the
+# release is dispatched on the new tag; workflow_dispatch is the one event
+# GITHUB_TOKEN may start.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag the version if it is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tauri=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "$version" != "$tauri" ] || [ "$version" != "$cargo" ]; then
+            echo "Versions differ: package.json $version, tauri.conf.json $tauri, Cargo.toml $cargo" >&2
+            exit 1
+          fi
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to release."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "pdf-next $version" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          gh workflow run release.yml --ref "$tag" --repo "$GITHUB_REPOSITORY"
+          echo "Tagged $tag and started the release build."
