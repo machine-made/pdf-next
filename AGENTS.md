@@ -51,8 +51,21 @@ of a tag that already exists, start `release.yml` on it directly:
 gh workflow run release.yml -R machine-made/pdf-next --ref v<version>
 ```
 
-Version numbers: patch for fixes and small features (0.16.3 → 0.16.4), minor
-for larger changes. Use the version the maintainer names when there is one.
+### Choosing the next version
+
+You choose the next version yourself; do not ask. Look at what changed since
+the last tag (`git log v<last>..HEAD`) and pick one step from the current
+version:
+
+- **Patch** (0.16.3 → 0.16.4): fixes, small features, new options, docs,
+  dependency updates. Most releases.
+- **Minor** (0.16.4 → 0.17.0): a large new feature or a change in how people
+  use the app, a new or changed review sidecar field that agents must learn,
+  or a dropped feature.
+- **Major** (0.x → 1.0.0): only when the maintainer asks for it.
+
+When in doubt between two, take the smaller one. If the maintainer names a
+version, use that. Say in the PR which bump you chose and why, in one line.
 
 ## Checks before merging
 
