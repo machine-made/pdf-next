@@ -66,11 +66,9 @@ struct WatchState {
     images: Vec<(PathBuf, Option<Stamp>)>,
     /// Where the next watcher tick starts in `images`.
     image_cursor: usize,
-    /// Optional secondary Markdown file shown in split view.
-    secondary_path: Option<PathBuf>,
-    secondary_modified: Option<SystemTime>,
-    secondary_len: u64,
-    secondary_missing: bool,
+    /// Files shown in panes other than the live one, watched so their
+    /// copies stay current.
+    secondaries: Vec<Secondary>,
     /// Files that arrived before the frontend was listening — from a Finder
     /// double-click on macOS, or a second `pdf-next` run — waiting to be
     /// collected by `pending_files`. Once `ready` is set they are emitted
@@ -85,6 +83,18 @@ struct Watched(Mutex<WatchState>);
 /// Bumped on every detected change so the frontend can bust the webview's
 /// cache for a path that never changes.
 static REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// A file shown in a pane that is not live, with its last `stat`.
+#[derive(Clone, Debug)]
+struct Secondary {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    missing: bool,
+}
+
+/// At most this many panes are watched besides the live one.
+const MAX_SECONDARIES: usize = 8;
 
 #[derive(Clone, Serialize)]
 struct FileInfo {
@@ -361,27 +371,36 @@ fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.path = None;
     state.images.clear();
-    state.secondary_path = None;
+    state.secondaries.clear();
     Ok(())
 }
 
 #[tauri::command]
-fn watch_secondary(path: Option<String>, watched: State<'_, Watched>) -> Result<(), String> {
-    let Some(raw) = path.filter(|s| !s.trim().is_empty()) else {
-        let mut state = watched.0.lock().map_err(|error| error.to_string())?;
-        state.secondary_path = None;
-        return Ok(());
-    };
-    let canonical = std::fs::canonicalize(PathBuf::from(raw)).map_err(|error| error.to_string())?;
-    let (modified, len) = stat(&canonical).unwrap_or((None, 0));
+fn watch_secondary(paths: Vec<String>, watched: State<'_, Watched>) -> Result<(), String> {
+    let mut list = Vec::new();
+    for raw in paths
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .take(MAX_SECONDARIES)
+    {
+        let canonical =
+            std::fs::canonicalize(PathBuf::from(raw)).map_err(|error| error.to_string())?;
+        if list.iter().any(|known: &Secondary| known.path == canonical) {
+            continue;
+        }
+        let (modified, len) = stat(&canonical).unwrap_or((None, 0));
+        list.push(Secondary {
+            path: canonical,
+            modified,
+            len,
+            missing: false,
+        });
+    }
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
-    if !state.allowed.contains(&canonical) {
+    if list.iter().any(|item| !state.allowed.contains(&item.path)) {
         return Err("file was never opened".into());
     }
-    state.secondary_path = Some(canonical);
-    state.secondary_modified = modified;
-    state.secondary_len = len;
-    state.secondary_missing = false;
+    state.secondaries = list;
     Ok(())
 }
 
@@ -3247,48 +3266,57 @@ fn spawn_watcher(app: AppHandle) {
 }
 
 fn check_secondary_watched(app: &AppHandle, watched: &Watched) {
-    let snapshot = {
+    let list = {
         let Ok(state) = watched.0.lock() else {
             return;
         };
-        let Some(sec_path) = state.secondary_path.clone() else {
-            return;
-        };
-        if state.path.as_deref() == Some(sec_path.as_path()) {
-            return;
-        }
-        (
-            sec_path,
-            state.secondary_modified,
-            state.secondary_len,
-            state.secondary_missing,
-        )
+        state
+            .secondaries
+            .iter()
+            .filter(|item| state.path.as_deref() != Some(item.path.as_path()))
+            .cloned()
+            .collect::<Vec<_>>()
     };
-    let (sec_path, recorded_modified, recorded_len, missing) = snapshot;
-    match stat(&sec_path) {
+    for item in list {
+        check_one_secondary(app, watched, item);
+    }
+}
+
+fn check_one_secondary(app: &AppHandle, watched: &Watched, item: Secondary) {
+    let update = |change: &dyn Fn(&mut Secondary)| -> bool {
+        let Ok(mut state) = watched.0.lock() else {
+            return false;
+        };
+        match state
+            .secondaries
+            .iter_mut()
+            .find(|known| known.path == item.path)
+        {
+            Some(known) => {
+                change(known);
+                true
+            }
+            None => false,
+        }
+    };
+    match stat(&item.path) {
         Some((modified, len)) => {
-            let changed = modified != recorded_modified || len != recorded_len;
-            let reappeared = missing;
-            if (changed || reappeared) && !is_complete(&sec_path) {
+            let changed = modified != item.modified || len != item.len;
+            let reappeared = item.missing;
+            if (changed || reappeared) && !is_complete(&item.path) {
                 return;
             }
-            {
-                let Ok(mut state) = watched.0.lock() else {
-                    return;
-                };
-                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
-                    return;
-                }
-                state.secondary_modified = modified;
-                state.secondary_len = len;
-                state.secondary_missing = false;
-            }
-            if changed || reappeared {
+            let still_watched = update(&|known| {
+                known.modified = modified;
+                known.len = len;
+                known.missing = false;
+            });
+            if still_watched && (changed || reappeared) {
                 let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = app.emit(
                     "file-changed",
                     WatchEvent {
-                        path: display_path(&sec_path),
+                        path: display_path(&item.path),
                         kind: if reappeared { "restored" } else { "changed" },
                         revision,
                     },
@@ -3296,17 +3324,8 @@ fn check_secondary_watched(app: &AppHandle, watched: &Watched) {
             }
         }
         None => {
-            if missing {
-                return;
-            }
-            {
-                let Ok(mut state) = watched.0.lock() else {
-                    return;
-                };
-                if state.secondary_path.as_deref() != Some(sec_path.as_path()) {
-                    return;
-                }
-                state.secondary_missing = true;
+            if !item.missing {
+                update(&|known| known.missing = true);
             }
         }
     }

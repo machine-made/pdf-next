@@ -211,7 +211,7 @@ function appFunction(name, next, context, source = app) {
   const width = menu('width', ['narrow', 'normal', 'wide', 'full'], 'normal');
   const ui = { markdown: { dataset: {} } };
   const localStorage = { setItem: (key, value) => stored.set(key, value) };
-  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage });
+  const setStyle = appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage, paneArticles: () => [], paneMarkdownStages: () => [] });
   setStyle(font, 'sans');
   assert.equal(ui.markdown.dataset.font, 'sans', 'The chosen face reaches the article.');
   assert.equal(font.value, 'sans', 'The menu shows the chosen face.');
@@ -226,7 +226,7 @@ function appFunction(name, next, context, source = app) {
   assert.equal(stored.get('pdf-next.md-size'), '22', 'The size is remembered.');
   assert.deepEqual([ui.markdown.dataset.size, ui.markdown.dataset.width], ['22', 'wide'], 'Size and width reach the article.');
   const failing = { setItem() { throw new Error('storage off'); } };
-  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing })(font, 'mono');
+  appFunction('setMarkdownStyle', '/// Markdown zoom', { ui, localStorage: failing, paneArticles: () => [], paneMarkdownStages: () => [] })(font, 'mono');
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
 }
 
@@ -967,6 +967,7 @@ for (const pauseAt of ['save', 'close']) {
   const pause = () => new Promise((resolve) => { finish = resolve; started(); });
   const close = appFunction('closeAll', 'function cycleTab(', {
     state,
+    panes: { active: false },
     noteSaveInFlight: false,
     flushCommentSave: pauseAt === 'save' ? pause : async () => {},
     invoke: pauseAt === 'close' ? pause : async () => {
@@ -3153,8 +3154,24 @@ assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).eve
   assert.match(app, /chosenAction === 'improve' && requests\.length && !comment \? 'request'/, 'Buttons alone save a request.');
 }
 
+// Panes: dockview is vendored and loads before the app; its tabs drag with
+// pointer events (HTML5 drops never arrive on Windows, where the window takes
+// file drops); every split, merge and move path is wired.
+await assert.doesNotReject(access('src/vendor/dockview/dockview-core.min.js'), 'dockview must be vendored.');
+await assert.doesNotReject(access('src/vendor/dockview/LICENSE.md'), 'dockview licence must be vendored.');
+assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.js"><\/script>\s*<script type="module" src="\.\/smoke\.mjs">/,
+  'dockview loads before the modules.');
+{
+  const panesSource = await readFile('src/panes.mjs', 'utf8');
+  assert.match(panesSource, /dndStrategy: 'pointer'/, 'Tabs drag with pointer events.');
+  assert.match(app, /key === 'd' \|\| key === 'e'\)\) \{\s*event\.preventDefault\(\);\s*void splitPane\(key === 'd' \? 'right' : 'bottom'\)/, 'Ctrl+Shift+D and E split.');
+  assert.match(app, /function activateTab[\s\S]*?freezeLivePane\(\);[\s\S]*?if \(panes\.active\) panes\.mount\(tab\.path\)/, 'Switching tabs leaves a copy and moves the live view.');
+  assert.match(app, /panes\.visible\(\)\.includes\(path\)\) \{[\s\S]*?await fillPane\(path, revision\)/, 'A copy follows its file.');
+  assert.ok(!/markdownStageSplit|splitDivider/.test(page), 'The old split view is gone.');
+}
+
 // The wheel steps through the toolbar menus and zooms over the zoom controls.
-assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select, #splitBar select/,
+assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select'/,
   'Toolbar and Settings menus take the wheel.');
 assert.match(app, /control === ui\.zoom \|\| control === ui\.zoomIn \|\| control === ui\.zoomOut\) \{\s*stepZoom\(direction\)/,
   'The wheel over zoom zooms through the preset ladder.');
