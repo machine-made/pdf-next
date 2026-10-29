@@ -112,12 +112,23 @@ cd ..
 node tools/check_frontend.mjs
 bun install && bunx playwright install chromium   # once
 node tests/browser/run.mjs                        # or: node tests/browser/run.mjs panes a11y
+node tests/browser/run.mjs --coverage             # also prints line coverage of src/*.mjs
+bunx tauri build --no-bundle && xvfb-run -a node tests/e2e/app.mjs   # Linux, real app
 ```
 
 `tests/browser/` runs the frontend in Chromium against a mocked Tauri backend,
-one file per area, with axe-core accessibility checks in `a11y.mjs`. Screenshots
-go to `$RUNNER_TEMP/pdf-next-browser` (or the system temp directory), never the
-tree. A UI change comes with a check there.
+one file per area, with axe-core accessibility checks in `a11y.mjs`. The mock
+in `harness.mjs` keeps a review store and can make any command reject
+(`window.__fail[cmd] = 'message'`). Screenshots go to `$RUNNER_TEMP/pdf-next-browser`
+(or the system temp directory), never the tree. A UI change comes with a check there.
+
+`tests/e2e/app.mjs` drives the real app (Rust and WebKitGTK) through `tauri-driver`
+and `WebKitWebDriver` (`cargo install tauri-driver`, `apt install webkit2gtk-driver`).
+A change to how the backend and the page work together comes with a check there.
+
+`src-tauri/src/properties.rs` holds proptest property tests of the review store
+and the Markdown sanitizer; keep their case counts so they run in a few seconds.
+CI prints Rust coverage (`cargo llvm-cov`) and frontend coverage; neither is a gate.
 
 CI also builds the app and runs `tools/smoke.mjs` on Windows, macOS and Linux.
 Smoke prints the time from launch to the first drawn document and from a file
