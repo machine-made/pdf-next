@@ -111,8 +111,8 @@ try {
   ok(review.anchor?.documentRevision?.startsWith('sha256:') && review.anchor.prefix?.includes('sheds'), 'and the document digest and context');
   const agent = readFileSync(join(dir, 'notes_review.agent.txt'), 'utf8');
   const lines = agent.trim().split('\n');
-  ok(lines[0].startsWith('# notes.md review, revision') && lines[0].includes('1 open'), 'notes_review.agent.txt has the header');
-  ok(lines.length === 2 && lines[1] === 'r1 L3 improve: Name the shedding regime | "vortex rings"', `and one line for the open item (${JSON.stringify(lines[1])})`);
+  ok(/^# notes\.md rev \d+:/.test(lines[0]) && lines[0].includes('1 open'), 'notes_review.agent.txt has the header');
+  ok(lines.length === 2 && lines[1] === 'r1 L3 Name the shedding regime | "vortex rings"', `and one line for the open item (${JSON.stringify(lines[1])})`);
 
   const done = spawnSync(bin, ['reviews', 'done', md, 'r1', 'named the regime'], { encoding: 'utf8' });
   ok(done.status === 0, `pdf-next reviews done exits 0 ${done.stderr.trim()}`);
