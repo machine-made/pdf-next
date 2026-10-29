@@ -119,7 +119,7 @@ try {
   ok(store().reviews[0].status === 'applied' && store().reviews[0].resolution === 'named the regime', 'The CLI marks r1 applied on disk');
   ok(await until("return document.querySelector('#reviewList .review-row')?.dataset.status === 'applied'", 'the row to turn applied'), 'The open window shows r1 applied');
   ok(await run("return [...document.querySelectorAll('#reviewList .review-row button')].some((b) => b.textContent === 'Resolve')"), 'and offers Resolve');
-  await click('#reviewList .review-row button:nth-last-child(2)');
+  await run("[...document.querySelectorAll('#reviewList .review-row button')].find((b) => b.textContent === 'Resolve').click()");
   ok(await until("return document.querySelector('#reviewList .review-row')?.dataset.status === 'resolved'", 'resolved'), 'Resolve in the window');
   ok(store().reviews[0].status === 'resolved', 'writes resolved to the sidecar');
 
