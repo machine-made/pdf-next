@@ -187,13 +187,26 @@
           <svg class="icon"><use href="#i-raw"/></svg>
         </button>
         <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
-          <option value="latin-modern" selected>Latin Modern</option>
-          <option value="weft">mm Weft</option>
-          <option value="mm-sans">mm Sans</option>
-          <option value="heddle">mm Heddle</option>
-          <option value="serif">Serif</option>
-          <option value="sans">Sans</option>
-          <option value="mono">Mono</option>
+          <optgroup label="TeX">
+            <option value="latin-modern" selected>Latin Modern</option>
+          </optgroup>
+          <optgroup label="System">
+            <option value="sans">Sans</option>
+            <option value="serif">Serif</option>
+            <option value="mono">Mono</option>
+          </optgroup>
+          <optgroup label="Monaspace (GitHub)">
+            <option value="monaspace-neon">Monaspace Neon</option>
+            <option value="monaspace-argon">Monaspace Argon</option>
+            <option value="monaspace-xenon">Monaspace Xenon</option>
+            <option value="monaspace-radon">Monaspace Radon</option>
+            <option value="monaspace-krypton">Monaspace Krypton</option>
+          </optgroup>
+          <optgroup label="machine-made">
+            <option value="weft">mm Weft</option>
+            <option value="mm-sans">mm Sans</option>
+            <option value="heddle">mm Heddle</option>
+          </optgroup>
         </select>
         <select id="mdSize" class="md-only" data-md="size" title="Markdown text size" aria-label="Markdown text size">
           <option value="14">14 px</option>
@@ -225,10 +238,10 @@
           <option value="1600">1600 px</option>
           <option value="100%">100%</option>
         </select>
-        <select id="splitView" class="md-only" title="Split view for two Markdown files" aria-label="Split view for two Markdown files">
+        <select id="splitView" title="Panes: split right Ctrl+Shift+D, split down Ctrl+Shift+E, move Ctrl+Alt+arrows" aria-label="Panes">
           <option value="off" selected>1 pane</option>
-          <option value="right">Side by side</option>
-          <option value="bottom">Top / Bottom</option>
+          <option value="right">Split right</option>
+          <option value="bottom">Split down</option>
         </select>
         <button id="ask" type="button" class="review-only" title="Copy the selection as a review quote (Ctrl+Shift+A)" aria-label="Copy selection for a session">
           <svg class="icon"><use href="#i-ask"/></svg>
@@ -288,6 +301,7 @@
 
     <div id="tabs" role="tablist" aria-label="Open files"></div>
 
+    <div id="panes" hidden></div>
     <main id="stage">
       <div id="viewerContainer" tabindex="0">
         <div id="viewer" class="pdfViewer"></div>
@@ -307,17 +321,6 @@
           <span id="figureResizerLabel" class="figure-resizer-label"></span>
           <span id="figureResizerGrip" class="figure-resizer-grip" title="Drag to resize figure (double-click figure to open in new tab)"></span>
         </div>
-      </div>
-      <div id="splitDivider" hidden role="separator" aria-label="Resize split panes"></div>
-      <div id="markdownStageSplit" hidden>
-        <div id="splitBar" class="split-bar">
-          <select id="splitTabSelect" aria-label="Second Markdown file"></select>
-          <button id="splitClose" type="button" title="Close split view" aria-label="Close split view">
-            <svg class="icon"><use href="#i-close"/></svg>
-          </button>
-        </div>
-        <article id="markdownSplit"></article>
-        <pre id="markdownRawSplit" hidden></pre>
       </div>
 
       <div id="find" hidden>
@@ -344,7 +347,7 @@
         </div>
         <div class="review-filters">
           <label>Action <select id="reviewActionFilter" aria-label="Filter reviews by action">
-            <option value="all">All</option><option value="improve">Improve</option><option value="polish">Polish</option><option value="clarify">Clarify</option>
+            <option value="all">All</option><option value="request">Request</option><option value="improve">Improve</option><option value="polish">Polish</option><option value="clarify">Clarify</option>
             <option value="shorten">Shorten</option><option value="expand">Expand</option><option value="check">Check</option>
             <option value="define">Parenthetical definition</option><option value="gloss">Gloss</option>
             <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
@@ -402,6 +405,18 @@
             <option value="mm-sans">mm Sans</option>
             <option value="weft">mm Weft</option>
           </select></label>
+          <label>Code font <select id="setCodeFont">
+            <optgroup label="System">
+              <option value="system">System mono</option>
+            </optgroup>
+            <optgroup label="Monaspace (GitHub)">
+              <option value="monaspace-neon">Monaspace Neon</option>
+              <option value="monaspace-argon">Monaspace Argon</option>
+              <option value="monaspace-xenon">Monaspace Xenon</option>
+              <option value="monaspace-radon">Monaspace Radon</option>
+              <option value="monaspace-krypton">Monaspace Krypton</option>
+            </optgroup>
+          </select></label>
           <label>Check for changes <select id="setPoll" data-mirror="poll"></select></label>
         </section>
         <section class="about">
@@ -426,10 +441,12 @@
               <dd>pulldown-cmark parses, ammonia sanitizes, highlight.js 11.12 colours code.</dd>
               <dt>TeX equations</dt>
               <dd>math-core 0.9 turns TeX into MathML, set in New Computer Modern Math.</dd>
+              <dt>Panes</dt>
+              <dd>dockview 8.8 lays out the tiles and their tabs.</dd>
               <dt>Fonts</dt>
-              <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1.</dd>
+              <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1; Monaspace 1.400 (GitHub Next).</dd>
               <dt>Licences</dt>
-              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; fonts GUST and SIL OFL. Full list in the README.</dd>
+              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; dockview MIT; fonts GUST and SIL OFL. Full list in the README.</dd>
             </dl>
           </details>
           <div class="about-links">
@@ -447,6 +464,7 @@
           </button>
         </div>
         <div id="noteQuote" class="note-quote" aria-label="Selected text"></div>
+        <div id="noteRequests" class="note-requests" aria-label="Requests: click to build the review"></div>
         <label class="note-action-label">Action
           <select id="noteAction" aria-label="Review action">
             <option value="improve">Improve</option>
@@ -523,6 +541,7 @@
          print resolution, and the print stylesheet hides everything else. -->
     <div id="printPages" aria-hidden="true"></div>
 
+    <script src="./vendor/dockview/dockview-core.min.js"></script>
     <script type="module" src="./smoke.mjs"></script>
     <script type="module" src="./app.mjs"></script>
   </body>
