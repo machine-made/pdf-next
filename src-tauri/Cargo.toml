@@ -83,6 +83,10 @@ windows-sys = { version = "0.61", features = [
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_Foundation"] }
 
+# Property tests of the review store and the Markdown sanitizer (src/properties.rs).
+[dev-dependencies]
+proptest = { version = "1.12", default-features = false, features = ["std"] }
+
 # Small and fast beats fast-to-build: this binary is shipped, not iterated on.
 [profile.release]
 opt-level = "s"
