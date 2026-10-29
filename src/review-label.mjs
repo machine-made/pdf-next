@@ -76,8 +76,12 @@ export function reviewAction(review) {
   return REVIEW_ACTIONS.includes(review?.action) ? review.action : 'improve';
 }
 
+/// Every status a review can have; `question` waits on the reader's reply.
+/// Same list as REVIEW_STATUSES in main.rs.
+export const REVIEW_STATUSES = ['open', 'applied', 'resolved', 'question'];
+
 export function reviewStatus(review) {
-  return ['open', 'applied', 'resolved', 'question'].includes(review?.status) ? review.status : 'open';
+  return REVIEW_STATUSES.includes(review?.status) ? review.status : 'open';
 }
 
 export function reviewColor(review, count = 16) {

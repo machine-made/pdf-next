@@ -1,8 +1,9 @@
 {
-  "$comment": "Format 3 review sidecar example for paper.pdf. The adjacent file is paper_review.json. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. action is one of request (the buttons in requests), improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete. requests (optional) lists the review card's buttons as group:name words: ask:why|how|more|example|source|derive, change:simplify|shorten|expand|check|figure, scope:phrase|paragraph|section (one), tone:formal|plain|jfm (one); the agent view spells them out.",
+  "$comment": "Format 3 review sidecar example for paper.pdf. The adjacent file is paper_review.json. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. status is open, applied, resolved or question (the agent asked the reader; the text is in question, at most 2000 chars). The app saves the reader's answer in reply (at most 2000 chars) and sets status back to open. rev is the store revision of the record's last change, set on every write (a record without it counts as changed); stamped is the revision at which pdf-next last set every rev. before (optional, at most 20000 chars) is the Markdown source of lines at.line..at.end when the review was made. action is one of request (the buttons in requests), improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete. requests (optional) lists the review card's buttons as group:name words: ask:why|how|more|example|source|derive, change:simplify|shorten|expand|check|figure, scope:phrase|paragraph|section (one), tone:formal|plain|jfm (one). An ask:* request means the text is unclear: the agent rewrites the text so it answers the question and says in resolution what it changed.",
   "format": 3,
   "revision": 12,
   "nextId": 3,
+  "stamped": 12,
   "document": {
     "task": "Review the compiled PDF and edit its LaTeX source.",
     "pdf": "paper.pdf",
@@ -21,12 +22,28 @@
       "status": "open",
       "resolution": "",
       "color": 3,
+      "rev": 9,
       "anchor": {
         "prefix": "preceding PDF context",
         "suffix": "following PDF context",
         "documentRevision": "sha256:example",
         "position": { "page": 7, "x": 120.0, "y": 240.0 }
       }
+    },
+    {
+      "id": "r2",
+      "file": "paper.pdf",
+      "kind": "pdf",
+      "at": { "page": 9 },
+      "quote": "the residual check passes",
+      "comment": "",
+      "action": "request",
+      "requests": ["ask:why", "scope:paragraph"],
+      "status": "question",
+      "question": "Do you mean why the residual is the right test, or why it passes here?",
+      "resolution": "",
+      "color": 4,
+      "rev": 12
     }
   ]
 }

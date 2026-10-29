@@ -40,6 +40,8 @@ math-core = { version = "=0.9.0", default-features = false }
 picamatl = "0.4"
 # Use the same parser as picamatl to bound load-time stream decompression.
 lopdf = { version = "0.44", default-features = false }
+# Fuzzy search for a review quote near its old line, for `reviews relocate`.
+diff-match-patch-rs = "0.5.1"
 
 # A file dropped on the window arrives as a list of paths that can be empty:
 # macOS carries the names on more than one pasteboard type and the webview

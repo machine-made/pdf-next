@@ -8,9 +8,10 @@
 
 mod review_command;
 mod review_directory;
+mod review_locate;
 mod review_source;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -3441,6 +3442,12 @@ struct Review {
     comment: String,
     #[serde(default)]
     resolution: String,
+    /// What the agent asked the reader (status `question`), and the reader's
+    /// answer, which puts the item back to `open`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    question: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    reply: String,
     #[serde(default = "default_review_color")]
     color: u8,
     #[serde(default)]
@@ -3451,6 +3458,9 @@ struct Review {
     quote: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     anchor: Option<ReviewAnchor>,
+    /// The Markdown source of the reviewed lines when the review was made.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    before: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3459,6 +3469,10 @@ struct Review {
     /// (REVIEW_REQUESTS). The agent view spells each out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requests: Vec<String>,
+    /// The store revision of this item's last change, set by `save_store`.
+    /// Missing on items written before 0.17: read as changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rev: Option<u64>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -3477,12 +3491,22 @@ struct ReviewFile {
     next_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     document: Option<ReviewDocument>,
+    /// The revision at which this version last set the reviews' `rev`. An
+    /// older app keeps the stamps but not this, so a store it wrote last has
+    /// stamps that may be stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stamped: Option<u64>,
     #[serde(default)]
     reviews: Vec<Review>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
     #[serde(skip)]
     migration_backup: Option<String>,
+}
+
+/// Whether every review's `rev` can be trusted: this version wrote last.
+fn stamps_current(store: &ReviewFile) -> bool {
+    store.stamped == Some(store.revision)
 }
 
 fn review_format_2() -> u32 {
@@ -3497,6 +3521,7 @@ fn empty_store() -> ReviewFile {
         document: None,
         reviews: Vec::new(),
         extra: serde_json::Map::new(),
+        stamped: None,
         migration_backup: None,
     }
 }
@@ -3514,25 +3539,30 @@ const REVIEW_ACTIONS: &[&str] = &[
 
 /// The review card's buttons, with what each asks of the agent. Same list as
 /// src/review-requests.mjs. `scope:*` and `tone:*` take one choice each.
+/// An Ask means the text is unclear: the agent rewrites it so that it
+/// answers the question, it does not answer on the side.
 const REVIEW_REQUESTS: &[(&str, &str)] = &[
-    ("ask:why", "explain why"),
-    ("ask:how", "explain how"),
-    ("ask:more", "give more information"),
-    ("ask:example", "give an example"),
-    ("ask:source", "give the source (reference or citation)"),
+    ("ask:why", "make the text say why"),
+    ("ask:how", "make the text say how"),
+    ("ask:more", "add the missing information"),
+    ("ask:example", "add an example"),
+    ("ask:source", "cite the source"),
     ("ask:derive", "show the derivation"),
     ("change:simplify", "simplify"),
     ("change:shorten", "shorten"),
     ("change:expand", "expand"),
     ("change:check", "check facts, numbers and equations"),
     ("change:figure", "add or improve a figure"),
-    ("scope:phrase", "scope: this phrase only"),
-    ("scope:paragraph", "scope: the whole paragraph"),
-    ("scope:section", "scope: the whole section"),
+    ("scope:phrase", "scope: this phrase"),
+    ("scope:paragraph", "scope: whole paragraph"),
+    ("scope:section", "scope: whole section"),
     ("tone:formal", "tone: more formal"),
     ("tone:plain", "tone: plainer"),
     ("tone:jfm", "tone: Journal of Fluid Mechanics style"),
 ];
+
+/// Every status a review can have. `question` waits on the reader.
+const REVIEW_STATUSES: &[&str] = &["open", "applied", "resolved", "question"];
 
 fn validate_requests(requests: &[String]) -> Result<(), String> {
     if requests.len() > REVIEW_REQUESTS.len() {
@@ -3578,6 +3608,17 @@ fn validate_review(review: &Review) -> Result<(), String> {
     if review.resolution.len() > 4_000 {
         return Err("resolution is too long (max 4 000 chars)".into());
     }
+    for (name, value) in [("question", &review.question), ("reply", &review.reply)] {
+        if value.len() > 2_000 {
+            return Err(format!("{name} is too long (max 2 000 chars)"));
+        }
+    }
+    if review.before.len() > 20_000 {
+        return Err("before is too long (max 20 000 chars)".into());
+    }
+    if review.status == "question" && review.question.trim().is_empty() {
+        return Err("a question review needs the question".into());
+    }
     if let Some(anchor) = review.anchor.as_ref() {
         for (name, value) in [("prefix", &anchor.prefix), ("suffix", &anchor.suffix)] {
             if value.as_ref().is_some_and(|value| value.len() > 2_000) {
@@ -3619,8 +3660,11 @@ fn validate_review(review: &Review) -> Result<(), String> {
             REVIEW_ACTIONS.join(", ")
         ));
     }
-    if !matches!(review.status.as_str(), "open" | "applied" | "resolved") {
-        return Err("status must be open, applied, or resolved".into());
+    if !REVIEW_STATUSES.contains(&review.status.as_str()) {
+        return Err(format!(
+            "status must be one of {}",
+            REVIEW_STATUSES.join(", ")
+        ));
     }
     if !(1..=16).contains(&review.color) {
         return Err("color must be between 1 and 16".into());
@@ -3884,7 +3928,7 @@ fn review_ranges_overlap(first: &Review, second: &Review) -> bool {
 fn choose_review_color(store: &ReviewFile, review: &Review) -> u8 {
     let mut counts = [0usize; 17];
     for existing in &store.reviews {
-        if matches!(existing.status.as_str(), "open" | "applied")
+        if matches!(existing.status.as_str(), "open" | "applied" | "question")
             && review_ranges_overlap(existing, review)
             && (1..=16).contains(&existing.color)
         {
@@ -4044,11 +4088,14 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
         let previous = sidecar
             .read_to_string()
             .map_err(|error| error.to_string())?;
-        parse_store(&previous)?;
+        let prior = parse_store(&previous)?;
+        stamp_changes(&prior, store);
         Some(previous.into_bytes())
     } else {
+        stamp_changes(&empty_store(), store);
         None
     };
+    store.stamped = Some(store.revision);
     let json = store_json(store)?;
     if let Some(previous) = prior_valid.as_deref() {
         write_atomic_bytes(&sidecar.with_extension("json.bak"), previous)?;
@@ -4073,6 +4120,28 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
         agent_view(store, &sidecar_document_name(sidecar), &inbox).as_bytes(),
     );
     Ok(())
+}
+
+/// Give every review that differs from the stored one, or has no stamp yet,
+/// this revision as its `rev`. `brief --since` reads it. After a write by an
+/// older version, which keeps stamps it does not update, every item is
+/// stamped again: it may have changed.
+fn stamp_changes(prior: &ReviewFile, store: &mut ReviewFile) {
+    let before: HashMap<&str, &Review> = prior
+        .reviews
+        .iter()
+        .map(|review| (review.id.as_str(), review))
+        .collect();
+    for review in &mut store.reviews {
+        let same = stamps_current(prior)
+            && review.rev.is_some()
+            && before
+                .get(review.id.as_str())
+                .is_some_and(|old| **old == *review);
+        if !same {
+            review.rev = Some(store.revision);
+        }
+    }
 }
 
 /// The store as written to disk: the header on the first line, then one
@@ -4131,76 +4200,61 @@ fn view_quote(quote: &str, limit: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// Lines of `{stem}_review.done` that do not start with a review ID and some
-/// text, 1-based. Blank lines and `#` comments are not counted.
+/// One line of `{stem}_review.done`: `<id> <what changed>` closes the item,
+/// `<id> ? <question>` asks the reader. `None` for blank lines and comments,
+/// `Some(None)` for a line that is neither.
+fn inbox_line(line: &str) -> Option<Option<(&str, bool, &str)>> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (id, text) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    let text = text.trim();
+    let (asks, text) = match text.strip_prefix('?') {
+        Some(question) => (true, question.trim()),
+        None => (false, text),
+    };
+    Some((review_command::valid_id(id) && !text.is_empty()).then_some((id, asks, text)))
+}
+
+/// Lines of `{stem}_review.done` that are neither a close nor a question,
+/// 1-based. Blank lines and `#` comments are not counted.
 fn inbox_unread(inbox: &str) -> Vec<usize> {
     inbox
         .lines()
         .enumerate()
-        .filter_map(|(index, line)| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (id, text) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-            (!review_command::valid_id(id) || text.trim().is_empty()).then_some(index + 1)
-        })
+        .filter_map(|(index, line)| matches!(inbox_line(line), Some(None)).then_some(index + 1))
         .collect()
 }
 
-/// `{stem}_review.agent.txt`: one header line, then one line per open review,
-/// in reading order. Built for an agent's context window: the location, the
-/// action, the instruction and enough of the quote to find the text. The
-/// exact words are in the document at those lines.
-fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
-    let files: std::collections::BTreeSet<&str> = store
-        .reviews
-        .iter()
-        .map(|review| review.file.as_str())
-        .collect();
-    let document = if files.len() == 1 {
-        files.iter().next().copied().unwrap_or(stem).to_string()
+/// Line or page where a review starts.
+fn review_start(review: &Review) -> Option<u32> {
+    if review.kind == "pdf" {
+        review.at.page
     } else {
-        stem.to_string()
-    };
-    let count = |status: &str| store.reviews.iter().filter(|r| r.status == status).count();
-    let inbox_name = format!("{stem}_review.done");
-    let mut out = format!(
-        "# {document} review, revision {}: {} open, {} applied, {} resolved. \
-         Close an item: pdf-next reviews done {document} <id> \"<what you changed>\", \
-         or append \"<id> <what you changed>\" to {inbox_name}",
-        store.revision,
-        count("open"),
-        count("applied"),
-        count("resolved"),
-    );
-    if store
-        .reviews
-        .iter()
-        .any(|r| r.status == "open" && r.requests.iter().any(|q| q.starts_with("ask:")))
-    {
-        out.push_str(
-            ". Questions (explain why, explain how, more information, example, source, derivation): \
-             write the answer as the done note, and change the text only when the item also asks for a change",
-        );
+        review.at.line
     }
-    let unread = inbox_unread(inbox);
-    if !unread.is_empty() {
-        let list: Vec<String> = unread.iter().map(usize::to_string).collect();
-        out.push_str(&format!(". Unread {inbox_name} lines: {}", list.join(", ")));
+}
+
+/// `L12`, `L40-42`, `p7`.
+fn review_location(review: &Review) -> String {
+    let mark = if review.kind == "pdf" { "p" } else { "L" };
+    match (review_start(review), review.at.end) {
+        (Some(start), Some(end)) if end > start => format!("{mark}{start}-{end}"),
+        (Some(start), _) => format!("{mark}{start}"),
+        (None, _) => format!("{mark}?"),
     }
-    out.push('\n');
+}
+
+/// Open reviews in reading order, then by ID.
+fn open_in_order(store: &ReviewFile) -> Vec<&Review> {
     let mut open: Vec<&Review> = store
         .reviews
         .iter()
         .filter(|r| r.status == "open")
         .collect();
-    let place = |review: &Review| {
-        let start = if review.kind == "pdf" {
-            review.at.page
-        } else {
-            review.at.line
-        };
+    open.sort_by_key(|review| {
+        let start = review_start(review);
         (
             start.is_none(),
             start.unwrap_or(0),
@@ -4210,88 +4264,283 @@ fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
                 .parse::<u64>()
                 .unwrap_or(0),
         )
+    });
+    open
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What one review asks, in the agent view's words. Improve and Request say
+/// it in the comment and the buttons; the other actions name themselves.
+fn review_task(review: &Review) -> String {
+    let comment = one_line(&review.comment);
+    let asked = requests_text(&review.requests);
+    let action = review.action.as_str();
+    let mut task = match (action, comment.is_empty()) {
+        ("improve" | "request", true) if !asked.is_empty() => asked.clone(),
+        ("request", false) if !asked.is_empty() => format!("{asked}; note \"{comment}\""),
+        ("improve" | "request", false) => comment,
+        ("improve" | "request", true) => "improve (no comment)".into(),
+        ("define", true) => "define: add parenthetical definition () after term".into(),
+        ("define", false) => {
+            format!("define: suggestion \"{comment}\" (parenthetical definition () after term)")
+        }
+        ("gloss", true) => "gloss: add brief gloss in text".into(),
+        ("gloss", false) => format!("gloss: suggestion \"{comment}\" (brief gloss in text)"),
+        (_, true) => action.to_string(),
+        (_, false) => format!("{action}: {comment}"),
     };
-    open.sort_by_key(|review| place(review));
-    for review in open {
-        let start = if review.kind == "pdf" {
-            review.at.page
-        } else {
-            review.at.line
-        };
-        let mark = if review.kind == "pdf" { "p" } else { "L" };
-        let location = match (start, review.at.end) {
-            (Some(start), Some(end)) if end > start => format!("{mark}{start}-{end}"),
-            (Some(start), _) => format!("{mark}{start}"),
-            (None, _) => format!("{mark}?"),
-        };
-        let comment = review
-            .comment
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let file = if files.len() > 1 {
+    if !asked.is_empty() && !task.contains(&asked) {
+        task = format!("{task} ({asked})");
+    }
+    if !review.reply.is_empty() {
+        task.push_str(&format!(
+            "; you asked \"{}\", reader replied: \"{}\"",
+            one_line(&review.question),
+            one_line(&review.reply)
+        ));
+    }
+    task
+}
+
+/// Quote characters the agent view keeps: enough to find the place. The
+/// exact words are in the document.
+const VIEW_QUOTE: usize = 80;
+
+/// One item of the agent view: `r3 L7 move this before the table | "the table below"`.
+fn view_line(review: &Review, file: bool, quote_limit: usize) -> String {
+    format!(
+        "{} {}{} {} | \"{}\"",
+        review.id,
+        if file {
             format!("{} ", review.file)
         } else {
             String::new()
-        };
-        let asked = requests_text(&review.requests);
-        let note = match (review.action.as_str(), comment.is_empty()) {
-            ("request", true) => asked.clone(),
-            ("request", false) => format!("{asked}; note \"{comment}\""),
-            ("define", true) => "add parenthetical definition () after term".to_string(),
-            ("define", false) => {
-                format!("suggestion \"{comment}\" (parenthetical definition () after term)")
-            }
-            ("gloss", true) => "add brief gloss in text".to_string(),
-            ("gloss", false) => format!("suggestion \"{comment}\" (brief gloss in text)"),
-            (_, true) if !asked.is_empty() => asked.clone(),
-            (_, true) => "(no comment)".to_string(),
-            (_, false) => comment,
-        };
-        let note = if review.action != "request" && !asked.is_empty() && !note.contains(&asked) {
-            format!("{note} ({asked})")
+        },
+        review_location(review),
+        review_task(review),
+        view_quote(&review.quote, quote_limit),
+    )
+}
+
+/// The document the view names, and whether items need their file name: a
+/// store shared by more than one file names it on every line.
+fn view_document(store: &ReviewFile, stem: &str) -> (String, bool) {
+    let files: std::collections::BTreeSet<&str> =
+        store.reviews.iter().map(|r| r.file.as_str()).collect();
+    match files.len() {
+        0 => (stem.to_string(), false),
+        1 => (files.into_iter().next().unwrap_or(stem).to_string(), false),
+        _ => (stem.to_string(), true),
+    }
+}
+
+/// `done …` as the agent types it; a PDF needs the build that succeeded.
+fn done_usage(document: &str, id: &str, pdf: bool) -> String {
+    format!(
+        "pdf-next reviews done {document} {id} \"<what you changed>\"{}",
+        if pdf {
+            " --built \"<build command>\""
         } else {
-            note
-        };
+            ""
+        }
+    )
+}
+
+const ASK_RULE: &str = "An ask item means the text is unclear: rewrite it so it answers that, and say in the done note what you changed";
+
+/// `{stem}_review.agent.txt`: one header line, then one line per open review,
+/// in reading order. Built for an agent's context window: the location, the
+/// task and enough of the quote to find the text.
+fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
+    agent_view_since(store, stem, inbox, None)
+}
+
+/// The agent view, with `since`: only the open items changed after that
+/// store revision. An item without a change stamp counts as changed.
+fn agent_view_since(store: &ReviewFile, stem: &str, inbox: &str, since: Option<u64>) -> String {
+    let (document, named) = view_document(store, stem);
+    let pdf = store.reviews.iter().any(|r| r.kind == "pdf") || document.ends_with(".pdf");
+    let waiting: Vec<&str> = store
+        .reviews
+        .iter()
+        .filter(|r| r.status == "question")
+        .map(|r| r.id.as_str())
+        .collect();
+    let applied = store
+        .reviews
+        .iter()
+        .filter(|r| r.status == "applied")
+        .count();
+    let open = open_in_order(store);
+    let listed: Vec<&Review> = open
+        .iter()
+        .copied()
+        .filter(|r| {
+            since.is_none_or(|since| !stamps_current(store) || r.rev.is_none_or(|rev| rev > since))
+        })
+        .collect();
+    let mut out = format!("# {document} rev {}: {} open", store.revision, open.len());
+    if let Some(since) = since {
+        out.push_str(&format!(" ({} changed since rev {since})", listed.len()));
+    }
+    if !waiting.is_empty() {
         out.push_str(&format!(
-            "{} {file}{location} {}: {} | \"{}\"\n",
-            review.id,
-            review.action,
-            note,
-            view_quote(&review.quote, 120),
+            ", {} waiting on the reader ({})",
+            waiting.len(),
+            waiting.join(" ")
         ));
+    }
+    out.push_str(&format!(
+        ", {applied} applied. Fix each in the source. Done: {} (or the line \"<id> <what you changed>\" in {stem}_review.done). Unclear: pdf-next reviews ask {document} <id> \"<question>\"",
+        done_usage(&document, "<id>", pdf),
+    ));
+    if listed
+        .iter()
+        .any(|r| r.requests.iter().any(|q| q.starts_with("ask:")))
+    {
+        out.push_str(". ");
+        out.push_str(ASK_RULE);
+    }
+    let unread = inbox_unread(inbox);
+    if !unread.is_empty() {
+        let list: Vec<String> = unread.iter().map(usize::to_string).collect();
+        out.push_str(&format!(
+            ". Unread {stem}_review.done lines: {}",
+            list.join(", ")
+        ));
+    }
+    out.push('\n');
+    for review in listed {
+        out.push_str(&view_line(review, named, VIEW_QUOTE));
+        out.push('\n');
     }
     out
 }
 
-/// Close reviews from `{stem}_review.done`: each line `<id> <what changed>`
-/// marks that review applied, with the text as its resolution. The file is
-/// only read. A later line for an ID wins; an ID no longer in the store is
-/// skipped. A line is applied only when the resolution differs, so applying
-/// the file again changes nothing, and a review you reopened stays open
-/// until a new line for it arrives. Returns whether anything changed.
-fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
-    let mut last: Vec<(String, String)> = Vec::new();
-    for line in inbox.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+/// `reviews next`: the first open item in reading order and, for Markdown,
+/// the source lines its quote is on, numbered.
+fn next_view(store: &ReviewFile, stem: &str, source: Option<&str>) -> String {
+    let (document, named) = view_document(store, stem);
+    let open = open_in_order(store);
+    let waiting = store
+        .reviews
+        .iter()
+        .filter(|r| r.status == "question")
+        .count();
+    let Some(review) = open.first().copied() else {
+        return format!(
+            "# {document}: nothing open{}",
+            if waiting > 0 {
+                format!(", {waiting} waiting on the reader")
+            } else {
+                String::new()
+            }
+        );
+    };
+    let mut item = review.clone();
+    let lines = source.and_then(|source| quote_lines(source, review));
+    if let Some((first, last, _)) = lines.as_ref() {
+        item.at.line = Some(*first);
+        item.at.end = (last > first).then_some(*last);
+    }
+    let mut out = format!(
+        "# {document}: {} open. Done: {} (unclear: pdf-next reviews ask {document} {} \"<question>\")",
+        open.len(),
+        done_usage(&document, &review.id, review.kind == "pdf"),
+        review.id,
+    );
+    if review.requests.iter().any(|q| q.starts_with("ask:")) {
+        out.push_str(". ");
+        out.push_str(ASK_RULE);
+    }
+    out.push('\n');
+    // A PDF has no source lines to show, so its quote is the way in.
+    let quote_limit = if review.kind == "pdf" {
+        400
+    } else {
+        VIEW_QUOTE
+    };
+    out.push_str(&view_line(&item, named, quote_limit));
+    out.push('\n');
+    if let Some((_, _, text)) = lines {
+        out.push_str(&text);
+    }
+    out
+}
+
+/// Most source lines `next` prints for one item.
+const NEXT_LINES: u32 = 30;
+
+/// The lines of a Markdown source that hold a review's quote, found as the
+/// app finds it, or else its recorded block up to the next blank line.
+fn quote_lines(source: &str, review: &Review) -> Option<(u32, u32, String)> {
+    let all: Vec<&str> = source.lines().collect();
+    let anchor = review.anchor.clone().unwrap_or_default();
+    let text = review_locate::rendered(source);
+    let found = match review_locate::resolve(
+        &text.chars,
+        &review.quote,
+        anchor.prefix.as_deref().unwrap_or(""),
+        anchor.suffix.as_deref().unwrap_or(""),
+    ) {
+        review_locate::Found::Located { start, end, .. }
+        | review_locate::Found::Changed { start, end } => Some((start, end)),
+        _ => None,
+    };
+    let (first, last) = match found {
+        Some((start, end)) => (text.lines[start], text.lines[end - 1]),
+        None => {
+            let first = review.at.line?;
+            let mut last = review.at.end.unwrap_or(first).max(first);
+            while (last as usize) < all.len() && !all[last as usize].trim().is_empty() {
+                last += 1;
+            }
+            (first, last)
         }
-        let Some((id, text)) = line.split_once(char::is_whitespace) else {
+    };
+    let last = last.min(first + NEXT_LINES - 1);
+    let mut out = String::new();
+    for number in first..=last {
+        let line = all.get(number as usize - 1)?;
+        out.push_str(&format!("{number}| {line}\n"));
+    }
+    Some((first, last, out))
+}
+
+/// Close reviews from `{stem}_review.done`: each line `<id> <what changed>`
+/// marks that review applied, with the text as its resolution, and a line
+/// `<id> ? <question>` asks the reader about an open one. The file is only
+/// read. A later line for an ID wins; an ID no longer in the store is
+/// skipped. A line is applied only when it differs from what the review
+/// holds, so applying the file again changes nothing, and a review you
+/// reopened, or that the reader answered, stays open until a new line for it
+/// arrives. Returns whether anything changed.
+fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
+    let mut last: Vec<(String, bool, String)> = Vec::new();
+    for line in inbox.lines() {
+        let Some(Some((id, asks, text))) = inbox_line(line) else {
             continue;
         };
-        let text: String = text.trim().chars().take(4_000).collect();
-        if !review_command::valid_id(id) || text.is_empty() {
-            continue;
-        }
-        last.retain(|(seen, _)| seen != id);
-        last.push((id.to_string(), text));
+        let limit = if asks { 2_000 } else { 4_000 };
+        let text: String = text.chars().take(limit).collect();
+        last.retain(|(seen, _, _)| seen != id);
+        last.push((id.to_string(), asks, text));
     }
     let mut changed = false;
-    for (id, text) in last {
+    for (id, asks, text) in last {
         let Some(review) = store.reviews.iter_mut().find(|review| review.id == id) else {
             continue;
         };
+        if asks {
+            if review.status == "open" && review.question != text {
+                ask_reader(review, &text);
+                changed = true;
+            }
+            continue;
+        }
         if review.resolution == text {
             continue;
         }
@@ -4310,6 +4559,13 @@ fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Put a question to the reader: the item waits until the app saves a reply.
+fn ask_reader(review: &mut Review, question: &str) {
+    review.status = "question".into();
+    review.question = question.trim().to_string();
+    review.reply.clear();
 }
 
 /// Largest `{stem}_review.done` read.
@@ -4340,14 +4596,40 @@ fn apply_done_inbox(doc_path: &ReviewPath) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The agent view of a document's store, as `{stem}_review.agent.txt` holds it.
-fn review_brief(doc_path: &ReviewPath) -> Result<String, String> {
+/// The agent view of a document's store, as `{stem}_review.agent.txt` holds
+/// it, or with `since` only the items changed after that revision.
+fn review_brief(doc_path: &ReviewPath, since: Option<u64>) -> Result<String, String> {
     let (sidecar, store) = load_store(doc_path)?;
-    Ok(agent_view(
+    Ok(agent_view_since(
         &store,
         &sidecar_document_name(&sidecar),
         &read_inbox(&sidecar),
+        since,
     ))
+}
+
+/// `reviews next`: the first open item, with its source lines for Markdown.
+fn review_next(doc_path: &ReviewPath) -> Result<String, String> {
+    let (sidecar, store) = load_store(doc_path)?;
+    let source = if kind_for(doc_path) == "markdown" {
+        Some(read_markdown_source(doc_path)?)
+    } else {
+        None
+    };
+    Ok(next_view(
+        &reviews_for_file(store, &document_basename(doc_path)?),
+        &sidecar_document_name(&sidecar),
+        source.as_deref(),
+    ))
+}
+
+/// The text of an admitted Markdown document, bounded like the viewer's read.
+fn read_markdown_source(doc_path: &ReviewPath) -> Result<String, String> {
+    let metadata = doc_path.metadata().map_err(|error| error.to_string())?;
+    if metadata.len() > MARKDOWN_LIMIT {
+        return Err("markdown file is too large".into());
+    }
+    doc_path.read_to_string().map_err(|error| error.to_string())
 }
 
 /// `pdf-next reviews done`: mark one review applied with what was changed.
@@ -4377,6 +4659,178 @@ fn mark_review_done(
     review.resolution = text.trim().to_string();
     save_store(&sidecar, &mut store)?;
     Ok(reviews_for_file(store, &basename))
+}
+
+/// `pdf-next reviews ask`: the agent cannot do an open item without the
+/// reader. It waits as `question` until the reader replies in the app.
+fn ask_review_question(
+    doc_path: &ReviewPath,
+    id: &str,
+    question: &str,
+) -> Result<ReviewFile, String> {
+    let basename = document_basename(doc_path)?;
+    let sidecar_path = doc_path.sidecar();
+    let _lock = ReviewLock::acquire(&sidecar_path)?;
+    let (sidecar, mut store) = load_store(doc_path)?;
+    let review = store
+        .reviews
+        .iter_mut()
+        .find(|review| review.id == id && review.file == basename)
+        .ok_or_else(|| format!("{id} is not a review of {basename}"))?;
+    if review.status != "open" {
+        return Err(format!("{id} is {}, not open", review.status));
+    }
+    ask_reader(review, question);
+    save_store(&sidecar, &mut store)?;
+    Ok(reviews_for_file(store, &basename))
+}
+
+/// `pdf-next reviews add`: file a review from a script. It goes through the
+/// same checks, lock and colour choice as one made in the app. Markdown
+/// reviews get their context from the source when the quote is found there.
+fn add_review_record(
+    document: &str,
+    mut review: Review,
+    allowed: &AllowedDocuments,
+) -> Result<(String, ReviewFile), String> {
+    let doc_path = open_review_document(document, allowed)?;
+    review.file = document_basename(&doc_path)?;
+    review.kind = kind_for(&doc_path).to_string();
+    if review.kind == "markdown" && review.anchor.is_none() {
+        let source = read_markdown_source(&doc_path)?;
+        let text = review_locate::rendered(&source);
+        let line = review.at.line.unwrap_or(1);
+        let candidates = match review_locate::resolve(&text.chars, &review.quote, "", "") {
+            review_locate::Found::Located { start, end, .. } => vec![(start, end)],
+            review_locate::Found::Ambiguous(all) => all,
+            _ => Vec::new(),
+        };
+        // A repeated quote is the one nearest the line given.
+        if let Some((start, end)) = candidates
+            .into_iter()
+            .min_by_key(|(start, _)| text.block_lines[*start].abs_diff(line))
+        {
+            let (prefix, suffix) = review_locate::context_at(&text.chars, start, end);
+            review.anchor = Some(ReviewAnchor {
+                prefix: Some(prefix),
+                suffix: Some(suffix),
+                ..ReviewAnchor::default()
+            });
+        }
+    }
+    let store = write_review(document, review, allowed)?;
+    let id = store
+        .reviews
+        .iter()
+        .filter_map(|review| Some((review.id.strip_prefix('r')?.parse::<u64>().ok()?, review)))
+        .max_by_key(|(number, _)| *number)
+        .map(|(_, review)| review.id.clone())
+        .ok_or("the review was not saved")?;
+    Ok((id, store))
+}
+
+/// What `relocate` did with one review.
+#[derive(Debug, PartialEq)]
+enum Relocated {
+    Moved { from: String, to: String },
+    Unchanged,
+    NotFound,
+}
+
+/// `pdf-next reviews relocate`: find each open Markdown review in the source
+/// as it is now, and record its lines and context, as the app does while it
+/// shows the file. A quote the app's rules cannot place is looked for with a
+/// fuzzy search near its old line. Applied and resolved items are left alone.
+fn relocate_reviews(
+    document: &str,
+    expected_revision: Option<u64>,
+    allowed: &AllowedDocuments,
+    dry_run: bool,
+) -> Result<(Vec<(String, Relocated)>, ReviewFile), String> {
+    let doc_path = open_review_document(document, allowed)?;
+    if kind_for(&doc_path) != "markdown" {
+        return Err("relocate is for Markdown documents".into());
+    }
+    let basename = document_basename(&doc_path)?;
+    let sidecar_path = doc_path.sidecar();
+    let _lock = ReviewLock::acquire(&sidecar_path)?;
+    let (sidecar, mut store) = load_store(&doc_path)?;
+    if let Some(revision) = expected_revision {
+        if revision != store.revision {
+            return Err(format!(
+                "review conflict: revision changed (expected {revision}, found {})",
+                store.revision
+            ));
+        }
+    }
+    let source = read_markdown_source(&doc_path)?;
+    let digest = text_sha256(&source);
+    let text = review_locate::rendered(&source);
+    let mut report = Vec::new();
+    let mut changed = false;
+    for review in store.reviews.iter_mut().filter(|review| {
+        review.file == basename && matches!(review.status.as_str(), "open" | "question")
+    }) {
+        let from = review_location(review);
+        let anchor = review.anchor.clone().unwrap_or_default();
+        let near = review
+            .at
+            .line
+            .and_then(|line| text.block_lines.iter().position(|at| *at >= line))
+            .unwrap_or(0);
+        let found = match review_locate::resolve(
+            &text.chars,
+            &review.quote,
+            anchor.prefix.as_deref().unwrap_or(""),
+            anchor.suffix.as_deref().unwrap_or(""),
+        ) {
+            review_locate::Found::Located { start, end, .. } => Some((start, end)),
+            // The words changed: the quote stays as the reader made it, and
+            // its lines follow the text that stands there now.
+            review_locate::Found::Changed { start, end } => Some((start, end)),
+            review_locate::Found::Ambiguous(all) => all
+                .into_iter()
+                .min_by_key(|(start, _)| start.abs_diff(near))
+                .filter(|_| anchor.prefix.is_some() || anchor.suffix.is_some()),
+            review_locate::Found::Unlocated => {
+                review_locate::fuzzy(&text.chars, &review.quote, near)
+            }
+        };
+        let Some((start, end)) = found else {
+            report.push((review.id.clone(), Relocated::NotFound));
+            continue;
+        };
+        let line = text.block_lines[start];
+        let last = text.block_lines[end - 1].max(line);
+        let (prefix, suffix) = review_locate::context_at(&text.chars, start, end);
+        let lines = (review.at.line, review.at.end);
+        review.at.line = Some(line);
+        review.at.end = (last > line).then_some(last);
+        let context = (Some(prefix), Some(suffix));
+        if context != (anchor.prefix.clone(), anchor.suffix.clone())
+            || lines != (review.at.line, review.at.end)
+        {
+            let moved_anchor = review.anchor.get_or_insert_with(ReviewAnchor::default);
+            (moved_anchor.prefix, moved_anchor.suffix) = context;
+            moved_anchor.document_revision = Some(digest.clone());
+            changed = true;
+        }
+        report.push((
+            review.id.clone(),
+            if lines == (review.at.line, review.at.end) {
+                Relocated::Unchanged
+            } else {
+                Relocated::Moved {
+                    from,
+                    to: review_location(review),
+                }
+            },
+        ));
+    }
+    if changed && !dry_run {
+        save_store(&sidecar, &mut store)?;
+    }
+    Ok((report, reviews_for_file(store, &basename)))
 }
 
 fn write_atomic_bytes(destination: &ReviewPath, bytes: &[u8]) -> Result<(), String> {
@@ -4501,6 +4955,7 @@ fn reviews_for_file(store: ReviewFile, basename: &str) -> ReviewFile {
             .into_iter()
             .filter(|review| review.file.is_empty() || review.file == basename)
             .collect(),
+        stamped: store.stamped,
         extra: store.extra,
         migration_backup: None,
     }
@@ -4772,6 +5227,14 @@ fn restore_review_record(
     Ok(reviews_for_file(store, &basename))
 }
 
+/// Who sends a patch. Only the agent's side (the CLI) puts a question to the
+/// reader; the app answers it with `reply`.
+#[derive(Clone, Copy, PartialEq)]
+enum PatchFrom {
+    App,
+    Cli,
+}
+
 fn patch_review_record(
     document: &str,
     id: &str,
@@ -4779,6 +5242,26 @@ fn patch_review_record(
     expected: &serde_json::Value,
     allowed: &AllowedDocuments,
     dry_run: bool,
+) -> Result<ReviewFile, String> {
+    patch_review_from(
+        document,
+        id,
+        patch,
+        expected,
+        allowed,
+        dry_run,
+        PatchFrom::Cli,
+    )
+}
+
+fn patch_review_from(
+    document: &str,
+    id: &str,
+    patch: &serde_json::Value,
+    expected: &serde_json::Value,
+    allowed: &AllowedDocuments,
+    dry_run: bool,
+    from: PatchFrom,
 ) -> Result<ReviewFile, String> {
     const PATCHABLE: &[&str] = &[
         "quote",
@@ -4790,6 +5273,8 @@ fn patch_review_record(
         "color",
         "anchor",
         "at",
+        "question",
+        "reply",
     ];
     let changes = patch
         .as_object()
@@ -4801,7 +5286,7 @@ fn patch_review_record(
         return Err("patch must contain at least one field".into());
     }
     for key in changes.keys() {
-        if !PATCHABLE.contains(&key.as_str()) {
+        if !PATCHABLE.contains(&key.as_str()) || (from == PatchFrom::App && key == "question") {
             return Err(format!("unsupported review patch field: {key}"));
         }
         if !expected.contains_key(key) && !expected.contains_key("$revision") {
@@ -4848,6 +5333,13 @@ fn patch_review_record(
     }
     let mut patched: Review = serde_json::from_value(serde_json::Value::Object(current))
         .map_err(|error| format!("invalid review patch: {error}"))?;
+    // A reply answers the question: the item is the agent's again.
+    if changes.contains_key("reply") && !patched.reply.is_empty() && patched.status == "question" {
+        patched.status = "open".into();
+    }
+    if from == PatchFrom::App && patched.status == "question" && review.status != "question" {
+        return Err("only the agent puts a question to the reader".into());
+    }
     validate_review(&patched)?;
     drop_redundant_end(&mut patched);
     let index = store
@@ -4931,13 +5423,14 @@ fn patch_review(
     expected: serde_json::Value,
     watched: State<'_, Watched>,
 ) -> Result<ReviewFile, String> {
-    let store = patch_review_record(
+    let store = patch_review_from(
         &document,
         &id,
         &patch,
         &expected,
         &allowed_set(&watched)?,
         false,
+        PatchFrom::App,
     )?;
     note_sidecar_written(&watched, &document);
     Ok(store)
@@ -7501,11 +7994,15 @@ mod tests {
             action: "improve".into(),
             status: "open".into(),
             resolution: String::new(),
+            question: String::new(),
+            reply: String::new(),
             color: 1,
             anchor: None,
+            before: String::new(),
             source: None,
             build: None,
             requests: Vec::new(),
+            rev: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -7526,11 +8023,15 @@ mod tests {
             action: "improve".into(),
             status: "open".into(),
             resolution: String::new(),
+            question: String::new(),
+            reply: String::new(),
             color: 1,
             anchor: None,
+            before: String::new(),
             source: None,
             build: None,
             requests: Vec::new(),
+            rev: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -8070,6 +8571,7 @@ mod tests {
         assert!(change_review_comment(document, "r1", "", "changed", &allowed).is_err());
         assert!(remove_review(document, "r1", &allowed).is_err());
         let saved = parse_store(&std::fs::read_to_string(review_sidecar(&pdf)).unwrap()).unwrap();
+        foreign.rev = Some(1);
         assert_eq!(saved.reviews, vec![foreign]);
         drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
@@ -8231,24 +8733,36 @@ mod tests {
             next_id: 4,
             document: None,
             reviews: vec![r1, r2, r3],
+            stamped: None,
             migration_backup: None,
             extra: serde_json::Map::new(),
         };
         let view = super::agent_view(&store, "notes.md", "");
-        assert!(view.contains("write the answer as the done note"), "{view}");
+        assert!(
+            view.contains("means the text is unclear: rewrite it so it answers that"),
+            "{view}"
+        );
+        assert!(!view.contains("answer as the done note"), "{view}");
         assert!(
             view.contains(
-                "r1 L12-18 request: explain why; explain how; scope: the whole paragraph | \""
+                "r1 L12-18 make the text say why; make the text say how; scope: whole paragraph | \""
             ),
             "{view}"
         );
         assert!(
-            view.contains("r2 L12-18 request: shorten; tone: Journal of Fluid Mechanics style; note \"keep the equation\" |"),
+            view.contains("r2 L12-18 shorten; tone: Journal of Fluid Mechanics style; note \"keep the equation\" |"),
             "{view}"
         );
         assert!(
-            view.contains("r3 L12-18 polish: scope: the whole section |"),
+            view.contains("r3 L12-18 polish (scope: whole section) |"),
             "{view}"
+        );
+        let mut changes_only = store.clone();
+        changes_only.reviews.remove(0);
+        let view = super::agent_view(&changes_only, "notes.md", "");
+        assert!(
+            !view.contains("rewrite it so it answers"),
+            "the Ask rule shows only with an Ask: {view}"
         );
 
         let json = serde_json::to_value(&store.reviews[0]).unwrap();
@@ -8283,6 +8797,7 @@ mod tests {
             next_id: 4,
             document: None,
             reviews: vec![r1, r2, r3],
+            stamped: None,
             migration_backup: None,
             extra: serde_json::Map::new(),
         };
@@ -8374,9 +8889,9 @@ mod tests {
     }
 
     const DEMO_VIEW: &str = "\
-r3 L7 improve: move this before the table | \"the table below\"
-r1 L12 improve: say this is an ideal value | \"the exit speed v ∗ of the gas\"
-r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so the burning area stays flat until the two fronts meet near the middle of the…\"
+r3 L7 move this before the table | \"the table below\"
+r1 L12 say this is an ideal value | \"the exit speed v ∗ of the gas\"
+r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area stays flat until…\"
 ";
 
     #[test]
@@ -8413,7 +8928,8 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
         let lines: Vec<&str> = written.lines().collect();
         assert_eq!(lines.len(), 5, "header, three items, closing: {written}");
         assert!(
-            lines[0].starts_with(r#"{"format":3,"revision":13,"nextId":4,"reviews":["#),
+            lines[0]
+                .starts_with(r#"{"format":3,"revision":13,"nextId":4,"stamped":13,"reviews":["#),
             "{}",
             lines[0]
         );
@@ -8427,9 +8943,12 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
             "one line holds the whole item: {r2}"
         );
         let reread = super::parse_store(&written).unwrap();
+        for review in &mut store.reviews {
+            review.rev = Some(13);
+        }
         assert_eq!(
             reread.reviews, store.reviews,
-            "the layout changes no field but the quote's line breaks"
+            "the layout changes no field but the quote's line breaks, and unstamped items get a stamp"
         );
         assert_eq!(
             super::store_json(&reread).unwrap(),
@@ -8444,15 +8963,15 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
     fn agent_view_lists_open_items_in_reading_order() {
         let (dir, md, allowed) = demo_tree();
         let doc = allowed.get(&md).unwrap().clone();
-        let view = super::review_brief(&doc).unwrap();
+        let view = super::review_brief(&doc, None).unwrap();
         let (header, body) = view.split_once('\n').unwrap();
-        assert_eq!(header, "# demo.md review, revision 12: 3 open, 0 applied, 0 resolved. Close an item: pdf-next reviews done demo.md <id> \"<what you changed>\", or append \"<id> <what you changed>\" to demo_review.done");
+        assert_eq!(header, "# demo.md rev 12: 3 open, 0 applied. Fix each in the source. Done: pdf-next reviews done demo.md <id> \"<what you changed>\" (or the line \"<id> <what you changed>\" in demo_review.done). Unclear: pdf-next reviews ask demo.md <id> \"<question>\"");
         assert_eq!(body, DEMO_VIEW);
         // Every store write leaves the same view on disk.
         mark_review_done(&doc, "r3", "moved the sentence before the table", None).unwrap();
         let file = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
         assert!(
-            file.starts_with("# demo.md review, revision 13: 2 open, 1 applied, 0 resolved."),
+            file.starts_with("# demo.md rev 13: 2 open, 1 applied."),
             "{file}"
         );
         assert!(
@@ -8556,7 +9075,8 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
         let store = mark_review_done(&doc, "r1", "fixed", Some("latexmk -pdf paper.tex")).unwrap();
         assert_eq!(store.reviews[0].status, "applied");
         let view = std::fs::read_to_string(dir.join("paper_review.agent.txt")).unwrap();
-        assert!(view.starts_with("# paper.pdf review"), "{view}");
+        assert!(view.starts_with("# paper.pdf rev 2: 0 open"), "{view}");
+        assert!(view.contains("--built \"<build command>\""), "{view}");
         drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -8586,7 +9106,19 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
             .map(|review| review.id.as_str())
             .collect();
         assert_eq!(ids, ["r1", "r2", "r3"], "the record returns to its place");
-        assert_eq!(restored.reviews[1], removed, "the record returns unchanged");
+        assert_eq!(
+            restored.reviews[1].rev,
+            Some(restored.revision),
+            "a restore is a change"
+        );
+        assert_eq!(
+            super::Review {
+                rev: removed.rev,
+                ..restored.reviews[1].clone()
+            },
+            removed,
+            "the record returns unchanged"
+        );
         assert_eq!(
             restored.next_id, before.next_id,
             "no ID is issued by a restore"
@@ -9379,5 +9911,526 @@ r2 L40-42 delete: (no comment) | \"the slab burns from both faces at once, so th
         )
         .is_err());
         assert_eq!(permanent_attempts, 1);
+    }
+
+    /// A Markdown document and its store, from text: (folder, document, allowed).
+    fn markdown_tree(
+        name: &str,
+        source: &str,
+        store: &str,
+    ) -> (PathBuf, PathBuf, super::AllowedDocuments) {
+        let dir = scratch(name);
+        let md = dir.join("wake.md");
+        std::fs::write(&md, source).unwrap();
+        if !store.is_empty() {
+            std::fs::write(dir.join("wake_review.json"), store).unwrap();
+        }
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        (dir, canonical, allowed)
+    }
+
+    #[test]
+    fn every_write_stamps_what_it_changed_and_brief_since_lists_only_that() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let document = md.to_str().unwrap();
+        // A store from before 0.17 has no stamps: everything counts as changed.
+        let view = super::review_brief(&doc, Some(12)).unwrap();
+        assert!(
+            view.starts_with("# demo.md rev 12: 3 open (3 changed since rev 12)"),
+            "{view}"
+        );
+        mark_review_done(&doc, "r3", "moved the sentence", None).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert!(
+            store.reviews.iter().all(|r| r.rev == Some(13)),
+            "the first write stamps every item"
+        );
+        patch_review_record(
+            document,
+            "r1",
+            &serde_json::json!({ "color": 5 }),
+            &serde_json::json!({ "$revision": 13 }),
+            &allowed,
+            false,
+        )
+        .unwrap();
+        std::fs::write(dir.join("demo_review.done"), "r2 deleted the passage\n").unwrap();
+        super::apply_done_inbox(&doc).unwrap();
+        let mut extra = markdown_review();
+        extra.file = "demo.md".into();
+        write_review(document, extra, &allowed).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        let rev = |id: &str| store.reviews.iter().find(|r| r.id == id).unwrap().rev;
+        assert_eq!(
+            (rev("r1"), rev("r2"), rev("r3"), rev("r4")),
+            (Some(14), Some(15), Some(13), Some(16))
+        );
+        let view = super::review_brief(&doc, Some(14)).unwrap();
+        let lines: Vec<&str> = view.lines().collect();
+        assert!(
+            lines[0].starts_with("# demo.md rev 16: 2 open (1 changed since rev 14)"),
+            "{view}"
+        );
+        assert_eq!(lines.len(), 2, "{view}");
+        assert!(lines[1].starts_with("r4 L12-18 tighten this"), "{view}");
+        // An older app rewrites the store without stamping: all are listed again.
+        let sidecar = dir.join("demo_review.json");
+        let text = std::fs::read_to_string(&sidecar).unwrap();
+        std::fs::write(&sidecar, text.replace("\"revision\":16", "\"revision\":17")).unwrap();
+        let view = super::review_brief(&doc, Some(16)).unwrap();
+        assert!(view.contains("(2 changed since rev 16)"), "{view}");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn next_prints_the_first_open_item_with_its_source_lines() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let next = super::review_next(&doc).unwrap();
+        assert_eq!(
+            next,
+            "# demo.md: 3 open. Done: pdf-next reviews done demo.md r3 \"<what you changed>\" (unclear: pdf-next reviews ask demo.md r3 \"<question>\")\n\
+             r3 L7 move this before the table | \"the table below\"\n\
+             7| See the table below for the cases.\n"
+        );
+        for id in ["r3", "r1"] {
+            mark_review_done(&doc, id, "done", None).unwrap();
+        }
+        let next = super::review_next(&doc).unwrap();
+        assert!(
+            next.ends_with(
+                "40| In the second case the slab burns from both faces at once, so the\n\
+                 41| burning area stays flat until the two fronts meet near the middle\n\
+                 42| of the web and the area then falls to zero within one cell.\n"
+            ),
+            "{next}"
+        );
+        super::ask_review_question(&doc, "r2", "Delete the whole paragraph or the clause?")
+            .unwrap();
+        assert_eq!(
+            super::review_next(&doc).unwrap(),
+            "# demo.md: nothing open, 1 waiting on the reader"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn next_on_a_pdf_gives_the_page_and_a_longer_quote() {
+        let dir = scratch("next_pdf");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let mut review = pdf_review();
+        review.quote = "word ".repeat(40).trim().into();
+        write_review(canonical.to_str().unwrap(), review, &allowed).unwrap();
+        let next = super::review_next(allowed.get(&canonical).unwrap()).unwrap();
+        let (header, item) = next.split_once('\n').unwrap();
+        assert!(header.contains("--built \"<build command>\""), "{header}");
+        assert!(
+            item.starts_with("r1 p7 does the figure still match? | \"word word"),
+            "{item}"
+        );
+        assert!(
+            item.len() > 150,
+            "a PDF item shows more of its quote: {item}"
+        );
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_agent_asks_and_the_reader_replies() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let document = md.to_str().unwrap();
+        let store = super::ask_review_question(&doc, "r1", "Ideal in which sense?").unwrap();
+        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
+        assert_eq!(
+            (r1.status.as_str(), r1.question.as_str()),
+            ("question", "Ideal in which sense?")
+        );
+        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
+        assert!(
+            view.starts_with("# demo.md rev 13: 2 open, 1 waiting on the reader (r1), 0 applied."),
+            "{view}"
+        );
+        assert!(
+            !view.contains("\nr1 "),
+            "a waiting item is not listed: {view}"
+        );
+        let again = super::ask_review_question(&doc, "r1", "again").unwrap_err();
+        assert!(again.contains("not open"), "{again}");
+        // The app may not ask, and may not answer by setting the status.
+        let refused = super::patch_review_from(
+            document,
+            "r3",
+            &serde_json::json!({ "status": "question", "question": "?" }),
+            &serde_json::json!({ "$revision": 13 }),
+            &allowed,
+            false,
+            super::PatchFrom::App,
+        )
+        .unwrap_err();
+        assert!(refused.contains("question"), "{refused}");
+        let refused = super::patch_review_from(
+            document,
+            "r3",
+            &serde_json::json!({ "status": "question" }),
+            &serde_json::json!({ "$revision": 13 }),
+            &allowed,
+            false,
+            super::PatchFrom::App,
+        )
+        .unwrap_err();
+        assert!(refused.contains("only the agent"), "{refused}");
+        let store = super::patch_review_from(
+            document,
+            "r1",
+            &serde_json::json!({ "reply": "Ideal gas: no viscosity, no heat loss." }),
+            &serde_json::json!({ "reply": null, "status": "question" }),
+            &allowed,
+            false,
+            super::PatchFrom::App,
+        )
+        .unwrap();
+        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
+        assert_eq!(r1.status, "open", "a reply puts the item back to open");
+        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
+        assert!(
+            view.contains("r1 L12 say this is an ideal value; you asked \"Ideal in which sense?\", reader replied: \"Ideal gas: no viscosity, no heat loss.\" |"),
+            "{view}"
+        );
+        assert!(!view.contains("waiting"), "{view}");
+        // The same through the inbox, which also leaves a reply alone.
+        let inbox = dir.join("demo_review.done");
+        std::fs::write(&inbox, "r3 ? Which table?\nr2 ?\n").unwrap();
+        assert!(super::apply_done_inbox(&doc).unwrap());
+        let store = list_reviews(document, &allowed).unwrap();
+        let r3 = store.reviews.iter().find(|r| r.id == "r3").unwrap();
+        assert_eq!(
+            (r3.status.as_str(), r3.question.as_str()),
+            ("question", "Which table?")
+        );
+        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
+        assert!(
+            view.lines()
+                .next()
+                .unwrap()
+                .ends_with("Unread demo_review.done lines: 2"),
+            "{view}"
+        );
+        super::patch_review_from(
+            document,
+            "r3",
+            &serde_json::json!({ "reply": "Table 2" }),
+            &serde_json::json!({ "reply": null }),
+            &allowed,
+            false,
+            super::PatchFrom::App,
+        )
+        .unwrap();
+        assert!(
+            !super::apply_done_inbox(&doc).unwrap(),
+            "an answered question is not asked again"
+        );
+        // The reader can close a question too.
+        super::ask_review_question(&doc, "r2", "Keep the last clause?").unwrap();
+        let store = super::patch_review_from(
+            document,
+            "r2",
+            &serde_json::json!({ "status": "resolved" }),
+            &serde_json::json!({ "status": "question" }),
+            &allowed,
+            false,
+            super::PatchFrom::App,
+        )
+        .unwrap();
+        assert_eq!(
+            store.reviews.iter().find(|r| r.id == "r2").unwrap().status,
+            "resolved"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_documented_sidecar_is_a_valid_store() {
+        let store = parse_store(include_str!("../../docs/_review.json")).unwrap();
+        for review in &store.reviews {
+            super::validate_review(review).unwrap();
+        }
+        assert!(super::stamps_current(&store));
+        let view = super::agent_view(&store, "paper.pdf", "");
+        assert!(view.contains("1 waiting on the reader (r2)"), "{view}");
+    }
+
+    #[test]
+    fn question_reply_and_before_are_checked_and_kept() {
+        let mut review = markdown_review();
+        review.status = "question".into();
+        assert!(
+            super::validate_review(&review).is_err(),
+            "a question needs its text"
+        );
+        review.question = "Which reference?".into();
+        assert!(super::validate_review(&review).is_ok());
+        review.question = "q".repeat(2_001);
+        assert!(super::validate_review(&review).is_err());
+        review.question = "Which reference?".into();
+        review.reply = "r".repeat(2_001);
+        assert!(super::validate_review(&review).is_err());
+        review.reply = "Barkley 2006".into();
+        review.before = "b".repeat(20_001);
+        assert!(super::validate_review(&review).is_err());
+        review.before = "The source lines.\n".into();
+        review.rev = Some(4);
+        review.id = "r1".into();
+        let line = serde_json::to_string(&review).unwrap();
+        assert!(
+            line.contains(r#""question":"Which reference?","reply":"Barkley 2006""#),
+            "{line}"
+        );
+        let back: Review = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, review);
+        let mut store = empty_store();
+        store.revision = 3;
+        store.reviews.push(review);
+        let view = super::agent_view(&store, "collab.md", "");
+        assert!(
+            !view.contains("The source lines"),
+            "before is never in the agent view: {view}"
+        );
+        let plain = serde_json::to_value(markdown_review()).unwrap();
+        for key in ["question", "reply", "before", "rev"] {
+            assert!(plain.get(key).is_none(), "{key} is left out when empty");
+        }
+        assert!(parse_store(r#"{"format":3,"reviews":[{"id":"r1","status":"waiting"}]}"#).is_ok());
+    }
+
+    #[test]
+    fn add_files_a_review_with_context_from_the_source() {
+        let (dir, md, allowed) = markdown_tree(
+            "add_review",
+            "# Wake\n\nThe wake grows here.\n\nLater the wake grows again.\n",
+            "",
+        );
+        let document = md.to_str().unwrap();
+        let mut review: Review = serde_json::from_value(serde_json::json!({
+            "at": { "line": 5 },
+            "quote": "the wake grows",
+            "action": "request",
+            "requests": ["ask:why", "scope:paragraph"],
+        }))
+        .unwrap();
+        let (id, store) = super::add_review_record(document, review.clone(), &allowed).unwrap();
+        assert_eq!(id, "r1");
+        let added = &store.reviews[0];
+        assert_eq!(
+            (added.file.as_str(), added.kind.as_str()),
+            ("wake.md", "markdown")
+        );
+        let anchor = added.anchor.as_ref().unwrap();
+        assert_eq!(
+            (anchor.prefix.as_deref(), anchor.suffix.as_deref()),
+            (Some("wake the wake grows here. later"), Some("again.")),
+            "the repeat nearest the line given"
+        );
+        assert!(anchor.document_revision.is_some());
+        review.requests = vec!["ask:vibes".into()];
+        assert!(super::add_review_record(document, review.clone(), &allowed).is_err());
+        review.requests.clear();
+        assert!(
+            super::add_review_record(document, review, &allowed).is_err(),
+            "a request review needs a request"
+        );
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    const RELOCATE_BASE: &str = include_str!("../../tests/fixtures/relocate/base.md");
+
+    /// Reviews on base.md, made as the app makes them, plus one applied.
+    fn relocate_store() -> String {
+        let text = super::review_locate::rendered(RELOCATE_BASE);
+        let joined: String = text.chars.iter().collect();
+        let review = |id: &str, quote: &str, status: &str| {
+            let start =
+                joined.chars().count() - joined[joined.find(quote).unwrap()..].chars().count();
+            let end = start + quote.chars().count();
+            let (prefix, suffix) = super::review_locate::context_at(&text.chars, start, end);
+            let line = text.block_lines[start];
+            let last = text.block_lines[end - 1];
+            let mut at = serde_json::json!({ "line": line });
+            if last > line {
+                at["end"] = serde_json::json!(last);
+            }
+            serde_json::json!({
+                "id": id, "at": at, "action": "polish", "status": status, "comment": "",
+                "resolution": if status == "open" { "" } else { "done" }, "color": 1,
+                "file": "wake.md", "kind": "markdown", "quote": quote,
+                "anchor": { "prefix": prefix, "suffix": suffix, "documentRevision": "sha256:base" },
+            })
+        };
+        serde_json::json!({
+            "format": 3, "revision": 5, "nextId": 6,
+            "reviews": [
+                review("r1", "the wake becomes unstable", "open"),
+                review("r2", "the flow is incompressible", "open"),
+                review("r3", "measured with a hot wire placed downstream", "open"),
+                review("r4", "the leading eigenvalue", "open"),
+                review("r5", "the strouhal number", "applied"),
+            ],
+        })
+        .to_string()
+    }
+
+    fn relocate_report(edit: &str) -> (Vec<(String, super::Relocated)>, super::ReviewFile) {
+        let (dir, md, allowed) = markdown_tree("relocate", RELOCATE_BASE, &relocate_store());
+        std::fs::write(&md, edit).unwrap();
+        let result =
+            super::relocate_reviews(md.to_str().unwrap(), Some(5), &allowed, false).unwrap();
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+        result
+    }
+
+    fn outcome(report: &[(String, super::Relocated)], id: &str) -> String {
+        match &report.iter().find(|(seen, _)| seen == id).unwrap().1 {
+            super::Relocated::Moved { from, to } => format!("moved {from} -> {to}"),
+            super::Relocated::Unchanged => "unchanged".into(),
+            super::Relocated::NotFound => "not found".into(),
+        }
+    }
+
+    #[test]
+    fn relocate_follows_lines_inserted_above() {
+        let (report, store) =
+            relocate_report(include_str!("../../tests/fixtures/relocate/inserted.md"));
+        assert_eq!(outcome(&report, "r1"), "moved L3 -> L6");
+        assert_eq!(outcome(&report, "r2"), "moved L6 -> L9");
+        assert_eq!(outcome(&report, "r3"), "moved L9 -> L12");
+        assert_eq!(outcome(&report, "r4"), "moved L12 -> L15");
+        assert!(
+            report.iter().all(|(id, _)| id != "r5"),
+            "applied items are left alone"
+        );
+        let r5 = store.reviews.iter().find(|r| r.id == "r5").unwrap();
+        assert_eq!(r5.at.line, Some(9));
+        assert_eq!(store.revision, 6);
+        let r2 = store.reviews.iter().find(|r| r.id == "r2").unwrap();
+        assert_ne!(
+            r2.anchor.as_ref().unwrap().document_revision.as_deref(),
+            Some("sha256:base")
+        );
+    }
+
+    #[test]
+    fn relocate_keeps_a_quote_whose_neighbours_were_reworded() {
+        let (report, store) =
+            relocate_report(include_str!("../../tests/fixtures/relocate/reworded.md"));
+        assert_eq!(
+            outcome(&report, "r2"),
+            "unchanged",
+            "same lines; only the context moved"
+        );
+        let r2 = store.reviews.iter().find(|r| r.id == "r2").unwrap();
+        assert_eq!(
+            r2.anchor
+                .as_ref()
+                .unwrap()
+                .prefix
+                .as_deref()
+                .map(|p| p.ends_with("we assume")),
+            Some(true)
+        );
+        assert_eq!(outcome(&report, "r1"), "unchanged");
+    }
+
+    #[test]
+    fn relocate_reports_a_deleted_paragraph_as_not_found() {
+        let (report, _) = relocate_report(include_str!("../../tests/fixtures/relocate/deleted.md"));
+        assert_eq!(outcome(&report, "r2"), "not found");
+        assert_eq!(outcome(&report, "r3"), "moved L9 -> L6");
+        assert_eq!(outcome(&report, "r4"), "moved L12 -> L9");
+    }
+
+    #[test]
+    fn relocate_finds_a_quote_edited_inside() {
+        let (report, store) = relocate_report(include_str!(
+            "../../tests/fixtures/relocate/edited-quote.md"
+        ));
+        assert_eq!(
+            outcome(&report, "r3"),
+            "unchanged",
+            "found on its line though its words changed"
+        );
+        // "the wake becomes unstable" is now "the wake turns unstable", and the
+        // words before it changed too: only the fuzzy search finds it.
+        let text = super::review_locate::rendered(include_str!(
+            "../../tests/fixtures/relocate/edited-quote.md"
+        ));
+        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
+        let anchor = r1.anchor.as_ref().unwrap();
+        assert_eq!(outcome(&report, "r1"), "unchanged");
+        assert!(
+            anchor
+                .prefix
+                .as_deref()
+                .unwrap()
+                .ends_with("beyond a critical value,"),
+            "{anchor:?}"
+        );
+        assert_eq!(
+            super::review_locate::resolve(
+                &text.chars,
+                "the wake becomes unstable",
+                "past a critical value",
+                "and sheds vortices."
+            ),
+            super::review_locate::Found::Unlocated,
+            "the app's own rules lose it"
+        );
+        let r3 = store.reviews.iter().find(|r| r.id == "r3").unwrap();
+        assert_eq!(
+            r3.quote, "measured with a hot wire placed downstream",
+            "the reader's quote is kept"
+        );
+    }
+
+    #[test]
+    fn relocate_checks_the_revision_and_writes_nothing_when_nothing_moved() {
+        let (dir, md, allowed) = markdown_tree("relocate_cas", RELOCATE_BASE, &relocate_store());
+        let document = md.to_str().unwrap();
+        let stale = super::relocate_reviews(document, Some(4), &allowed, false).unwrap_err();
+        assert!(stale.contains("conflict"), "{stale}");
+        let (report, store) = super::relocate_reviews(document, None, &allowed, false).unwrap();
+        assert!(
+            report
+                .iter()
+                .all(|(_, outcome)| *outcome == super::Relocated::Unchanged),
+            "{report:?}"
+        );
+        assert_eq!(store.revision, 5, "nothing moved, nothing written");
+        std::fs::write(
+            &md,
+            include_str!("../../tests/fixtures/relocate/inserted.md"),
+        )
+        .unwrap();
+        let (_, dry) = super::relocate_reviews(document, None, &allowed, true).unwrap();
+        assert_eq!(dry.reviews[0].at.line, Some(6));
+        let saved =
+            parse_store(&std::fs::read_to_string(dir.join("wake_review.json")).unwrap()).unwrap();
+        assert_eq!(
+            (saved.revision, saved.reviews[0].at.line),
+            (5, Some(3)),
+            "a dry run writes nothing"
+        );
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
