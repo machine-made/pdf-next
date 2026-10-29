@@ -23,6 +23,8 @@
   --page-ring: 30%;
   --aim-highlight: rgba(255, 213, 0, 0.55);
   --changed-highlight: rgba(100, 200, 255, 0.4);
+  --diff-del: rgba(220, 40, 30, 0.22);
+  --diff-ins: rgba(26, 127, 75, 0.24);
   --review-1: rgba(220, 40, 30, 0.28);
   --review-1-line: #c4241a;
   --review-2: rgba(30, 90, 220, 0.26);
@@ -80,6 +82,8 @@
   --page-ring: 26%;
   --aim-highlight: rgba(255, 179, 0, 0.5);
   --changed-highlight: rgba(100, 150, 255, 0.35);
+  --diff-del: rgba(255, 90, 80, 0.3);
+  --diff-ins: rgba(111, 206, 157, 0.28);
   --review-1: rgba(255, 90, 80, 0.38);
   --review-1-line: #f0877a;
   --review-2: rgba(90, 150, 255, 0.36);
@@ -133,6 +137,8 @@
     --page-ring: 26%;
     --aim-highlight: rgba(255, 179, 0, 0.5);
     --changed-highlight: rgba(100, 150, 255, 0.35);
+    --diff-del: rgba(255, 90, 80, 0.3);
+    --diff-ins: rgba(111, 206, 157, 0.28);
     --review-1: rgba(255, 90, 80, 0.38);
     --review-1-line: #f0877a;
     --review-2: rgba(90, 150, 255, 0.36);
@@ -647,6 +653,125 @@ body.review-open #markdownStageSplit {
   height: 22px;
   padding: 0 8px;
   font-size: 0.92em;
+}
+
+/* The agent asked the reader something: the item waits on you. */
+.review-row.question {
+  border-left-width: 5px;
+  border-left-style: double;
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.review-row.question .review-status,
+.review-question-count {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.review-question,
+.review-reply-text {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--widget);
+  line-height: 1.35;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.review-question-label,
+.review-reply-label {
+  display: block;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+
+.review-question-label {
+  color: var(--accent);
+}
+
+.review-reply,
+.review-reopen-note {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.review-reply-box,
+.review-reopen-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.review-diff {
+  border: 1px solid var(--widget-border);
+  border-radius: 4px;
+  background: var(--widget);
+  overflow: hidden;
+}
+
+.review-diff-head {
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.review-diff-body {
+  max-height: 14em;
+  overflow: auto;
+  padding: 4px 6px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.review-diff-body del {
+  background: var(--diff-del);
+  color: inherit;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.review-diff-body ins {
+  background: var(--diff-ins);
+  color: inherit;
+  text-decoration: none;
+}
+
+.review-diff-gap {
+  color: var(--fg-dim);
+}
+
+.note-requests .request-group.has-hint {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.review-no[data-review-status='question'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.review-no[data-review-status='question']::after {
+  content: ' ?';
+}
+
+mark.review[data-review-status='question'],
+.textLayer review-q[data-review-status='question'],
+.review-block[data-review-status='question'] {
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
 }
 
 [data-review-tint='1'] {
