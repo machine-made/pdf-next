@@ -42,6 +42,7 @@ jobs:
             echo "$tag already exists; nothing to release."
             exit 0
           fi
+          node tools/release_notes.mjs "$version" > /dev/null
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "pdf-next $version" "$GITHUB_SHA"

@@ -91,6 +91,18 @@ jobs:
             Set-Content -Path signing.conf.json -Encoding utf8
           "args=--config signing.conf.json" >> $env:GITHUB_OUTPUT
 
+      # The release notes are the version's CHANGELOG.md section; a version
+      # without one stops here, before anything is built or published.
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo 'body<<PDF_NEXT_NOTES'
+            node tools/release_notes.mjs "$GITHUB_REF_NAME"
+            echo 'PDF_NEXT_NOTES'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,19 +112,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: pdf-next ${{ github.ref_name }}
-          releaseBody: |
-            Download the build for your system below.
-
-            - **Windows** — `.exe` installer (one click after SmartScreen:
-              it copies and opens), or `winget install RicardoFrantz.pdf-next`.
-              If SmartScreen warns (an unsigned build), choose *More info -> Run anyway*.
-            - **macOS** — universal `.dmg` (Intel and Apple Silicon), or
-              `brew install --cask machine-made/tap/pdf-next`. Unsigned, so
-              the first launch needs
-              `xattr -dr com.apple.quarantine /Applications/pdf-next.app`.
-            - **Debian and Ubuntu** — `apt install pdf-next` once the
-              repository at https://machine-made.github.io/pdf-next is added
-              (see the README), or the `.deb` and `.AppImage` below.
+          releaseBody: ${{ steps.notes.outputs.body }}
           # Held as a draft until every platform's bundle has opened a
           # document. Nothing is announced, and nothing a package manager
           # follows moves, until the publish job below says so.
