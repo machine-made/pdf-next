@@ -1,0 +1,14 @@
+diff-match-patch 1.0.5 (Google's Diff Match and Patch, JavaScript), for the before/after view of applied reviews.
+Source: npm package diff-match-patch@1.0.5, file index.js (https://github.com/google/diff-match-patch)
+Tarball integrity (registry dist.integrity, checked after npm pack):
+  sha512-IayShXAgj/QMXgB0IWmKx+rOPuGMhqm5w6jvFxmVenXKIzRqTAAsbBPT3kWQeGANj3jGgvcvv4yK6SxqYmikgw==
+1.0.5 is the newest release (published 2020-05-20).
+Change: the CommonJS `module.exports` lines at the end of index.js are replaced by one ES
+`export` line, so the browser imports it as a module. The code above them is unchanged
+(index.js SHA-256 7cead2c7cb3e4ff5c02e173cd6b81d22005e67c47ac2ce28e4b5c73d9ffcfdb2).
+License: Apache-2.0 (LICENSE)
+Downloaded: 2026-10-29
+
+SHA-256 of each file here:
+  58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd  LICENSE
+  b9d6d7e19b56b4a1d01018dd1f13e0de704e95ed9629733f3fbe55c3a9002bc0  diff_match_patch.mjs
