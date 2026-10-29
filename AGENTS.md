@@ -98,9 +98,18 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cd ..
 node tools/check_frontend.mjs
+bun install && bunx playwright install chromium   # once
+node tests/browser/run.mjs                        # or: node tests/browser/run.mjs panes a11y
 ```
 
+`tests/browser/` runs the frontend in Chromium against a mocked Tauri backend,
+one file per area, with axe-core accessibility checks in `a11y.mjs`. Screenshots
+go to `$RUNNER_TEMP/pdf-next-browser` (or the system temp directory), never the
+tree. A UI change comes with a check there.
+
 CI also builds the app and runs `tools/smoke.mjs` on Windows, macOS and Linux.
+Smoke prints the time from launch to the first drawn document and from a file
+change to the reloaded page, and fails above a per-platform budget.
 A pull request is ready when:
 
 - formatting, lint and tests pass, and CI is green on all three platforms;
