@@ -356,7 +356,7 @@ agent has a project instructions file, one line — *"open PDFs with `pdf-next <
 
 #### Review tasks for agents
 
-The review sidecar is a task list for editing the source. An agent needs three things from it,
+The review sidecar is a task list for editing the source. An agent needs a few things from it,
 and each has a short form:
 
 - **Read the open items** from `{stem}_review.agent.txt`, which pdf-next rewrites after every
@@ -364,15 +364,29 @@ and each has a short form:
   line, then one line per open item, in reading order:
 
   ```text
-  # notes.md review, revision 12: 3 open, 0 applied, 0 resolved. Close an item: pdf-next reviews done notes.md <id> "<what you changed>", or append "<id> <what you changed>" to notes_review.done
-  r3 L7 improve: move this before the table | "the table below"
-  r1 L12 improve: say this is an ideal value | "the exit speed v ∗ of the gas"
-  r2 L40-42 delete: (no comment) | "the slab burns from both faces at once, so the burning area stays flat until the two fronts meet near the middle of the…"
+  # notes.md rev 12: 3 open, 0 applied. Fix each in the source. Done: pdf-next reviews done notes.md <id> "<what you changed>" (or the line "<id> <what you changed>" in notes_review.done). Unclear: pdf-next reviews ask notes.md <id> "<question>"
+  r3 L7 move this before the table | "the table below"
+  r1 L12 say this is an ideal value | "the exit speed v ∗ of the gas"
+  r2 L40-42 delete | "the slab burns from both faces at once, so the burning area stays flat until…"
   ```
 
   `L12` and `L40-42` are source lines of the `.md` (`p7` is a PDF page), kept current: while
   pdf-next shows the file it finds each review again after edits and records where it now is.
-  The quote is shortened and only helps find the place; read the exact text from the file.
+  The quote is cut to 80 characters and only helps find the place; read the exact text from the
+  file. A line names its file only when the store holds reviews of more than one file.
+- **Read only what changed**: `pdf-next reviews brief notes.md --since 12` lists the open items
+  changed after revision 12, the one in the header you read last. Every item carries `rev`, the
+  store revision of its last change.
+- **Take one item at a time** with `pdf-next reviews next notes.md`: the first open item in
+  reading order, and for Markdown the source lines it points to, numbered (for a PDF, the page
+  and a longer quote). When nothing is open it says so and exits 0.
+
+  ```text
+  # notes.md: 3 open. Done: pdf-next reviews done notes.md r3 "<what you changed>" (unclear: pdf-next reviews ask notes.md r3 "<question>")
+  r3 L7 move this before the table | "the table below"
+  7| See the table below for the cases.
+  ```
+
 - **Close an item** with `pdf-next reviews done notes.md r1 "stated the ideal-gas assumption"`,
   which marks it `applied` with that text as its resolution. For a PDF, add the build command
   that succeeded: `--built "latexmk -pdf paper.tex"`. An agent that can only write files appends
@@ -380,15 +394,39 @@ and each has a short form:
   it while it has the file open, and every `reviews` command applies it first. The inbox is only
   read, never rewritten; applying it twice changes nothing, the last line for an ID wins, and an
   item you reopen stays open until a new line for it arrives.
+- **Ask the reader** when an item cannot be done without them:
+  `pdf-next reviews ask notes.md r4 "Which reference do you mean?"`, or the inbox line
+  `r4 ? Which reference do you mean?`. The item gets status `question` and the text in
+  `question`; it leaves the list, and the header counts it as waiting on the reader. When the
+  reader answers in the app, the answer is saved in `reply` and the item is `open` again, with
+  `you asked "…", reader replied: "…"` in its line.
 - **Read one whole item** from the store itself. `{stem}_review.json` holds one item per line,
   so `grep '"id":"r12"' notes_review.json` prints all of it, and every item has every key
   (`comment` and `resolution` are `""` when empty).
 
 Agents never write the JSON store directly: a full rewrite races with the reader adding items in
-the app. `done`, the inbox and `update` take the store's lock.
+the app. `done`, `ask`, `add`, `relocate`, the inbox and `update` take the store's lock.
 
 The `applied` items wait for the reader, who checks the result (the recompiled PDF, or the
 Markdown) and marks them `resolved`, or reopens them.
+
+Scripts and agents can file reviews too:
+
+```bash
+pdf-next reviews add notes.md --line 12 --quote "the exit speed" --request ask:why --request scope:paragraph
+pdf-next reviews add paper.pdf --page 7 --quote "the residual check passes" --action check --comment "with which tolerance?"
+```
+
+`--line N [--end M]` is for Markdown and `--page N [--end M]` for a PDF; `--request` takes the
+review card words below (repeatable), `--action` the actions below, and `--comment` a note. The
+review is checked like one made in the app and the new ID is printed. A Markdown review gets its
+context from the source when the quote is found there.
+
+After editing a Markdown file without pdf-next open, `pdf-next reviews relocate notes.md` finds
+the open reviews again, as the app would, and records their new lines and context. A quote whose
+own words were edited is looked for near its old line. It prints `moved L3 -> L6`, `unchanged` or
+`not found` per item; applied and resolved items are left alone. `--expected-revision N` refuses
+to write if the store changed since you read it, and `--dry-run` writes nothing.
 
 For a PDF, find the quote in the LaTeX entry point or its included chapter files. Use its quote,
 surrounding context and PDF position together; an optional SyncTeX source hint is a candidate
@@ -431,7 +469,8 @@ Use the CLI mutation command instead of editing the JSON directly. A raw writer 
 IDs and unknown fields, write atomically, and check the sidecar revision; writers that skip
 that protocol can overwrite concurrent changes.
 
-The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
+The `status` is `open`, `applied`, `resolved` or `question` (waiting on the reader). The
+`action` field says what the reader wants: `improve` (the instruction is in `comment`),
 `polish` (better wording, same meaning), `clarify` (explain the passage better, same facts; `comment` is an optional note), `shorten`, `expand`, `check` (verify the fact, number or
 equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
 `comment` is an optional suggestion for the agent to revise and expand), `gloss` (add a brief
@@ -444,17 +483,18 @@ The review card also has buttons, clicked instead of typed. They are saved in `r
 
 | Row | Words | The agent reads |
 | --- | --- | --- |
-| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | explain why, explain how, give more information, give an example, give the source, show the derivation |
+| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | make the text say why, make the text say how, add the missing information, add an example, cite the source, show the derivation |
 | Change | `change:simplify`, `change:shorten`, `change:expand`, `change:check`, `change:figure` | simplify, shorten, expand, check facts, numbers and equations, add or improve a figure |
 | Scope (one) | `scope:phrase`, `scope:paragraph`, `scope:section` | how much of the text the request covers |
 | Tone (one) | `tone:formal`, `tone:plain`, `tone:jfm` | more formal, plainer, Journal of Fluid Mechanics style |
 
-Buttons with no note save as action `request`; with another action they refine it. An Ask is a
-question to the agent: the answer goes in the done note (`pdf-next reviews done … "<answer>"`),
-and the text changes only when the item also asks for a change. In the agent view:
+Buttons with no note save as action `request`; with another action they refine it. An Ask means
+the selected text is unclear to the reader: rewrite the text in the document so that it answers
+the question, within the chosen scope and tone. Do not answer on the side; the done note says
+what you changed. In the agent view:
 
 ```text
-r4 L12 request: explain why; explain how; scope: the whole paragraph | "the residual check passes"
+r4 L12 make the text say why; make the text say how; scope: whole paragraph | "the residual check passes"
 ```
 
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
@@ -465,6 +505,9 @@ does not prove that a Delete request succeeded, and completing a task never remo
 Do not delete records from the sidecar to mark them done: set `applied`. While pdf-next shows the
 file, it keeps the open reviews pinned to their text as you edit, and `list` then prints their
 current lines.
+
+`tools/agent_cost.mjs` measures what an agent reads in a full loop over stores of 10, 50 and 200
+reviews; `node tools/agent_cost.mjs --check` fails when the 50-review loop grows past its budget.
 
 ## Security
 
@@ -606,6 +649,7 @@ file that records its source and checksum.
 | [cap-std](https://github.com/bytecodealliance/cap-std) | 3.4.6 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
 | [open](https://github.com/Byron/open-rs) | 5.4.1 | Hands a checked web link to the default browser. | MIT |
 | percent-encoding | 2.3.2 | Encodes local paths for the document protocol. | MIT / Apache-2.0 |
+| [diff-match-patch-rs](https://github.com/AnubhabB/diff-match-patch-rs) | 0.5.1 | `reviews relocate`: finds a review quote whose words were edited, near its old line. | MIT / Apache-2.0 |
 | gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.18 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
 
 **Markdown and TeX**
