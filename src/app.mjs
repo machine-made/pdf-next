@@ -1840,6 +1840,7 @@ async function openFile(
       error: true,
       sticky: true,
     });
+    return false;
   }
 }
 
@@ -6472,8 +6473,8 @@ listen('file-changed', async (event) => {
     state.pendingRevision = revision;
     return;
   }
-  await openFile({ ...state.file, revision }, { preserveView: true });
-  if (state.file?.path !== path || state.file?.revision !== revision) return;
+  const opened = await openFile({ ...state.file, revision }, { preserveView: true });
+  if (opened === false || state.file?.path !== path || state.file?.revision !== revision) return;
   setStatus('Reloaded');
   if (launch?.smoke && (state.file?.kind === 'pdf' || state.file?.name === 'review-parity.md')) void reportSmoke();
 });
