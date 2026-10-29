@@ -1976,6 +1976,12 @@ for (const file of [
   'machine-made-type/OFL-Weft.txt',
   'machine-made-type/OFL-Sans.txt',
   'machine-made-type/OFL-Heddle.txt',
+  'monaspace/MonaspaceNeon-Variable.woff2',
+  'monaspace/MonaspaceArgon-Variable.woff2',
+  'monaspace/MonaspaceXenon-Variable.woff2',
+  'monaspace/MonaspaceRadon-Variable.woff2',
+  'monaspace/MonaspaceKrypton-Variable.woff2',
+  'monaspace/OFL.txt',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -3110,6 +3116,28 @@ for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machi
   assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "${family}";`), `${family} has a font face.`);
 }
 assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
+// Monaspace: each face is declared, offered for the body text and for code.
+for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
+  const value = `monaspace-${face.toLowerCase()}`;
+  assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "Monaspace ${face}";`), `Monaspace ${face} has a font face.`);
+  assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "Monaspace ${face}"`));
+  assert.match(styles, new RegExp(`:root\\[data-code-font="${value}"\\] \\{ --code-font: "Monaspace ${face}"`));
+  assert.equal((page.match(new RegExp(`<option value="${value}">Monaspace ${face}</option>`, 'g')) || []).length, 2,
+    `Monaspace ${face} is in the Markdown font menu and the code font menu.`);
+}
+assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).every((line) => line.includes('--code-font:')),
+  'Every monospace stack goes through --code-font.');
+
+// The wheel steps through the toolbar menus and zooms over the zoom controls.
+assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select, #splitBar select/,
+  'Toolbar and Settings menus take the wheel.');
+assert.match(app, /control === ui\.zoom \|\| control === ui\.zoomIn \|\| control === ui\.zoomOut\) \{\s*stepZoom\(direction\)/,
+  'The wheel over zoom zooms through the preset ladder.');
+
+// Ctrl+U with text selected in rendered Markdown formats it (or says why it
+// cannot) and never falls through to the raw view.
+assert.match(app, /const selectedPane = formatKey[\s\S]*?renderedMarkdownSelection\(\)[\s\S]*?if \(selectedPane\) \{[\s\S]*?return;\s*\}\s*if \(\(event\.ctrlKey \|\| event\.metaKey\) && key === 'u'\)/,
+  'A Markdown selection is handled before Ctrl+U toggles the raw view.');
 assert.match(page, /<strong>pdf-next<\/strong> by machine-made/, 'About names the maker.');
 assert.match(page, /<summary>Details: what pdf-next is built with<\/summary>/, 'About lists what pdf-next is built with.');
 assert.ok(page.includes(`PDF.js ${vendored}`),

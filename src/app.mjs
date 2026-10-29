@@ -164,6 +164,7 @@ const ui = {
   setPoll: el('setPoll'),
   setDirectEdits: el('setDirectEdits'),
   setUiFont: el('setUiFont'),
+  setCodeFont: el('setCodeFont'),
   aboutVersion: el('aboutVersion'),
   aboutUpdate: el('aboutUpdate'),
   aboutSource: el('aboutSource'),
@@ -2442,6 +2443,66 @@ ui.tabs.addEventListener('wheel', (event) => {
   tabWheel = 0;
   cycleTab(step);
 }, { passive: false });
+
+// The wheel over a toolbar menu steps through its choices without opening it:
+// up for the next choice (bigger, for size, width and zoom), down for the one
+// before. Over the zoom menu and its buttons it zooms through the same ladder
+// as + and -. Trackpad deltas are summed to one notch, as on the tab strip.
+const wheelNotches = new WeakMap();
+function wheelNotch(target, event) {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : -event.deltaX;
+  const unit = event.deltaMode === 1 ? 3 : event.deltaMode === 2 ? 1 : 100;
+  const last = wheelNotches.get(target) ?? { sum: 0, at: 0 };
+  const sum = (event.timeStamp - last.at > 300 ? 0 : last.sum) + delta / unit;
+  if (Math.abs(sum) < 0.5) {
+    wheelNotches.set(target, { sum, at: event.timeStamp });
+    return 0;
+  }
+  wheelNotches.set(target, { sum: 0, at: event.timeStamp });
+  return sum < 0 ? 1 : -1;
+}
+
+/// Move `select` one usable choice in `direction` and announce the change, so
+/// every menu keeps its own change handler as the one place it takes effect.
+function stepSelect(select, direction) {
+  const options = Array.from(select.options);
+  let index = select.selectedIndex;
+  for (let guard = 0; guard < options.length; guard += 1) {
+    index += direction;
+    if (index < 0 || index >= options.length) return false;
+    const option = options[index];
+    if (!option.hidden && !option.disabled) {
+      select.selectedIndex = index;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+  }
+  return false;
+}
+
+function onMenuWheel(event) {
+  const control = event.currentTarget;
+  if (control.disabled || event.ctrlKey) return;
+  event.preventDefault();
+  const direction = wheelNotch(control, event);
+  if (!direction) return;
+  if (control === ui.zoom || control === ui.zoomIn || control === ui.zoomOut) {
+    stepZoom(direction);
+  } else {
+    stepSelect(control, direction);
+  }
+}
+
+function wireMenuWheel() {
+  const controls = new Set([
+    ...document.querySelectorAll('#bar select, #settingsPanel select, #splitBar select'),
+    ui.zoomIn,
+    ui.zoomOut,
+  ]);
+  for (const control of controls) {
+    if (control) control.addEventListener('wheel', onMenuWheel, { passive: false });
+  }
+}
 
 // ── Page and zoom controls ────────────────────────────────────────────────
 
@@ -4840,6 +4901,19 @@ function directEditsEnabled() {
 
 /// The selection, when it can be edited in place: rendered Markdown (not the
 /// raw view), on a source line, with direct edits on.
+/// Which rendered Markdown pane holds a non-empty selection: 'main', 'split' or null.
+function renderedMarkdownSelection() {
+  if (state.file?.kind !== 'markdown') return null;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const node = selection.getRangeAt(0).commonAncestorContainer;
+  const element = node.nodeType === 3 ? node.parentElement : node;
+  if (!(element instanceof Element)) return null;
+  if (ui.markdown.contains(element)) return 'main';
+  if (ui.markdownSplit?.contains(element)) return 'split';
+  return null;
+}
+
 function markdownEditTarget() {
   if (state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
       typeof state.markdownSource !== 'string') {
@@ -4856,9 +4930,11 @@ async function applyDirectFormat(format) {
   hideReviewChrome();
   const target = markdownEditTarget();
   if (!target) {
-    setStatus(state.file?.kind === 'markdown'
-      ? 'Select text in the rendered Markdown to format it'
-      : 'Formatting edits Markdown files only; add a review instead');
+    setStatus(state.file?.kind !== 'markdown'
+      ? 'Formatting edits Markdown files only; add a review instead'
+      : renderedMarkdownSelection()
+        ? 'This selection cannot be traced to a line of the source: add a review instead'
+        : 'Select text in the rendered Markdown to format it', { error: Boolean(renderedMarkdownSelection()) });
     return;
   }
   const node = target.range.commonAncestorContainer;
@@ -5018,6 +5094,25 @@ function applyUiFont(value, { persist = true } = {}) {
   }
 }
 
+const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon', 'monaspace-radon', 'monaspace-krypton'];
+
+/// The font for code blocks, inline code and the raw Markdown view.
+function applyCodeFont(value, { persist = true } = {}) {
+  const chosen = CODE_FONTS.includes(value) ? value : 'system';
+  if (chosen === 'system') {
+    delete document.documentElement.dataset.codeFont;
+  } else {
+    document.documentElement.dataset.codeFont = chosen;
+  }
+  if (ui.setCodeFont) ui.setCodeFont.value = chosen;
+  if (!persist) return;
+  try {
+    localStorage.setItem('pdf-next.code-font', chosen);
+  } catch {
+    // Preference only.
+  }
+}
+
 function syncSettings() {
   for (const [mine, theirs] of SETTINGS_MIRRORS) {
     const select = ui[mine];
@@ -5064,6 +5159,7 @@ ui.setDirectEdits.addEventListener('change', () => {
   }
 });
 ui.setUiFont.addEventListener('change', () => applyUiFont(ui.setUiFont.value));
+ui.setCodeFont.addEventListener('change', () => applyCodeFont(ui.setCodeFont.value));
 for (const select of ui.figureSelects) {
   select.addEventListener('change', () => {
     const name = select.dataset.figure;
@@ -5132,6 +5228,7 @@ ui.zoom.addEventListener('change', () => {
 
 ui.zoomIn.addEventListener('click', () => stepZoom(1));
 ui.zoomOut.addEventListener('click', () => stepZoom(-1));
+wireMenuWheel();
 ui.copyPath.addEventListener('click', () => void copyFileText('path'));
 ui.copyName.addEventListener('click', () => void copyFileText('name'));
 ui.mode.addEventListener('click', (event) => cycleMode(event.shiftKey || event.altKey));
@@ -5908,12 +6005,24 @@ window.addEventListener('keydown', (event) => {
   // Ctrl+B (bold), Ctrl+I (italic), Ctrl+S (strike), Ctrl+U (underline) and
   // Ctrl+E (edit text) edit a Markdown selection in place. Checked before
   // Ctrl+U's raw-view toggle so selecting text and pressing Ctrl+U underlines.
-  if (!typing && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey &&
-      (key === 'b' || key === 'i' || key === 's' || key === 'u' || key === 'e') && markdownEditTarget()) {
+  // A selection in rendered Markdown always means "format this": when the edit
+  // cannot be made, the status line says why, rather than Ctrl+U falling
+  // through to the raw view and hiding the text that was just selected.
+  const formatKey = key === 'b' || key === 'i' || key === 's' || key === 'u' || key === 'e';
+  const selectedPane = formatKey && !typing && (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey && !event.altKey && !state.markdownRaw ? renderedMarkdownSelection() : null;
+  if (selectedPane) {
     event.preventDefault();
     const formatByKey = { b: 'bold', i: 'italic', s: 'strike', u: 'underline' };
-    if (key === 'e') openEditBox();
-    else void applyDirectFormat(formatByKey[key]);
+    if (selectedPane === 'split') {
+      setStatus('Formatting edits the file in the main pane: open this file there to format it', { error: true });
+    } else if (!directEditsEnabled()) {
+      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+    } else if (key === 'e') {
+      openEditBox();
+    } else {
+      void applyDirectFormat(formatByKey[key]);
+    }
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === 'u') {
@@ -6239,6 +6348,11 @@ try {
   applyUiFont(localStorage.getItem('pdf-next.ui-font'), { persist: false });
 } catch {
   applyUiFont('system', { persist: false });
+}
+try {
+  applyCodeFont(localStorage.getItem('pdf-next.code-font'), { persist: false });
+} catch {
+  applyCodeFont('system', { persist: false });
 }
 applyFigureSettings();
 
