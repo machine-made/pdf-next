@@ -9,6 +9,7 @@ import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
+import { createPalette, isTextField, selectChoices } from './palette.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -5981,6 +5982,111 @@ eventBus.on('updatefindcontrolstate', ({ matchesCount, state: findState }) => {
     : '';
 });
 
+// ── Command palette ───────────────────────────────────────────────────────
+// Every command calls what its button or shortcut calls; `when` keeps the list
+// to what applies to the file and window as they are when the palette opens.
+
+const palette = createPalette({
+  platform: () => state.platform,
+  onOpen: syncSettings,
+  onError: (error) => setStatus(String(error?.message || error), { error: true }),
+});
+{
+  const kind = () => state.file?.kind;
+  const hasFile = () => Boolean(state.file);
+  const markdown = () => kind() === 'markdown';
+  const reviewable = () => kind() === 'pdf' || kind() === 'markdown';
+  const rendered = () => markdown() && !state.markdownRaw;
+  const editable = () => rendered() && Boolean(renderedMarkdownSelection());
+  const reviewSelection = () => reviewable() && Boolean(reviewFromSelection());
+  const figureLabels = { width: 'Figure width', height: 'Figure height', align: 'Figure place', caption: 'Figure captions' };
+  const modeLabels = [[null, 'Clear'], ['night', 'Night'], ['invert', 'Invert'], ['sepia', 'Sepia']];
+  const directEdits = (on) => {
+    ui.setDirectEdits.checked = on;
+    ui.setDirectEdits.dispatchEvent(new Event('change'));
+  };
+  palette.add(
+    { label: 'Open file…', group: 'File', shortcut: 'Ctrl+O', icon: '#i-open', run: () => ui.open.click() },
+    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
+    { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
+    { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
+    { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
+    { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf', run: reduceOpenPdf },
+    { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: hasFile, run: trashShownFile },
+    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: () => undoLast().then((done) => done || setStatus('Nothing to undo')) },
+    { label: 'Check for updates', group: 'File', icon: '#i-update', run: () => checkForUpdates() },
+    { label: 'Find', group: 'View', shortcut: 'Ctrl+F', icon: '#i-find', when: reviewable, run: openFind },
+    { label: 'Zoom in', group: 'View', shortcut: '+', icon: '#i-zoom-in', when: hasFile, run: () => stepZoom(1) },
+    { label: 'Zoom out', group: 'View', shortcut: '-', icon: '#i-zoom-out', when: hasFile, run: () => stepZoom(-1) },
+    selectChoices(ui.zoom, { id: 'zoom', label: 'Zoom', group: 'View', when: hasFile }),
+    selectChoices(ui.pageView, { id: 'page-view', label: 'Page view', group: 'View', when: reviewable }),
+    { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
+    { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
+    { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
+    { label: 'Previous file in folder', group: 'View', shortcut: '←', icon: '#i-prev', when: () => kind() === 'image', run: () => stepSibling(-1) },
+    { label: 'Rotate a quarter turn clockwise', group: 'View', icon: '#i-rotate', when: () => kind() === 'image', run: () => setImageRotation(state.imageRotation + 90) },
+    { label: 'Page mode: next', group: 'View', icon: '#i-mode', run: () => cycleMode(false) },
+    () => modeLabels.map(([mode, name]) => ({
+      id: `mode:${mode}`, label: `Page mode: ${name}`, group: 'View', icon: '#i-mode',
+      current: state.mode === mode, run: () => setMode(mode),
+    })),
+    { label: 'Show the raw markdown', group: 'Markdown', shortcut: 'Ctrl+U', icon: '#i-raw', when: rendered, run: () => setRaw(true) },
+    { label: 'Show the rendered markdown', group: 'Markdown', shortcut: 'Ctrl+U', icon: '#i-raw', when: () => markdown() && state.markdownRaw, run: () => setRaw(false) },
+    selectChoices(ui.mdFont, { id: 'md-font', label: 'Font', group: 'Markdown', when: markdown }),
+    selectChoices(ui.mdSize, { id: 'md-size', label: 'Text size', group: 'Markdown', when: markdown }),
+    selectChoices(ui.mdWidth, { id: 'md-width', label: 'Column width', group: 'Markdown', when: markdown }),
+    ...[['bold', 'Ctrl+B'], ['italic', 'Ctrl+I'], ['underline', 'Ctrl+U'], ['strike', 'Ctrl+S'], ['code', '']].map(([format, shortcut]) => ({
+      label: `${FORMAT_LABELS[format]} the selection`, group: 'Markdown', shortcut, when: editable, run: () => applyDirectFormat(format),
+    })),
+    { label: 'Edit the selected text…', group: 'Markdown', shortcut: 'Ctrl+E', when: editable, run: openEditBox },
+    { label: 'Delete the selection', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
+    { label: 'Open the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => reviewable() && !state.reviewOpen, run: toggleReviewPanel },
+    { label: 'Close the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => state.reviewOpen, run: toggleReviewPanel },
+    { label: 'Add a review of the selection', group: 'Review', shortcut: 'Ctrl+Shift+N', icon: '#i-add-review', when: reviewSelection, run: () => openNoteBox() },
+    { label: 'Parenthetical definition of the selection…', group: 'Review', when: reviewSelection, run: () => openNoteBox('define') },
+    { label: 'Gloss the selection…', group: 'Review', when: reviewSelection, run: () => openNoteBox('gloss') },
+    { label: 'Copy the selection as a review quote', group: 'Review', shortcut: 'Ctrl+Shift+A', icon: '#i-ask', when: () => reviewable() && Boolean(describeSelection()), run: askSelection },
+    { label: 'Larger review text', group: 'Review', when: () => state.reviewOpen, run: () => stepReviewSize(1) },
+    { label: 'Smaller review text', group: 'Review', when: () => state.reviewOpen, run: () => stepReviewSize(-1) },
+    selectChoices(ui.reviewActionFilter, { id: 'review-action', label: 'Show reviews by action', group: 'Review', when: () => state.reviewOpen }),
+    selectChoices(ui.reviewStatusFilter, { id: 'review-status', label: 'Show reviews by status', group: 'Review', when: () => state.reviewOpen }),
+    { label: 'Split right', group: 'Panes', shortcut: 'Ctrl+Shift+D', when: hasFile, run: () => splitPane('right') },
+    { label: 'Split down', group: 'Panes', shortcut: 'Ctrl+Shift+E', when: hasFile, run: () => splitPane('bottom') },
+    { label: 'Back to one pane', group: 'Panes', when: () => panes.active, run: () => setSplitView('off') },
+    ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
+      label: `Move to the pane ${direction === 'up' ? 'above' : direction === 'down' ? 'below' : `on the ${direction}`}`,
+      group: 'Panes', shortcut: `Ctrl+Alt+${arrow}`, when: () => panes.active, run: () => movePaneFocus(direction),
+    })),
+    { label: 'Fit the window to the content', group: 'Window', shortcut: 'Ctrl+Shift+F', icon: '#i-wrap', run: toggleWrap },
+    ...[['left', 'left half', '←'], ['right', 'right half', '→'], ['top', 'top half', '↑'], ['bottom', 'bottom half', '↓']].map(([edge, half, arrow]) => ({
+      label: `Fill the ${half} of the screen`, group: 'Window', shortcut: `Ctrl+Shift+${arrow}`, icon: `#i-dock-${edge}`, run: () => dockTo(edge),
+    })),
+    { label: 'Center and fit the window to the page', group: 'Window', shortcut: 'Ctrl+Shift+Enter', icon: '#i-dock-center', run: () => dockTo('center') },
+    { label: 'Open settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => ui.settingsPanel.hidden, run: () => toggleSettings(true) },
+    { label: 'Close settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => !ui.settingsPanel.hidden, run: () => toggleSettings(false) },
+    selectChoices(ui.setUiFont, { id: 'ui-font', label: 'Interface font', group: 'Settings' }),
+    selectChoices(ui.setCodeFont, { id: 'code-font', label: 'Code font', group: 'Settings' }),
+    selectChoices(ui.poll, { id: 'poll', label: 'Check for changes', group: 'Settings' }),
+    ...Array.from(ui.figureSelects, (select) => selectChoices(select, { id: `figure-${select.dataset.figure}`, label: figureLabels[select.dataset.figure], group: 'Settings' })),
+    () => [true, false].map((on) => ({
+      id: `direct-edits:${on}`, label: `Edit the Markdown file in place: ${on ? 'on' : 'off'}`, group: 'Settings',
+      current: directEditsEnabled() === on, run: () => directEdits(on),
+    })),
+    () => state.tabs.map((tab, index) => ({
+      id: `tab:${tab.path}`, label: `Go to ${tab.name}`, group: 'Tabs', detail: tab.path === tab.name ? '' : tab.path,
+      shortcut: index < 9 ? `Ctrl+${index + 1}` : '', current: index === state.active, run: () => activateTab(index),
+    })),
+    { label: 'Next tab', group: 'Tabs', shortcut: 'Ctrl+Tab', icon: '#i-next', when: () => state.tabs.length > 1, run: () => cycleTab(1) },
+    { label: 'Previous tab', group: 'Tabs', shortcut: 'Ctrl+Shift+Tab', icon: '#i-prev', when: () => state.tabs.length > 1, run: () => cycleTab(-1) },
+    { label: 'Close tab', group: 'Tabs', shortcut: 'Ctrl+W', icon: '#i-close', when: hasFile, run: () => closeTab(state.active) },
+    { label: 'Close all tabs', group: 'Tabs', icon: '#i-close', when: () => state.tabs.length > 1, run: closeAll },
+  );
+  el('paletteOpen')?.addEventListener('click', () => {
+    toggleSettings(false);
+    palette.open();
+  });
+}
+
 window.addEventListener('keydown', (event) => {
   const typing =
     event.target instanceof HTMLInputElement ||
@@ -5995,6 +6101,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape' && !ui.noteBox.hidden) {
     event.preventDefault();
     closeNoteBox();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' && !isTextField(event.target)) {
+    event.preventDefault();
+    palette.toggle();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {

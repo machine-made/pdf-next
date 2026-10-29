@@ -12,6 +12,7 @@ import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { createHash } from 'node:crypto';
+import { fuzzyScore, isTextField, matchCommand, rankCommands, selectChoices, shortcutKeys } from '../src/palette.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -3268,5 +3269,66 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
 
 assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, ' '\)\.trim\(\);/,
   'A saved quote holds no newlines: the store and the agent view stay one line per item.');
+
+// The command palette: fuzzy matching, ranking, and where Ctrl+K is typing.
+{
+  assert.equal(fuzzyScore('xyz', 'Split right'), null, 'A query that is not a subsequence does not match.');
+  assert.deepEqual(fuzzyScore('neon', 'Monaspace Neon').positions, [10, 11, 12, 13],
+    'A run at a word start beats letters scattered through the label.');
+  assert.ok(fuzzyScore('sr', 'Split right').score > fuzzyScore('sr', 'Show the raw markdown').score,
+    'Word starts close together beat word starts far apart.');
+  assert.ok(fuzzyScore('pan', 'Back to one pane').score > fuzzyScore('pan', 'Open the review panel').score - 1);
+  const commands = [
+    { id: 'a', label: 'Split right', group: 'Panes' },
+    { id: 'b', label: 'Font: Monaspace Neon', group: 'Markdown' },
+    { id: 'c', label: 'Text size: 20 px', group: 'Markdown' },
+    { id: 'd', label: 'Go to paper.pdf', group: 'Tabs' },
+  ];
+  assert.deepEqual(rankCommands('', commands, ['c', 'd']).map((r) => r.command.id), ['c', 'd', 'a', 'b'],
+    'An empty query lists recent commands first, then the registry order.');
+  assert.equal(rankCommands('mono neon', commands)[0].command.id, 'b', 'Each word of the query matches on its own.');
+  assert.equal(rankCommands('size 20', commands)[0].command.id, 'c');
+  assert.deepEqual(rankCommands('markdown', commands).map((r) => r.command.id).sort(), ['b', 'c'], 'The group is searched too.');
+  assert.deepEqual(matchCommand('panes split', commands[0]).positions, [0, 1, 2, 3, 4], 'Only label letters are marked.');
+  assert.equal(rankCommands('zzz', commands).length, 0);
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: `t${i}`, label: `Go to chapter-${i}-notes.md`, group: 'Tabs' }));
+  const began = performance.now();
+  for (let i = 0; i < 10; i += 1) rankCommands('go ch 42', many);
+  assert.ok((performance.now() - began) / 10 < 8, 'Ranking 200 commands takes well under a frame.');
+  assert.equal(rankCommands('go ch 42', many)[0].command.id, 't42');
+  for (const [tagName, type, typing] of [['INPUT', 'text', true], ['INPUT', 'search', true], ['INPUT', 'number', true],
+    ['INPUT', 'checkbox', false], ['TEXTAREA', '', true], ['SELECT', '', false], ['DIV', '', false], ['BUTTON', 'button', false]]) {
+    assert.equal(isTextField({ tagName, type }), typing, `Ctrl+K in ${tagName} ${type}`);
+  }
+  assert.equal(isTextField({ tagName: 'DIV', isContentEditable: true }), true);
+  assert.deepEqual(shortcutKeys('Ctrl+Shift+D', 'macos'), ['⌘', '⇧', 'D']);
+  assert.deepEqual(shortcutKeys('Ctrl+Shift+D', 'windows'), ['Ctrl', 'Shift', 'D']);
+  const fired = [];
+  const select = { value: 'b', options: [{ value: 'a', textContent: 'A' }, { value: 'b', textContent: 'B' }, { value: 'custom', textContent: '?' }, { value: 'h', hidden: true, textContent: 'H' }],
+    dispatchEvent: (event) => fired.push([event.type, select.value]) };
+  const choices = selectChoices(select, { id: 'x', label: 'Thing', group: 'View' })();
+  assert.deepEqual(choices.map((c) => [c.label, c.current]), [['Thing: A', false], ['Thing: B', true]],
+    'A menu becomes one choice per visible option, with the current one marked.');
+  choices[0].run();
+  assert.deepEqual(fired, [['change', 'a']], 'A choice sets the menu and fires its change event, as a pick by hand does.');
+  assert.deepEqual(selectChoices(select, { id: 'x', label: 'Thing', when: () => false })(), []);
+
+  assert.match(app, /import \{ createPalette, isTextField, selectChoices \} from '\.\/palette\.mjs';/);
+  assert.match(app, /key === 'k' && !isTextField\(event\.target\)\) \{\s*event\.preventDefault\(\);\s*palette\.toggle\(\);/,
+    'Ctrl+K toggles the palette, but not while typing in a text field.');
+  for (const call of ["splitPane('right')", 'setRaw(true)', 'toggleReviewPanel', 'printDocument', 'openFind', 'activateTab(index)',
+    "dockTo('center')", 'movePaneFocus(direction)', 'applyDirectFormat(format)', 'toggleSettings(true)']) {
+    assert.ok(app.slice(app.indexOf('const palette = createPalette'), app.indexOf("window.addEventListener('keydown'")).includes(call),
+      `The palette calls ${call}, as the button or shortcut does.`);
+  }
+  for (const menu of ['ui.mdFont', 'ui.mdSize', 'ui.mdWidth', 'ui.setUiFont', 'ui.setCodeFont', 'ui.poll', 'ui.zoom', 'ui.pageView']) {
+    assert.ok(app.includes(`selectChoices(${menu},`), `${menu} is offered as palette choices.`);
+  }
+  assert.match(page, /<button id="paletteOpen"[^>]*title="Command palette \(Ctrl\+K\)"/, 'Settings opens the palette.');
+  assert.match(styles, /\.palette-box \{[^}]*background: var\(--widget\);/, 'The palette uses the theme tokens.');
+  assert.match(styles, /@media print \{\s*#palette \{\s*display: none !important;/);
+  assert.match(readme, /\*\*Command palette\*\*/);
+  assert.match(readme, /`Ctrl\+K` command palette/);
+}
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
