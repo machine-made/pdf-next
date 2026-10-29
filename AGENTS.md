@@ -51,6 +51,26 @@ of a tag that already exists, start `release.yml` on it directly:
 gh workflow run release.yml -R machine-made/pdf-next --ref v<version>
 ```
 
+### The changelog
+
+Every release has a section in `CHANGELOG.md`, written in the same pull
+request as the version bump. A version without one cannot be released:
+`tools/check_frontend.mjs` fails in CI, `tag.yml` will not tag it, and
+`release.yml` uses the section as the release notes.
+
+The style is Claude Code's changelog: a `## <version>` heading with no date,
+then flat bullets, one sentence each, starting with `Added`, `Fixed`,
+`Improved`, `Changed` or `Removed`, or with a platform (`Windows:`, `macOS:`,
+`Linux:`). Describe what a user sees, not the code. Newest version first.
+
+```markdown
+## 0.16.5
+
+- Added a button to copy the review list
+- Fixed the zoom menu forgetting its value after a reload
+- Windows: fixed the installer asking twice for permission
+```
+
 ### Choosing the next version
 
 You choose the next version yourself; do not ask. Look at what changed since
