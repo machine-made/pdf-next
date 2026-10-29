@@ -841,7 +841,7 @@ mark.review[data-review-action='delete'] {
   padding: 4px 6px;
   border: 1px solid var(--widget-border);
   border-radius: 2px;
-  font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  font-family: var(--code-font);
   font-size: 0.95em;
   resize: vertical;
 }
@@ -1290,6 +1290,65 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
   font-display: swap;
 }
 
+
+/* Monaspace (GitHub Next): five monospaced superfamilies with matching
+   metrics. Optional Markdown body fonts, and the code font when chosen. */
+@font-face {
+  font-family: "Monaspace Neon";
+  src: url('./vendor/monaspace/MonaspaceNeon-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique 0deg 11deg;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Monaspace Argon";
+  src: url('./vendor/monaspace/MonaspaceArgon-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique 0deg 11deg;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Monaspace Xenon";
+  src: url('./vendor/monaspace/MonaspaceXenon-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique 0deg 11deg;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Monaspace Radon";
+  src: url('./vendor/monaspace/MonaspaceRadon-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique 0deg 11deg;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Monaspace Krypton";
+  src: url('./vendor/monaspace/MonaspaceKrypton-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique 0deg 11deg;
+  font-display: swap;
+}
+
+:root {
+  --code-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+}
+
+/* The code font, chosen in Settings: code blocks, inline code and the raw view. */
+:root[data-code-font="monaspace-neon"] { --code-font: "Monaspace Neon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+:root[data-code-font="monaspace-argon"] { --code-font: "Monaspace Argon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+:root[data-code-font="monaspace-xenon"] { --code-font: "Monaspace Xenon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+:root[data-code-font="monaspace-radon"] { --code-font: "Monaspace Radon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+:root[data-code-font="monaspace-krypton"] { --code-font: "Monaspace Krypton", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+
 /* The interface font, chosen in Settings. */
 :root[data-ui-font="mm-sans"] {
   --ui-font: "machine-made Sans", "Segoe UI", -apple-system, "Ubuntu", system-ui, sans-serif;
@@ -1429,7 +1488,7 @@ body.mode-sepia #markdownStageSplit {
 
 #markdownRaw,
 #markdownRawSplit {
-  font: 12px/1.55 ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  font: 12px/1.55 var(--code-font);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1469,7 +1528,27 @@ body.mode-sepia #markdownStageSplit {
 }
 
 #markdown[data-font="mono"] {
-  --article-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  --article-font: var(--code-font);
+}
+
+#markdown[data-font="monaspace-neon"] {
+  --article-font: "Monaspace Neon", var(--code-font);
+}
+
+#markdown[data-font="monaspace-argon"] {
+  --article-font: "Monaspace Argon", var(--code-font);
+}
+
+#markdown[data-font="monaspace-xenon"] {
+  --article-font: "Monaspace Xenon", var(--code-font);
+}
+
+#markdown[data-font="monaspace-radon"] {
+  --article-font: "Monaspace Radon", var(--code-font);
+}
+
+#markdown[data-font="monaspace-krypton"] {
+  --article-font: "Monaspace Krypton", var(--code-font);
 }
 
 #markdown[data-size="14"] { font-size: 14px; }
@@ -1605,7 +1684,7 @@ body.pages-on #mdWidth {
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--md-code-bg);
-  font-family: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+  font-family: var(--code-font);
   font-size: 0.88em;
 }
 
@@ -2375,7 +2454,12 @@ body.review-open {
 #markdownSplit[data-font="weft"] { --article-font: "machine-made Weft", system-ui, -apple-system, "Segoe UI", sans-serif; }
 #markdownSplit[data-font="mm-sans"] { --article-font: "machine-made Sans", system-ui, -apple-system, "Segoe UI", sans-serif; }
 #markdownSplit[data-font="heddle"] { --article-font: "machine-made Heddle", system-ui, -apple-system, "Segoe UI", sans-serif; }
-#markdownSplit[data-font="mono"] { --article-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+#markdownSplit[data-font="mono"] { --article-font: var(--code-font); }
+#markdownSplit[data-font="monaspace-neon"] { --article-font: "Monaspace Neon", var(--code-font); }
+#markdownSplit[data-font="monaspace-argon"] { --article-font: "Monaspace Argon", var(--code-font); }
+#markdownSplit[data-font="monaspace-xenon"] { --article-font: "Monaspace Xenon", var(--code-font); }
+#markdownSplit[data-font="monaspace-radon"] { --article-font: "Monaspace Radon", var(--code-font); }
+#markdownSplit[data-font="monaspace-krypton"] { --article-font: "Monaspace Krypton", var(--code-font); }
 #markdownSplit[data-size="14"] { font-size: 14px; }
 #markdownSplit[data-size="15"] { font-size: 15px; }
 #markdownSplit[data-size="16"] { font-size: 16px; }
@@ -2414,8 +2498,8 @@ body.review-open {
 #markdownSplit[data-fig-caption="numbered"] .md-caption::before { content: "Figure " counter(figure) ". "; font-weight: 600; color: var(--md-fg); }
 #markdownSplit math { font-family: "New Computer Modern Math", "STIX Two Math", "Cambria Math", math, serif; font-size: 1.05em; }
 #markdownSplit math mtext { font-family: var(--article-font); }
-#markdownSplit pre { padding: 12px 14px; overflow-x: auto; border-radius: 6px; background: var(--md-code-bg); font: 0.86em/1.5 ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
-#markdownSplit code { padding: 1px 5px; border-radius: 4px; background: var(--md-code-bg); font: 0.88em ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
+#markdownSplit pre { padding: 12px 14px; overflow-x: auto; border-radius: 6px; background: var(--md-code-bg); font: 0.86em/1.5 var(--code-font); }
+#markdownSplit code { padding: 1px 5px; border-radius: 4px; background: var(--md-code-bg); font: 0.88em var(--code-font); }
 #markdownSplit pre > code { padding: 0; background: none; font-size: inherit; }
 #markdownSplit .hljs-keyword { color: var(--md-code-keyword); }
 #markdownSplit .hljs-built_in { color: var(--md-code-built-in); }
