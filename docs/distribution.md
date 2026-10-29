@@ -209,11 +209,20 @@ official cask repository would need.
 ## apt
 
 The apt repository is the `gh-pages` branch of this repository, served by
-GitHub Pages at <https://machine-made.github.io/pdf-next>. The `apt` job in
-`release.yml` rebuilds it after every tag: it takes the `.deb` that was just
-published, regenerates `Packages` and `Release`, signs them, and pushes.
-Every version stays in `pool/`, so `apt install pdf-next=0.14.3` keeps working
-after a newer one lands.
+GitHub Pages at <https://machine-made.github.io/pdf-next>.
+`.github/workflows/apt.yml` rebuilds it after every tag (`release.yml` calls
+it): it takes that release's `.deb`, regenerates `Packages` and `Release`,
+signs them, and pushes. Every version stays in `pool/`, so
+`apt install pdf-next=0.14.3` keeps working after a newer one lands. To add a
+release again, run it by hand with its tag:
+
+```
+gh workflow run apt.yml -R machine-made/pdf-next -f tag=v0.16.4
+```
+
+From 0.16.2 to 0.16.4 the apt and winget jobs were skipped, because the
+signing job before them was skipped; they now run whenever the release is
+published.
 
 Apt refuses an unsigned repository, so the job needs a signing key. The
 public half lives at `pdf-next.asc` on that branch and is what a user adds to

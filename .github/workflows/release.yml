@@ -303,91 +303,22 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
+  # always(): a skipped job upstream (signing, when it is not set up) would
+  # otherwise skip everything after publish, as it did from 0.16.2 to 0.16.4.
   winget:
     needs: publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/winget.yml
     with:
       tag: ${{ github.ref_name }}
     secrets:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
 
-  # The apt repository is a branch of this repository served by GitHub Pages:
-  # the .deb the job above just published, plus the index files apt reads and
-  # a signature over them. Without APT_GPG_PRIVATE_KEY the job says so and
-  # stops, because an unsigned repository is one apt refuses by default.
   apt:
-    name: apt repository
     needs: publish
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    concurrency:
-      group: apt-repository
-      cancel-in-progress: false
-    steps:
-      - name: Check for the signing key
-        id: key
-        env:
-          HAS_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
-        run: |
-          echo "present=$HAS_KEY" >> "$GITHUB_OUTPUT"
-          [ "$HAS_KEY" = true ] || echo "::warning::APT_GPG_PRIVATE_KEY is not set; skipping the apt repository."
-
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        if: steps.key.outputs.present == 'true'
-        with:
-          ref: gh-pages
-          path: pages
-
-      - name: Build and sign the repository
-        if: steps.key.outputs.present == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev apt-utils
-
-          version=${TAG#v}
-          cd pages
-          mkdir -p pool/main/p/pdf-next dists/stable/main/binary-amd64
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern '*_amd64.deb' --dir pool/main/p/pdf-next --clobber
-
-          # Every version stays in the pool, so `apt install pdf-next=0.9.0`
-          # keeps working after a newer one lands.
-          dpkg-scanpackages --multiversion --arch amd64 pool > dists/stable/main/binary-amd64/Packages
-          gzip -9kf dists/stable/main/binary-amd64/Packages
-
-          apt-ftparchive \
-            -o APT::FTPArchive::Release::Origin=pdf-next \
-            -o APT::FTPArchive::Release::Label=pdf-next \
-            -o APT::FTPArchive::Release::Suite=stable \
-            -o APT::FTPArchive::Release::Codename=stable \
-            -o APT::FTPArchive::Release::Architectures=amd64 \
-            -o APT::FTPArchive::Release::Components=main \
-            -o APT::FTPArchive::Release::Description="pdf-next releases" \
-            release dists/stable > Release.tmp
-          # Written outside the tree first: the redirect would otherwise create
-          # the file before the scan, and Release would list itself.
-          mv Release.tmp dists/stable/Release
-
-          export GNUPGHOME=$(mktemp -d)
-          chmod 700 "$GNUPGHOME"
-          printf '%s' "$PRIVATE_KEY" | gpg --batch --quiet --import
-          fingerprint=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
-          # InRelease is what current apt reads; Release.gpg is for older ones.
-          gpg --batch --yes --local-user "$fingerprint" \
-            --clearsign -o dists/stable/InRelease dists/stable/Release
-          gpg --batch --yes --local-user "$fingerprint" \
-            --detach-sign --armor -o dists/stable/Release.gpg dists/stable/Release
-          gpg --armor --export "$fingerprint" > pdf-next.asc
-          rm -rf "$GNUPGHOME"
-
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m "pdf-next $version" || { echo 'Nothing changed.'; exit 0; }
-          git push
+    if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/apt.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
