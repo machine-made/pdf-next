@@ -238,10 +238,10 @@
           <option value="1600">1600 px</option>
           <option value="100%">100%</option>
         </select>
-        <select id="splitView" class="md-only" title="Split view for two Markdown files" aria-label="Split view for two Markdown files">
+        <select id="splitView" title="Panes: split right Ctrl+Shift+D, split down Ctrl+Shift+E, move Ctrl+Alt+arrows" aria-label="Panes">
           <option value="off" selected>1 pane</option>
-          <option value="right">Side by side</option>
-          <option value="bottom">Top / Bottom</option>
+          <option value="right">Split right</option>
+          <option value="bottom">Split down</option>
         </select>
         <button id="ask" type="button" class="review-only" title="Copy the selection as a review quote (Ctrl+Shift+A)" aria-label="Copy selection for a session">
           <svg class="icon"><use href="#i-ask"/></svg>
@@ -301,6 +301,7 @@
 
     <div id="tabs" role="tablist" aria-label="Open files"></div>
 
+    <div id="panes" hidden></div>
     <main id="stage">
       <div id="viewerContainer" tabindex="0">
         <div id="viewer" class="pdfViewer"></div>
@@ -320,17 +321,6 @@
           <span id="figureResizerLabel" class="figure-resizer-label"></span>
           <span id="figureResizerGrip" class="figure-resizer-grip" title="Drag to resize figure (double-click figure to open in new tab)"></span>
         </div>
-      </div>
-      <div id="splitDivider" hidden role="separator" aria-label="Resize split panes"></div>
-      <div id="markdownStageSplit" hidden>
-        <div id="splitBar" class="split-bar">
-          <select id="splitTabSelect" aria-label="Second Markdown file"></select>
-          <button id="splitClose" type="button" title="Close split view" aria-label="Close split view">
-            <svg class="icon"><use href="#i-close"/></svg>
-          </button>
-        </div>
-        <article id="markdownSplit"></article>
-        <pre id="markdownRawSplit" hidden></pre>
       </div>
 
       <div id="find" hidden>
@@ -451,10 +441,12 @@
               <dd>pulldown-cmark parses, ammonia sanitizes, highlight.js 11.12 colours code.</dd>
               <dt>TeX equations</dt>
               <dd>math-core 0.9 turns TeX into MathML, set in New Computer Modern Math.</dd>
+              <dt>Panes</dt>
+              <dd>dockview 8.8 lays out the tiles and their tabs.</dd>
               <dt>Fonts</dt>
               <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1; Monaspace 1.400 (GitHub Next).</dd>
               <dt>Licences</dt>
-              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; fonts GUST and SIL OFL. Full list in the README.</dd>
+              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; dockview MIT; fonts GUST and SIL OFL. Full list in the README.</dd>
             </dl>
           </details>
           <div class="about-links">
@@ -549,6 +541,7 @@
          print resolution, and the print stylesheet hides everything else. -->
     <div id="printPages" aria-hidden="true"></div>
 
+    <script src="./vendor/dockview/dockview-core.min.js"></script>
     <script type="module" src="./smoke.mjs"></script>
     <script type="module" src="./app.mjs"></script>
   </body>

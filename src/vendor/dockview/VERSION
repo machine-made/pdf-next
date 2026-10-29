@@ -1,0 +1,5 @@
+dockview-core 8.8.0 (MIT, LICENSE.md), unmodified UMD build dist/dockview-core.min.js from npm.
+Source: https://github.com/dockview/dockview
+Used for the pane layout: tiles with tabs, split by shortcut or by dragging a tab.
+SHA-256:
+  947018d0e9beb8aa11974d6794ff5f4751bb79f1707be10baa7420254bcdb2e5  dockview-core.min.js

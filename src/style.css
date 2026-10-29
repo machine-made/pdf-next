@@ -1441,11 +1441,7 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
   --md-accent: #0b62c4;
 }
 
-body:not(.kind-markdown):not(.kind-json) #markdownStage,
-body:not(.kind-markdown) #markdownStageSplit,
-body:not(.kind-markdown) #splitDivider,
-#markdownStageSplit[hidden],
-#splitDivider[hidden] {
+body:not(.kind-markdown):not(.kind-json) #markdownStage {
   display: none;
 }
 
@@ -1961,8 +1957,7 @@ body.pages-on #mdWidth {
   #reviewChip,
   #reviewMenu,
   #figureResizer,
-  #splitDivider,
-  #markdownStageSplit {
+  #panes .pane-snapshot {
     display: none !important;
   }
 
@@ -2402,169 +2397,99 @@ body.reattach-picking .textLayer {
   pointer-events: auto;
 }
 
-/* ── Split view for two Markdown files ───────────────────────────────── */
-body.kind-markdown.split-right #markdownStage {
-  right: calc((100% - var(--review-offset, 0px)) * (1 - var(--split-ratio, 0.5)) + 3px + var(--review-offset, 0px));
-}
-
-body.kind-markdown.split-right #splitDivider {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc((100% - var(--review-offset, 0px)) * var(--split-ratio, 0.5) - 3px);
-  width: 6px;
-  z-index: 4;
-  background: var(--rule);
-  cursor: col-resize;
-}
-
-body.kind-markdown.split-right #markdownStageSplit {
-  left: calc((100% - var(--review-offset, 0px)) * var(--split-ratio, 0.5) + 3px);
-}
-
-body.kind-markdown.split-bottom #markdownStage {
-  bottom: calc(100% * (1 - var(--split-ratio, 0.5)) + 3px);
-}
-
-body.kind-markdown.split-bottom #splitDivider {
-  position: absolute;
-  left: 0;
-  right: var(--review-offset, 0px);
-  top: calc(100% * var(--split-ratio, 0.5) - 3px);
-  height: 6px;
-  z-index: 4;
-  background: var(--rule);
-  cursor: row-resize;
-}
-
-body.kind-markdown.split-bottom #markdownStageSplit {
-  top: calc(100% * var(--split-ratio, 0.5) + 3px);
-}
-
 body.review-open {
   --review-offset: 280px;
 }
 
-#splitDivider:hover,
-#splitDivider.dragging {
-  background: var(--accent);
-}
-
-.split-bar {
-  position: sticky;
-  top: -12px;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  max-width: var(--md-width, 720px);
-  margin: -8px auto 10px;
-  padding: 4px 8px;
-  border: 1px solid var(--widget-border);
-  border-radius: 5px;
-  background: var(--chrome);
-  color: var(--fg);
-  font: 12px/1.2 var(--ui-font);
-  box-shadow: 0 2px 8px var(--shadow);
-}
-
-.split-bar select {
+/* ── Panes: tiles with tabs (src/panes.mjs, dockview-core) ───────────── */
+#panes {
+  position: relative;
   flex: 1 1 auto;
-  min-width: 0;
-  height: 22px;
-  font: inherit;
+  min-height: 0;
 }
 
-#splitClose {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--fg-dim);
+#panes[hidden] {
+  display: none;
+}
+
+body.panes #tabs {
+  display: none !important;
+}
+
+.pane-body {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--desk);
+}
+
+body.panes #stage {
+  position: absolute;
+  inset: 0;
+}
+
+.pane-snapshot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--desk);
+}
+
+.pane-snapshot > #markdownStage,
+.pane-snapshot > #viewerContainer {
+  display: block !important;
+}
+
+.pane-snapshot > #imageStage {
+  display: grid !important;
+}
+
+.pane-snapshot #markdownRaw {
+  display: none;
+}
+
+.pane-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
   cursor: pointer;
 }
 
-#splitClose:hover {
-  background: var(--hover);
-  color: var(--fg);
+.pane-placeholder {
+  display: grid;
+  place-content: center;
+  gap: 4px;
+  height: 100%;
+  color: var(--fg-dim);
+  text-align: center;
 }
 
-/* Share Markdown typography with the secondary split article */
-#markdownSplit { counter-reset: figure; }
-#markdownSplit[data-font="serif"] { --article-font: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif; }
-#markdownSplit[data-font="sans"] { --article-font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif; }
-#markdownSplit[data-font="weft"] { --article-font: "machine-made Weft", system-ui, -apple-system, "Segoe UI", sans-serif; }
-#markdownSplit[data-font="mm-sans"] { --article-font: "machine-made Sans", system-ui, -apple-system, "Segoe UI", sans-serif; }
-#markdownSplit[data-font="heddle"] { --article-font: "machine-made Heddle", system-ui, -apple-system, "Segoe UI", sans-serif; }
-#markdownSplit[data-font="mono"] { --article-font: var(--code-font); }
-#markdownSplit[data-font="monaspace-neon"] { --article-font: "Monaspace Neon", var(--code-font); }
-#markdownSplit[data-font="monaspace-argon"] { --article-font: "Monaspace Argon", var(--code-font); }
-#markdownSplit[data-font="monaspace-xenon"] { --article-font: "Monaspace Xenon", var(--code-font); }
-#markdownSplit[data-font="monaspace-radon"] { --article-font: "Monaspace Radon", var(--code-font); }
-#markdownSplit[data-font="monaspace-krypton"] { --article-font: "Monaspace Krypton", var(--code-font); }
-#markdownSplit[data-size="14"] { font-size: 14px; }
-#markdownSplit[data-size="15"] { font-size: 15px; }
-#markdownSplit[data-size="16"] { font-size: 16px; }
-#markdownSplit[data-size="18"] { font-size: 18px; }
-#markdownSplit[data-size="20"] { font-size: 20px; }
-#markdownSplit[data-size="22"] { font-size: 22px; }
-#markdownSplit[data-size="24"] { font-size: 24px; }
-#markdownSplit[data-size="26"] { font-size: 26px; }
-#markdownSplit[data-size="28"] { font-size: 28px; }
-#markdownSplit[data-size="32"] { font-size: 32px; }
-#markdownSplit[data-size="36"] { font-size: 36px; }
-#markdownSplit[data-size="40"] { font-size: 40px; }
-#markdownSplit[data-size="48"] { font-size: 48px; }
-#markdownSplit > :first-child { margin-top: 0; }
-#markdownSplit > :last-child { margin-bottom: 0; }
-#markdownSplit h1, #markdownSplit h2, #markdownSplit h3, #markdownSplit h4, #markdownSplit h5, #markdownSplit h6 { margin: 1.4em 0 0.5em; line-height: 1.25; }
-#markdownSplit h1 { font-size: 1.7em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-rule); }
-#markdownSplit h2 { font-size: 1.35em; padding-bottom: 0.2em; border-bottom: 1px solid var(--md-rule); }
-#markdownSplit h3 { font-size: 1.15em; }
-#markdownSplit blockquote { margin: 0.8em 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--md-rule); color: var(--md-dim); }
-#markdownSplit hr { margin: 1.6em 0; border: 0; border-top: 1px solid var(--md-rule); }
-#markdownSplit img { max-width: 100%; height: auto; cursor: zoom-in; }
-#markdownSplit p > img:only-child, #markdownSplit p.md-figure > img { display: block; margin: 0 auto; }
-#markdownSplit p.md-figure { margin: 1.2em 0; text-align: center; }
-#markdownSplit[data-fig-width="column"] p.md-figure > img:not([width]) { width: 100%; }
-#markdownSplit[data-fig-width="75"] p.md-figure > img:not([width]) { width: 75%; }
-#markdownSplit[data-fig-width="50"] p.md-figure > img:not([width]) { width: 50%; }
-#markdownSplit[data-fig-height="screen"] p.md-figure > img:not([height]) { max-height: 85vh; object-fit: contain; }
-#markdownSplit[data-fig-height="half"] p.md-figure > img:not([height]) { max-height: 50vh; object-fit: contain; }
-#markdownSplit[data-fig-align="left"] p.md-figure { text-align: left; }
-#markdownSplit[data-fig-align="left"] p.md-figure > img, #markdownSplit p.md-figure > img[data-align="left"] { margin: 0 auto 0 0; }
-#markdownSplit p.md-figure > img[data-align="right"] { margin: 0 0 0 auto; }
-#markdownSplit p.md-figure > img[data-align="center"] { margin: 0 auto; }
-#markdownSplit .md-caption { display: block; margin-top: 0.45em; font-size: 0.9em; color: var(--md-dim); }
-#markdownSplit[data-fig-caption="numbered"] p.md-figure.has-caption { counter-increment: figure; }
-#markdownSplit[data-fig-caption="numbered"] .md-caption::before { content: "Figure " counter(figure) ". "; font-weight: 600; color: var(--md-fg); }
-#markdownSplit math { font-family: "New Computer Modern Math", "STIX Two Math", "Cambria Math", math, serif; font-size: 1.05em; }
-#markdownSplit math mtext { font-family: var(--article-font); }
-#markdownSplit pre { padding: 12px 14px; overflow-x: auto; border-radius: 6px; background: var(--md-code-bg); font: 0.86em/1.5 var(--code-font); }
-#markdownSplit code { padding: 1px 5px; border-radius: 4px; background: var(--md-code-bg); font: 0.88em var(--code-font); }
-#markdownSplit pre > code { padding: 0; background: none; font-size: inherit; }
-#markdownSplit .hljs-keyword { color: var(--md-code-keyword); }
-#markdownSplit .hljs-built_in { color: var(--md-code-built-in); }
-#markdownSplit .hljs-type { color: var(--md-code-type); }
-#markdownSplit .hljs-literal { color: var(--md-code-literal); }
-#markdownSplit .hljs-number { color: var(--md-code-number); }
-#markdownSplit .hljs-string, #markdownSplit .hljs-regexp { color: var(--md-code-string); }
-#markdownSplit .hljs-comment { color: var(--md-code-comment); font-style: italic; }
-#markdownSplit .hljs-meta { color: var(--md-code-meta); }
-#markdownSplit .hljs-title { color: var(--md-code-title); }
-#markdownSplit .hljs-params { color: var(--md-code-params); }
-#markdownSplit .hljs-variable { color: var(--md-code-variable); }
-#markdownSplit .hljs-attr { color: var(--md-code-attr); }
-#markdownSplit .hljs-symbol, #markdownSplit .hljs-bullet { color: var(--md-code-symbol); }
-#markdownSplit .hljs-section { color: var(--md-code-section); font-weight: 600; }
-#markdownSplit .hljs-addition { color: var(--md-code-addition); }
-#markdownSplit .hljs-deletion { color: var(--md-code-deletion); }
-#markdownSplit table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1em 0; }
-#markdownSplit th, #markdownSplit td { padding: 5px 10px; border: 1px solid var(--md-rule); }
-#markdownSplit a { color: var(--md-accent); text-decoration: none; }
-#markdownSplit a:hover { text-decoration: underline; }
+.dockview-theme-pdf-next {
+  --dv-group-view-background-color: var(--desk);
+  --dv-tabs-and-actions-container-background-color: var(--chrome);
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg);
+  --dv-activegroup-visiblepanel-tab-color: var(--fg);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--chrome);
+  --dv-activegroup-hiddenpanel-tab-color: var(--fg-dim);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--chrome);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fg);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--chrome);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--fg-dim);
+  --dv-tab-divider-color: var(--rule);
+  --dv-separator-border: var(--rule);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--accent);
+  --dv-drag-over-background-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  --dv-drag-over-border-color: var(--accent);
+  --dv-icon-hover-background-color: var(--hover);
+  --dv-paneview-active-outline-color: var(--accent);
+  font-family: var(--ui-font);
+}
+
+/* The active pane: a thin accent line along the top of its tab strip. */
+.dockview-theme-pdf-next .dv-groupview.dv-active-group > .dv-tabs-and-actions-container {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
