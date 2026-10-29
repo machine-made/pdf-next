@@ -5076,6 +5076,10 @@ async function applyDirectFormat(format) {
   }
   const raw = state.markdownSource;
   const span = sourceSpan(raw, target.picked.at.line, target.picked.at.end, target.picked.quote);
+  if (!span.error && /\n[ \t]*\n/.test(raw.slice(span.start, span.end))) {
+    setStatus('Formatting works within one paragraph: select less, or use Edit text… (Ctrl+E)', { error: true });
+    return;
+  }
   if (span.error) {
     setStatus(span.error === 'repeated'
       ? 'That text appears more than once in its paragraph: select a longer passage'
