@@ -60,6 +60,10 @@ jobs:
       - name: Frontend contract checks
         run: node tools/check_frontend.mjs
 
+      - name: What an agent reads stays within budget
+        if: matrix.platform == 'ubuntu-latest'
+        run: node tools/agent_cost.mjs --check --bin src-tauri/target/release/pdf-next
+
       - name: Fixtures are what the script writes
         run: |
           python3 tests/make_fixtures.py
