@@ -3128,6 +3128,13 @@ for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
 assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).every((line) => line.includes('--code-font:')),
   'Every monospace stack goes through --code-font.');
 
+// The Markdown font menu is clustered: TeX, System, Monaspace, then machine-made.
+{
+  const menu = page.slice(page.indexOf('<select id="mdFont"'), page.indexOf('</select>', page.indexOf('<select id="mdFont"')));
+  const groups = [...menu.matchAll(/<optgroup label="([^"]+)">/g)].map((m) => m[1]);
+  assert.deepEqual(groups, ['TeX', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+}
+
 // The wheel steps through the toolbar menus and zooms over the zoom controls.
 assert.match(app, /function wireMenuWheel\(\)[\s\S]*?#bar select, #settingsPanel select, #splitBar select/,
   'Toolbar and Settings menus take the wheel.');

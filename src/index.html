@@ -187,18 +187,26 @@
           <svg class="icon"><use href="#i-raw"/></svg>
         </button>
         <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
-          <option value="latin-modern" selected>Latin Modern</option>
-          <option value="weft">mm Weft</option>
-          <option value="mm-sans">mm Sans</option>
-          <option value="heddle">mm Heddle</option>
-          <option value="serif">Serif</option>
-          <option value="sans">Sans</option>
-          <option value="mono">Mono</option>
-          <option value="monaspace-neon">Monaspace Neon</option>
-          <option value="monaspace-argon">Monaspace Argon</option>
-          <option value="monaspace-xenon">Monaspace Xenon</option>
-          <option value="monaspace-radon">Monaspace Radon</option>
-          <option value="monaspace-krypton">Monaspace Krypton</option>
+          <optgroup label="TeX">
+            <option value="latin-modern" selected>Latin Modern</option>
+          </optgroup>
+          <optgroup label="System">
+            <option value="sans">Sans</option>
+            <option value="serif">Serif</option>
+            <option value="mono">Mono</option>
+          </optgroup>
+          <optgroup label="Monaspace (GitHub)">
+            <option value="monaspace-neon">Monaspace Neon</option>
+            <option value="monaspace-argon">Monaspace Argon</option>
+            <option value="monaspace-xenon">Monaspace Xenon</option>
+            <option value="monaspace-radon">Monaspace Radon</option>
+            <option value="monaspace-krypton">Monaspace Krypton</option>
+          </optgroup>
+          <optgroup label="machine-made">
+            <option value="weft">mm Weft</option>
+            <option value="mm-sans">mm Sans</option>
+            <option value="heddle">mm Heddle</option>
+          </optgroup>
         </select>
         <select id="mdSize" class="md-only" data-md="size" title="Markdown text size" aria-label="Markdown text size">
           <option value="14">14 px</option>
@@ -408,12 +416,16 @@
             <option value="weft">mm Weft</option>
           </select></label>
           <label>Code font <select id="setCodeFont">
-            <option value="system">System mono</option>
-            <option value="monaspace-neon">Monaspace Neon</option>
-            <option value="monaspace-argon">Monaspace Argon</option>
-            <option value="monaspace-xenon">Monaspace Xenon</option>
-            <option value="monaspace-radon">Monaspace Radon</option>
-            <option value="monaspace-krypton">Monaspace Krypton</option>
+            <optgroup label="System">
+              <option value="system">System mono</option>
+            </optgroup>
+            <optgroup label="Monaspace (GitHub)">
+              <option value="monaspace-neon">Monaspace Neon</option>
+              <option value="monaspace-argon">Monaspace Argon</option>
+              <option value="monaspace-xenon">Monaspace Xenon</option>
+              <option value="monaspace-radon">Monaspace Radon</option>
+              <option value="monaspace-krypton">Monaspace Krypton</option>
+            </optgroup>
           </select></label>
           <label>Check for changes <select id="setPoll" data-mirror="poll"></select></label>
         </section>

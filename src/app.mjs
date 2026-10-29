@@ -5117,7 +5117,14 @@ function syncSettings() {
   for (const [mine, theirs] of SETTINGS_MIRRORS) {
     const select = ui[mine];
     if (!select.options.length) {
-      for (const option of ui[theirs].options) select.append(new Option(option.textContent, option.value));
+      // Copy the menu with its groups, so Settings shows the fonts clustered too.
+      for (const child of ui[theirs].children) {
+        const copy = child.cloneNode(true);
+        for (const option of copy.tagName === 'OPTION' ? [copy] : copy.querySelectorAll('option')) {
+          option.removeAttribute('selected');
+        }
+        select.append(copy);
+      }
     }
     select.value = ui[theirs].value;
   }
