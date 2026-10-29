@@ -77,7 +77,7 @@ export function reviewAction(review) {
 }
 
 export function reviewStatus(review) {
-  return ['open', 'applied', 'resolved'].includes(review?.status) ? review.status : 'open';
+  return ['open', 'applied', 'resolved', 'question'].includes(review?.status) ? review.status : 'open';
 }
 
 export function reviewColor(review, count = 16) {

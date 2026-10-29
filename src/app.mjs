@@ -10,6 +10,7 @@ import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
+import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -225,6 +226,9 @@ const state = {
   reviewConflicts: new Map(),
   reviewLocations: new Map(),
   reattachReviewId: null,
+  reopenReviewId: null,
+  // Source lines where the paint found each applied review, for its before/after.
+  reviewSpans: new Map(),
   reviewActionFilter: 'all',
   reviewStatusFilter: 'all',
   selectedReviewId: null,
@@ -3374,7 +3378,7 @@ function renderNoteRequests() {
   if (!ui.noteRequests) return;
   const chosen = state.pendingRequests || [];
   if (!ui.noteRequests.childElementCount) {
-    for (const { group, label, items } of REQUEST_GROUPS) {
+    for (const { group, label, hint, items } of REQUEST_GROUPS) {
       const name = document.createElement('span');
       name.className = 'request-group';
       name.textContent = label;
@@ -3382,12 +3386,18 @@ function renderNoteRequests() {
       row.className = 'request-chips';
       row.setAttribute('role', 'group');
       row.setAttribute('aria-label', label);
+      if (hint) {
+        name.title = hint;
+        name.classList.add('has-hint');
+        row.setAttribute('aria-description', hint);
+      }
       for (const [item, text] of items) {
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'request-chip';
         chip.dataset.request = `${group}:${item}`;
         chip.textContent = text;
+        if (hint) chip.title = `${text} ${hint}`;
         row.append(chip);
       }
       ui.noteRequests.append(name, row);
@@ -3530,6 +3540,7 @@ async function saveNote() {
       sourceHintUnavailable = !source;
       if (state.file?.path !== path) return;
     }
+    const before = picked.kind === 'markdown' ? passageSource(state.markdownSource, picked.at) : '';
     const review = {
       file: picked.file,
       kind: picked.kind,
@@ -3543,6 +3554,7 @@ async function saveNote() {
       ...(anchor ? { anchor } : {}),
       ...(source ? { source } : {}),
       ...(requests.length ? { requests } : {}),
+      ...(before ? { before } : {}),
     };
     const store = await invoke('append_review', {
       document: path,
@@ -3657,6 +3669,10 @@ let commentSaveTimer = 0;
 let commentFlushPromise = null;
 let commentFlushAgain = false;
 const pendingComments = new Map();
+// What the reader is typing into a review row besides its comment: a reply to
+// the agent's question, or the note for a reopen. Kept across repaints.
+const reviewTextDrafts = new Map();
+const reviewDiffCache = new Map();
 
 function commentDraftKey(path, id) {
   return `${path}\u0000${id}`;
@@ -3770,8 +3786,9 @@ async function reloadReviewsFromDisk() {
 
 function renderReviewList() {
   const active = document.activeElement;
-  const activeTextarea = active?.matches?.('.review-comment') ? active : null;
+  const activeTextarea = active?.matches?.('.review-comment, .review-reply, .review-reopen-note') ? active : null;
   const activeId = activeTextarea?.closest('.review-row')?.dataset.reviewId;
+  const activeClass = ['review-comment', 'review-reply', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
   const selectionStart = activeTextarea?.selectionStart;
   const selectionEnd = activeTextarea?.selectionEnd;
   ui.reviewList.textContent = '';
@@ -3785,6 +3802,13 @@ function renderReviewList() {
     (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
+  const questions = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'question').length;
+  if (questions) {
+    const asked = document.createElement('span');
+    asked.className = 'review-question-count';
+    asked.textContent = ` · ${questions} question${questions === 1 ? '' : 's'}`;
+    ui.reviewCount.append(asked);
+  }
   if (!visible.length) {
     const empty = document.createElement('p');
     empty.className = 'review-empty';
@@ -3798,7 +3822,8 @@ function renderReviewList() {
     row.dataset.reviewId = review.id;
     row.dataset.reviewTint = String(reviewTint(review));
     row.dataset.action = review.action || 'improve';
-    row.dataset.status = review.status || 'open';
+    row.dataset.status = reviewStatus(review);
+    if (reviewStatus(review) === 'question' && !review._draftOnly) row.classList.add('question');
     const stateKey = reviewStateKey(state.file?.path, review.id);
     const conflict = state.reviewConflicts.get(stateKey);
     if (conflict) row.classList.add('conflict');
@@ -3831,8 +3856,9 @@ function renderReviewList() {
     status.className = 'review-status';
     status.textContent = review._draftOnly
       ? 'Removed on disk · your unsaved draft is preserved'
-      : `${reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
+      : `${reviewStatus(review) === 'question' ? 'question · the agent waits for your answer' : reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
     row.append(status);
+    if (!review._draftOnly) appendReviewQuestion(row, review);
     if (locationStatus === 'preserved') {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -3903,6 +3929,16 @@ function renderReviewList() {
       void flushCommentSave();
     });
     row.append(comment);
+    if (review.reply && reviewStatus(review) !== 'question') {
+      const reply = document.createElement('div');
+      reply.className = 'review-reply-text';
+      const label = document.createElement('span');
+      label.className = 'review-reply-label';
+      label.textContent = 'You answered';
+      reply.append(label, document.createTextNode(review.reply));
+      row.append(reply);
+    }
+    if (!review._draftOnly && reviewStatus(review) === 'applied') appendReviewDiff(row, review);
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
@@ -3954,22 +3990,30 @@ function renderReviewList() {
       });
       actions.append(useDisk, saveDraft);
     }
-    if (!review._draftOnly && reviewStatus(review) === 'applied') {
-      const resolve = document.createElement('button');
-      resolve.type = 'button';
-      resolve.textContent = 'Resolve';
-      resolve.addEventListener('click', (event) => {
-        event.stopPropagation();
-        void patchReview(review, { status: 'resolved' }, 'Review resolved');
-      });
-      actions.append(resolve);
-    } else if (!review._draftOnly && reviewStatus(review) === 'resolved') {
+    const settled = !review._draftOnly && ['applied', 'resolved'].includes(reviewStatus(review));
+    if (settled && state.reopenReviewId === review.id) {
+      row.append(reopenForm(review));
+    } else if (settled) {
+      if (reviewStatus(review) === 'applied') {
+        const resolve = document.createElement('button');
+        resolve.type = 'button';
+        resolve.textContent = 'Resolve';
+        resolve.title = 'The change is right: close this review';
+        resolve.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void patchReview(review, { status: 'resolved' }, 'Review resolved');
+        });
+        actions.append(resolve);
+      }
       const reopen = document.createElement('button');
       reopen.type = 'button';
       reopen.textContent = 'Reopen';
+      reopen.title = 'Not right yet: say what is still wrong and send it back to the agent';
       reopen.addEventListener('click', (event) => {
         event.stopPropagation();
-        void patchReview(review, { status: 'open' }, 'Review reopened');
+        state.reopenReviewId = review.id;
+        renderReviewList();
+        reviewRowById(review.id)?.querySelector('.review-reopen-note')?.focus({ preventScroll: true });
       });
       actions.append(reopen);
     }
@@ -3992,14 +4036,204 @@ function renderReviewList() {
     ui.reviewList.append(row);
   }
   if (activeId) {
-    const textarea = reviewRowById(activeId)?.querySelector('.review-comment');
-    if (textarea instanceof HTMLTextAreaElement) {
+    const textarea = reviewRowById(activeId)?.querySelector(`.${activeClass}`);
+    if (textarea instanceof HTMLTextAreaElement || textarea instanceof HTMLInputElement) {
       textarea.focus({ preventScroll: true });
       if (Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) {
         textarea.setSelectionRange(selectionStart, selectionEnd);
       }
     }
   }
+}
+
+function reviewTextDraftKey(id, kind) {
+  return `${state.file?.path}\u0000${id}\u0000${kind}`;
+}
+
+/// A field for the reader to write to the agent, with its send button.
+/// Enter sends, Shift+Enter is a new line; the text survives repaints.
+function reviewTextField(review, kind, { placeholder, label, send, cancel = null }) {
+  const key = reviewTextDraftKey(review.id, kind);
+  const box = document.createElement('div');
+  box.className = `review-${kind}-box`;
+  const field = document.createElement('textarea');
+  field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
+  field.rows = 2;
+  field.placeholder = placeholder;
+  field.value = reviewTextDrafts.get(key) ?? '';
+  field.addEventListener('click', (event) => event.stopPropagation());
+  field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
+  const go = () => void send(field.value.trim(), key);
+  field.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      go();
+    } else if (event.key === 'Escape' && cancel) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancel();
+    }
+  });
+  const actions = document.createElement('div');
+  actions.className = 'review-actions';
+  if (cancel) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = 'Cancel';
+    back.addEventListener('click', (event) => {
+      event.stopPropagation();
+      cancel();
+    });
+    actions.append(back);
+  }
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'review-send';
+  button.textContent = label;
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    go();
+  });
+  actions.append(button);
+  box.append(field, actions);
+  return box;
+}
+
+/// The agent's question, for an item it handed back to the reader.
+function appendReviewQuestion(row, review) {
+  if (reviewStatus(review) !== 'question') return;
+  const asked = document.createElement('div');
+  asked.className = 'review-question';
+  const label = document.createElement('span');
+  label.className = 'review-question-label';
+  label.textContent = 'The agent asks';
+  asked.append(label, document.createTextNode(String(review.question || '(no question text)')));
+  row.append(asked, reviewTextField(review, 'reply', {
+    placeholder: 'Your answer (Enter to send)', label: 'Send', send: (text, key) => sendReviewReply(review, text, key),
+  }));
+}
+
+async function sendReviewReply(review, text, key) {
+  if (!text) {
+    setStatus('Write an answer first');
+    return;
+  }
+  const path = state.file?.path;
+  const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
+    revision: state.reviewRevision,
+  });
+  if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
+}
+
+function reopenForm(review) {
+  return reviewTextField(review, 'reopen', {
+    placeholder: 'What is still wrong? (Enter to reopen)',
+    label: 'Reopen',
+    send: (text, key) => reopenReview(review, text, key),
+    cancel: () => {
+      state.reopenReviewId = null;
+      renderReviewList();
+    },
+  });
+}
+
+/// Back to the agent, with the reader's note in the comment it reads.
+async function reopenReview(review, note, key) {
+  if (!note) {
+    setStatus('Say in a few words what is still wrong');
+    return;
+  }
+  const path = state.file?.path;
+  if (!path) return;
+  const generation = state.generation;
+  const old = String(review.comment || '');
+  const comment = (old ? `${old}\nReopened: ${note}` : `Reopened: ${note}`).slice(-2000);
+  try {
+    const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
+    if (state.generation !== generation || state.file?.path !== path) return;
+    applyReviewStore(store);
+  } catch (error) {
+    if (state.generation !== generation || state.file?.path !== path) return;
+    setStatus(/conflict/i.test(String(error))
+      ? 'The review changed on disk; reloaded it, your note is kept. Check it and reopen again.'
+      : String(error), { error: true });
+    await loadReviews({ fromDisk: true });
+    return;
+  }
+  const current = state.reviews.find((item) => item.id === review.id) || review;
+  if (await patchReview(current, { status: 'open' }, `Review ${review.id} reopened`)) {
+    reviewTextDrafts.delete(key);
+    if (state.reopenReviewId === review.id) state.reopenReviewId = null;
+    renderReviewList();
+  }
+}
+
+/// The text an applied Markdown review's passage has now: from where the
+/// paint found it, or its saved lines when its quote and context are gone but
+/// the paragraph there still shares words with `before`. Null: passage gone.
+function appliedPassageNow(review) {
+  const raw = state.markdownSource;
+  if (typeof raw !== 'string') return null;
+  const key = reviewStateKey(state.file?.path, review.id);
+  const found = state.reviewSpans?.get(key);
+  if (found?.line) return passageText(raw, found);
+  const status = state.reviewLocations.get(key);
+  const text = passageText(raw, review.at);
+  if (!text) return null;
+  if (status === 'lines') return text;
+  const diffs = wordDiff(review.before, text);
+  const kept = diffs ? diffs.filter(([op]) => op === 0).reduce((sum, [, part]) => sum + part.trim().length, 0) : 0;
+  return kept >= 0.3 * review.before.trim().length ? text : null;
+}
+
+function reviewDiffFor(review) {
+  const after = appliedPassageNow(review);
+  const key = `${review.id}\u0000${review.before}\u0000${after}`;
+  const cached = reviewDiffCache.get(key);
+  if (cached) return cached;
+  const diffs = after === null ? [[-1, review.before]] : wordDiff(review.before, after);
+  const view = diffs ? { ...diffView(diffs), gone: after === null } : null;
+  if (reviewDiffCache.size > 200) reviewDiffCache.clear();
+  reviewDiffCache.set(key, view);
+  return view;
+}
+
+/// Before/after of an applied Markdown review, word by word.
+function appendReviewDiff(row, review) {
+  if (state.file?.kind !== 'markdown' || typeof review.before !== 'string' || !review.before) return;
+  const view = reviewDiffFor(review);
+  const box = document.createElement('div');
+  box.className = 'review-diff';
+  const head = document.createElement('div');
+  head.className = 'review-diff-head';
+  if (!view) {
+    head.textContent = 'Before/after · the passage is too long to compare here';
+    box.append(head);
+    row.append(box);
+    return;
+  }
+  head.textContent = view.gone
+    ? 'Before/after · the passage is gone from the file'
+    : view.changed
+      ? `Before/after · ${view.removed} word${view.removed === 1 ? '' : 's'} out, ${view.added} in`
+      : 'Before/after · the passage has not changed';
+  const body = document.createElement('div');
+  body.className = 'review-diff-body';
+  for (const part of view.parts) {
+    const node = document.createElement(part.kind === 'del' ? 'del' : part.kind === 'ins' ? 'ins' : 'span');
+    if (part.kind === 'gap') node.className = 'review-diff-gap';
+    node.textContent = part.text;
+    body.append(node);
+  }
+  if (view.cut) {
+    const more = document.createElement('span');
+    more.className = 'review-diff-gap';
+    more.textContent = ' … (cut)';
+    body.append(more);
+  }
+  box.append(head, body);
+  row.append(box);
 }
 
 function selectReview(id) {
@@ -4192,22 +4426,31 @@ async function deleteReview(id) {
   }
 }
 
-async function patchReview(review, patch, message) {
-  if (!state.file) return;
+/// Compare-and-swap one record: each patched field must still hold the value
+/// shown, and with `revision`, the whole store must be the one shown.
+async function patchReview(review, patch, message, { revision = null } = {}) {
+  if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
   const expected = Object.fromEntries(Object.keys(patch).map((key) => [
     key, Object.hasOwn(review, key) ? review[key] : null,
   ]));
+  if (Number.isSafeInteger(revision)) expected.$revision = revision;
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
-    if (state.generation !== generation || state.file?.path !== path) return;
+    if (state.generation !== generation || state.file?.path !== path) return false;
     applyReviewStore(store);
     setStatus(message);
+    return true;
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
-      setStatus(`Review update failed: ${String(error)}`, { error: true });
+      const conflict = /conflict/i.test(String(error));
+      setStatus(conflict
+        ? 'The review changed on disk; reloaded it, your text is kept. Check it and send again.'
+        : `Review update failed: ${String(error)}`, { error: true });
+      if (conflict) await loadReviews({ fromDisk: true });
     }
+    return false;
   }
 }
 
@@ -4345,6 +4588,10 @@ function makeReviewBadge(review) {
   badge.textContent = reviewLabel(review, state.reviews);
   badge.dataset.reviewId = review.id;
   badge.dataset.reviewTint = String(reviewTint(review));
+  if (reviewStatus(review) === 'question') {
+    badge.dataset.reviewStatus = 'question';
+    badge.title = `The agent asks: ${review.question || ''}`;
+  }
   return badge;
 }
 
@@ -4405,6 +4652,7 @@ function applyReviewTint(el, id) {
   const review = state.reviews.find((item) => item.id === id);
   el.dataset.reviewTint = String(reviewTint(review || id));
   if (reviewAction(review) === 'delete') el.dataset.reviewAction = 'delete';
+  if (reviewStatus(review) === 'question') el.dataset.reviewStatus = 'question';
 }
 
 function clearReviewTint(el) {
@@ -4415,6 +4663,7 @@ function clearReviewTint(el) {
   delete el.dataset.reviewId;
   delete el.dataset.reviewTint;
   delete el.dataset.reviewAction;
+  delete el.dataset.reviewStatus;
 }
 
 function unwrapReviewMarks(root) {
@@ -4658,6 +4907,7 @@ function paintMarkdownMarks() {
   }
   const hosts = new Map();
   const heals = [];
+  const spans = new Map();
   let lowest = Infinity;
   for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
     if (item.found.end > lowest) {
@@ -4672,6 +4922,10 @@ function paintMarkdownMarks() {
       return last;
     });
     hosts.set(item.review, first && markdownBadgeHost(first));
+    if (first && item.review.before && reviewStatus(item.review) === 'applied') {
+      spans.set(reviewStateKey(state.file.path, item.review.id),
+        atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line'));
+    }
     if (first && !changed) {
       const heal = markdownHealPatch(item.review, joined, item.found, first, last);
       if (heal) heals.push(heal);
@@ -4687,6 +4941,7 @@ function paintMarkdownMarks() {
     }
   }
   state.reviewLocations = locations;
+  state.reviewSpans = spans;
   renderReviewList();
   if (finding) {
     buildMarkdownFind(true);
