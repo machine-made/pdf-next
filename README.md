@@ -569,6 +569,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # the Rust side
 node tools/check_frontend.mjs                     # the frontend contracts
 node tests/browser/run.mjs                        # the page in Chromium, with axe-core
 bun run build && node tools/smoke.mjs             # open every fixture, for real
+xvfb-run -a node tests/e2e/app.mjs                # Linux: drive the real app over WebDriver
 ```
 
 `check_frontend.mjs` enforces the invariants that are easy to break silently: a real PDF.js
@@ -583,10 +584,21 @@ that answer, so a window that opens and stays empty fails the run instead of pas
 somewhere else. It also prints how long the first page took to draw and how long a changed file
 took to reload, and fails when either is over its budget for the platform.
 
-`tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend: panes,
-the review card, the toolbar and the editing keys, plus axe-core accessibility checks (contrast,
-labels, keyboard reach) on the main views. Run `bun install` and `bunx playwright install
-chromium` once first.
+`tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend, one
+file per area: PDF viewing, Markdown rendering and find, tabs, panes, the command palette, the
+review card, panel and flow, direct edits, Settings, errors on the status line, and axe-core
+accessibility checks (contrast, labels, keyboard reach) on the main views. Run `bun install` and
+`bunx playwright install chromium` once first. `--coverage` also prints the line coverage of
+`src/*.mjs`.
+
+`tests/e2e/app.mjs` drives the built app itself on Linux, through `tauri-driver` and
+`WebKitWebDriver` (`cargo install tauri-driver`, `apt install webkit2gtk-driver`): it opens a temp
+folder with a Markdown file and a PDF, rewrites the file on disk, saves a review in the window,
+and closes it with `pdf-next reviews done`. Build first with `bunx tauri build --no-bundle`.
+
+The Rust tests include property tests (proptest) of the review store and the Markdown sanitizer.
+CI prints Rust line coverage with `cargo llvm-cov --summary-only`; coverage is reported, not
+enforced.
 
 The fixtures are built by `python3 tests/make_fixtures.py`, which writes the same bytes on
 every machine, so a change to them is a change someone made.
