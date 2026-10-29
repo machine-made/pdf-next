@@ -1,0 +1,160 @@
+name: Install check
+
+# Installs a published release the way a user would, on clean runners, and
+# checks that `pdf-next --version` names it: apt as the README says, the
+# Windows installer silently, the macOS .dmg copied to /Applications.
+# release.yml calls this after publish and apt; run it by hand with a tag to
+# check a release again. A failure leaves the release as it is and names what
+# broke in an ::error:: annotation.
+#
+# Homebrew is not checked: release.yml does not feed it. The tap's own
+# workflow picks a release up within a day, so right after a release the cask
+# still names the previous version.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to install, for example v0.16.5
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apt:
+    name: apt install (Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Add the repository as the README says
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=apt install ${TAG}::$*"; exit 1; }
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc \
+            | sudo tee /etc/apt/keyrings/pdf-next.asc > /dev/null \
+            || fail "could not download https://machine-made.github.io/pdf-next/pdf-next.asc"
+          echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://machine-made.github.io/pdf-next stable main" \
+            | sudo tee /etc/apt/sources.list.d/pdf-next.list > /dev/null
+
+      # GitHub Pages takes a few minutes to serve a new push, and its cache
+      # can hand out the old index for a while after that.
+      - name: Wait for the repository to list the version
+        run: |
+          set -uo pipefail
+          version=${TAG#v}
+          for attempt in $(seq 1 20); do
+            if update=$(sudo apt-get update -o Dir::Etc::sourcelist=sources.list.d/pdf-next.list \
+                 -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 -o Acquire::https::No-Cache=true 2>&1) \
+               && apt-cache madison pdf-next | grep -qF " $version "; then
+              echo "The repository lists pdf-next $version (attempt $attempt)."
+              exit 0
+            fi
+            echo "Not listed yet (attempt $attempt); waiting 30 s."
+            sleep 30
+          done
+          listed=$(apt-cache madison pdf-next | awk '{print $3}' | tr '\n' ' ')
+          echo "::error title=apt install ${TAG}::https://machine-made.github.io/pdf-next does not list pdf-next $version after 10 minutes. It lists: ${listed:-nothing}. apt-get update: $(tail -5 <<< "$update" | tr '\n' ' ')"
+          exit 1
+
+      - name: Install and check the version
+        run: |
+          set -uo pipefail
+          version=${TAG#v}
+          fail() { echo "::error title=apt install ${TAG}::$*"; exit 1; }
+          sudo apt-get update > /dev/null || fail "apt-get update failed"
+          candidate=$(apt-cache policy pdf-next | awk '/Candidate:/ {print $2}')
+          # A tag older than the newest release is installed by its version.
+          package=pdf-next
+          [ "$candidate" = "$version" ] || package="pdf-next=$version"
+          log=$(sudo apt-get install -y "$package" 2>&1) \
+            || fail "apt install $package failed: $(tail -5 <<< "$log" | tr '\n' ' ')"
+          printed=$(pdf-next --version 2>&1) || fail "pdf-next --version exited with $?: $printed"
+          echo "$printed"
+          [ "$printed" = "pdf-next $version" ] || fail "apt installed '$printed', not pdf-next $version"
+
+  windows:
+    name: setup.exe /S (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install silently and check the version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Fail([string]$message) {
+            Write-Output "::error title=Windows install ${env:TAG}::$message"
+            exit 1
+          }
+          try {
+            $version = $env:TAG.TrimStart('v')
+            $setup = "pdf-next_${version}_x64-setup.exe"
+            gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern $setup --dir $env:RUNNER_TEMP
+            if ($LASTEXITCODE -ne 0) { Fail "could not download $setup from $env:TAG." }
+
+            $install = Start-Process (Join-Path $env:RUNNER_TEMP $setup) -ArgumentList '/S' -PassThru -Wait
+            if ($install.ExitCode -ne 0) { Fail "$setup /S exited with code $($install.ExitCode)." }
+
+            $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\pdf-next'
+            $dir = (Get-ItemProperty $key -ErrorAction SilentlyContinue).InstallLocation
+            $exe = if ($dir) { Join-Path $dir.Trim('"') 'pdf-next.exe' }
+            if (-not $exe -or -not (Test-Path $exe)) {
+              $exe = Get-ChildItem $env:LOCALAPPDATA, $env:ProgramFiles -Filter pdf-next.exe -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $exe) { Fail "$setup /S finished but no pdf-next.exe was installed (no InstallLocation under $key)." }
+            Write-Output "Installed at $exe"
+
+            # A GUI binary: stdout must be a file for --version to reach it.
+            $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+            $run = Start-Process $exe -ArgumentList '--version' -RedirectStandardOutput $out -NoNewWindow -PassThru
+            if (-not $run.WaitForExit(60000)) { $run.Kill(); Fail "$exe --version did not exit within a minute." }
+            $printed = (Get-Content $out -Raw).Trim()
+            Write-Output $printed
+            if ($printed -ne "pdf-next $version") { Fail "the installer put '$printed' at $exe, not pdf-next $version." }
+          } catch {
+            Fail "$($_.Exception.Message) (script line $($_.InvocationInfo.ScriptLineNumber))"
+          }
+
+  macos:
+    name: .dmg (macOS)
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Copy the app from the .dmg and check the version
+        run: |
+          set -uo pipefail
+          version=${TAG#v}
+          fail() { echo "::error title=macOS install ${TAG}::$*"; exit 1; }
+          dmg="pdf-next_${version}_universal.dmg"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$dmg" --dir "$RUNNER_TEMP" \
+            || fail "could not download $dmg from $TAG"
+          mount="$RUNNER_TEMP/pdf-next-dmg"
+          hdiutil attach "$RUNNER_TEMP/$dmg" -nobrowse -readonly -mountpoint "$mount" > /dev/null \
+            || fail "hdiutil could not mount $dmg"
+          [ -d "$mount/pdf-next.app" ] || fail "$dmg has no pdf-next.app; it has: $(cd "$mount" && echo *)"
+          cp -R "$mount/pdf-next.app" /Applications/ || fail "could not copy pdf-next.app to /Applications"
+          hdiutil detach "$mount" > /dev/null
+          xattr -dr com.apple.quarantine /Applications/pdf-next.app 2>/dev/null || true
+          binary=/Applications/pdf-next.app/Contents/MacOS/pdf-next
+          archs=$(lipo -archs "$binary") || fail "$binary is missing or not a Mach-O binary"
+          for arch in arm64 x86_64; do
+            [[ " $archs " == *" $arch "* ]] || fail "$dmg is sold as universal but its binary has only: $archs"
+          done
+          printed=$("$binary" --version 2>&1) || fail "$binary --version exited with $?: $printed"
+          echo "$printed ($archs)"
+          [ "$printed" = "pdf-next $version" ] || fail "the .dmg holds '$printed', not pdf-next $version"
