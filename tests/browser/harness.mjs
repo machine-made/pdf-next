@@ -44,44 +44,80 @@ export const defaultFiles = {
   '/d/c.md': 'Third file.\n',
 };
 
+// A file is its raw text, or { raw, html } to hand the page markup shaped like
+// the Rust renderer's. `window.__fail[cmd] = 'message'` makes a command reject
+// (sessionStorage `fail`, as JSON, does the same across a reload).
 function mockTauri({ files, initial, theme, store }) {
   if (store) window.__store = store;
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
     const line = raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + (i ? 1 : 0);
     return `<p><span class="src" data-line="${i === 0 ? 1 : line}"></span>${block.replace(/\n$/, '')}</p>`;
   }).join('\n');
+  const text = (p) => (typeof files[p] === 'object' ? files[p].raw : files[p]);
   let rev = 1;
   window.__calls = [];
   window.__files = files;
-  const kind = (p) => (p.endsWith('.pdf') ? 'pdf' : p.endsWith('.png') ? 'image' : 'markdown');
+  window.__fail = JSON.parse(sessionStorage.getItem('fail') || '{}');
+  const kind = (p) => (p.endsWith('.pdf') ? 'pdf' : p.endsWith('.png') ? 'image' : p.endsWith('.json') ? 'json' : 'markdown');
   const info = (p) => ({ path: p, name: p.split('/').pop(), kind: kind(p), revision: rev });
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const write = (change) => {
+    const st = window.__store || { format: 3, revision: 0, nextId: 1, reviews: [] };
+    change(st);
+    st.revision += 1;
+    window.__store = st;
+    return copy(st);
+  };
+  const find = (id) => {
+    const review = window.__store?.reviews.find((r) => r.id === id);
+    if (!review) throw new Error('review not found');
+    return review;
+  };
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
       invoke: async (cmd, args = {}) => {
         window.__calls.push([cmd, args]);
+        if (window.__fail[cmd]) throw window.__fail[cmd];
         switch (cmd) {
           case 'launch_options': return { version: '0.0.0-test' };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
           case 'open_path': return info(args.path);
-          case 'read_markdown': return { html: render(files[args.path]), raw: files[args.path], digest: `sha256:${files[args.path].length}:${rev}` };
+          case 'read_markdown': {
+            const f = files[args.path];
+            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: `sha256:${text(args.path).length}:${rev}` };
+          }
+          case 'read_json': return text(args.path);
           case 'edit_markdown': {
-            const f = files[args.path] ?? files['/d/a.md'];
+            const path = args.path ?? '/d/a.md';
+            const f = text(path);
+            if (f.slice(args.start, args.start + args.expectedText.length) !== args.expectedText) throw 'the file changed on disk';
             const s = f.slice(0, args.start) + args.replacement + f.slice(args.start + args.expectedText.length);
-            files[args.path ?? '/d/a.md'] = s;
+            files[path] = s;
             rev += 1;
             return `sha256:${s.length}:${rev}`;
           }
-          case 'read_reviews': return window.__store || null;
-          case 'append_review': {
-            const st = window.__store || { format: 3, revision: 0, nextId: 1, reviews: [] };
-            st.revision += 1;
+          case 'read_reviews': return window.__store ? copy(window.__store) : null;
+          case 'append_review': return write((st) => {
             st.reviews.push({ ...args.review, id: `r${st.nextId}` });
             st.nextId += 1;
-            window.__store = st;
-            return JSON.parse(JSON.stringify(st));
-          }
+          });
+          case 'update_review': return write(() => {
+            const review = find(args.id);
+            if ((review.comment || '') !== args.expectedComment) throw new Error('review conflict: comment changed on disk');
+            review.comment = args.comment;
+          });
+          case 'patch_review': return write(() => Object.assign(find(args.id), args.patch));
+          case 'delete_review': return write((st) => {
+            find(args.id);
+            st.reviews = st.reviews.filter((r) => r.id !== args.id);
+          });
+          case 'restore_review': return write((st) => {
+            if (st.reviews.some((r) => r.id === args.review.id)) throw new Error(`${args.review.id} already exists`);
+            st.reviews.push(args.review);
+            st.reviews.sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+          });
           case 'window_size': return { width: 1500, height: 900 };
           case 'os_theme': return theme;
           case 'siblings': return [];
