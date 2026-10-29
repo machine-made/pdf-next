@@ -11,6 +11,7 @@ import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, res
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
+import { BEFORE_LIMIT, diffView, passageSource, passageText, wordDiff } from '../src/review-diff.mjs';
 import { createHash } from 'node:crypto';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import {
@@ -3264,6 +3265,62 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
     'A size written in the Markdown wins over the Settings width.');
   assert.match(app, /closest\('img\[data-doc\]'\)[\s\S]*?isCollapsed[\s\S]*?openPath\(image\.dataset\.doc\)/,
     'A plain click opens a figure in its own tab; a selection does not.');
+}
+
+// Review UI: before/after of applied reviews (diff-match-patch, vendored),
+// Ask means rewrite, and the agent's questions answered from the panel.
+{
+  await assert.doesNotReject(access('src/vendor/diff-match-patch/diff_match_patch.mjs'), 'diff-match-patch must be vendored.');
+  await assert.doesNotReject(access('src/vendor/diff-match-patch/LICENSE'), 'diff-match-patch licence must be vendored.');
+  const list = await readFile('src/vendor/diff-match-patch/VERSION', 'utf8');
+  const hashes = [...list.matchAll(/^ {2}([0-9a-f]{64}) {2}(\S+)$/gm)];
+  assert.equal(hashes.length, 2, 'VERSION lists the licence and the module.');
+  for (const [, hash, file] of hashes) {
+    const actual = createHash('sha256').update(await readFile(`src/vendor/diff-match-patch/${file}`)).digest('hex');
+    assert.equal(actual, hash, `${file} must match its VERSION hash.`);
+  }
+  assert.match(await readFile('src/review-diff.mjs', 'utf8'), /from '\.\/vendor\/diff-match-patch\/diff_match_patch\.mjs'/);
+  assert.match(app, /^import \{ diffView, passageSource, passageText, wordDiff \} from '\.\/review-diff\.mjs';$/m);
+  assert.match(readme, /\[diff-match-patch\]\(https:\/\/github\.com\/google\/diff-match-patch\) \| 1\.0\.5 \|[^\n]*\| Apache-2\.0 \|/,
+    'The README lists diff-match-patch with its version and licence.');
+  assert.ok(page.includes('diff-match-patch 1.0.5') && page.includes('diff-match-patch Apache-2.0'), 'About lists diff-match-patch.');
+
+  const raw = 'Title\n\nFirst line of a\nparagraph here.\n\nNext.\n';
+  assert.equal(passageText(raw, { line: 3 }), 'First line of a\nparagraph here.', 'before runs to the end of the paragraph.');
+  assert.equal(passageText(raw, { line: 2, end: 3 }), 'First line of a\nparagraph here.', 'A blank first line is not kept.');
+  assert.equal(passageSource(raw, {}), '', 'No line, no before.');
+  assert.equal(passageSource('x'.repeat(BEFORE_LIMIT + 1), { line: 1 }), '', 'A passage too long for the store is not kept.');
+  const diffs = wordDiff('The flow is steady here.', 'The flow is unsteady here, at high Re.');
+  assert.deepEqual(diffs.filter(([op]) => op !== 0).map(([op, text]) => `${op}${text}`),
+    ['-1steady', '1unsteady', '1, at high Re'], 'Whole words change, never halves of them.');
+  assert.deepEqual(wordDiff('Second paragraph here.', 'Second paragraph is changed now.'),
+    [[0, 'Second paragraph '], [-1, 'here'], [1, 'is changed now'], [0, '.']]);
+  const view = diffView(diffs);
+  assert.deepEqual([view.removed, view.added, view.changed, view.cut], [1, 4, true, false]);
+  assert.equal(wordDiff('a'.repeat(50_000), 'b'), null, 'Huge texts are not compared.');
+  const long = `${'word '.repeat(400)}old ${'tail '.repeat(400)}`;
+  const big = diffView(wordDiff(long, long.replace('old', 'new')), { limit: 300 });
+  assert.ok(big.parts.some((part) => part.kind === 'gap'), 'Long unchanged runs fold.');
+  assert.ok(big.parts.reduce((sum, part) => sum + part.text.length, 0) <= 310, 'The rendered diff is capped.');
+  assert.equal(diffView(wordDiff('a b c', 'a b c')).changed, false);
+  const many = diffView(wordDiff('x '.repeat(3000), 'y '.repeat(3000)), { limit: 200 });
+  assert.ok(many.cut && many.parts.reduce((sum, part) => sum + part.text.length, 0) <= 200, 'A big rewrite is cut.');
+
+  assert.equal(reviewStatus({ status: 'question' }), 'question', 'question is a status of its own.');
+  assert.match(page, /<option value="question">Question<\/option>/, 'The status filter has Question.');
+  assert.match(app, /const before = picked\.kind === 'markdown' \? passageSource\(state\.markdownSource, picked\.at\) : '';[\s\S]*?\.\.\.\(before \? \{ before \} : \{\}\),\s*\};\s*const store = await invoke\('append_review'/,
+    'A new Markdown review saves its passage as before.');
+  assert.match(REQUEST_GROUPS[0].hint, /unclear[\s\S]*rewrites it so it answers/, 'The Ask row says Ask means rewrite.');
+  assert.match(app, /patchReview\(review, \{ reply: text, status: 'open' \}, [^)]*\{\s*revision: state\.reviewRevision,\s*\}\)/,
+    'Send saves the reply and opens the item, checked against the store revision.');
+  assert.match(app, /if \(Number\.isSafeInteger\(revision\)\) expected\.\$revision = revision;/);
+  assert.match(app, /invoke\('update_review', \{ document: path, id: review\.id, expectedComment: old, comment \}\)[\s\S]*?patchReview\(current, \{ status: 'open' \}/,
+    'Reopen writes its note into the comment, then reopens through the status path.');
+  assert.match(styles, /\.review-row\.question \{/);
+  assert.match(styles, /\.review-no\[data-review-status='question'\]/, 'A question shows on its highlight badge.');
+  for (const token of ['--diff-del', '--diff-ins']) {
+    assert.equal(styles.split(`${token}:`).length - 1, 3, `${token} is set for light, dark and the system dark mode.`);
+  }
 }
 
 assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, ' '\)\.trim\(\);/,

@@ -7,6 +7,7 @@ export const REQUEST_GROUPS = [
   {
     group: 'ask',
     label: 'Ask',
+    hint: 'The text is unclear: the agent rewrites it so it answers this. Check the result in the before/after view of the Review panel.',
     multiple: true,
     items: [
       ['why', 'Why?'],
