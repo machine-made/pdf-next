@@ -7,7 +7,7 @@
   --chrome: #fbfbfc;
   --desk: #e7e9ec;
   --fg: #1c2024;
-  --fg-dim: #616b76;
+  --fg-dim: #5a646e;
   --rule: #d6dae0;
   --sep: #c9cfd6;
   --input-bg: #ffffff;
@@ -28,7 +28,7 @@
   --review-2: rgba(30, 90, 220, 0.26);
   --review-2-line: #1a4fc4;
   --review-3: rgba(210, 80, 0, 0.36);
-  --review-3-line: #c45a00;
+  --review-3-line: #b45300;
   --review-4: rgba(20, 140, 70, 0.32);
   --review-4-line: #1a7f4b;
   --review-5: rgba(140, 50, 190, 0.26);
@@ -47,6 +47,9 @@
   --review-16: rgba(85, 100, 125, 0.3); --review-16-line: #4e5b73;
   --review-fill: var(--review-1);
   --review-line: var(--review-1-line);
+  --review-dim: #495159;
+  --review-row-strength: 100%;
+  --review-no-fg: #ffffff;
 
   --bar-height: 36px;
   --control-height: 26px;
@@ -99,6 +102,9 @@
   --review-14: rgba(150, 140, 235, 0.34); --review-14-line: #a49af0;
   --review-15: rgba(75, 205, 170, 0.34); --review-15-line: #6bceb2;
   --review-16: rgba(150, 170, 205, 0.34); --review-16-line: #a1b3d0;
+  --review-dim: #c4c4c4;
+  --review-row-strength: 70%;
+  --review-no-fg: #181818;
 }
 
 :root[data-theme='light'] {
@@ -149,6 +155,9 @@
     --review-14: rgba(150, 140, 235, 0.34); --review-14-line: #a49af0;
     --review-15: rgba(75, 205, 170, 0.34); --review-15-line: #6bceb2;
     --review-16: rgba(150, 170, 205, 0.34); --review-16-line: #a1b3d0;
+    --review-dim: #c4c4c4;
+    --review-row-strength: 70%;
+    --review-no-fg: #181818;
   }
 }
 
@@ -568,7 +577,8 @@ body.review-open #markdownStageSplit {
   border: 1px solid var(--widget-border);
   border-left: 3px solid var(--review-line);
   border-radius: 6px;
-  background: var(--review-fill);
+  background: color-mix(in srgb, var(--review-fill) var(--review-row-strength), transparent);
+  --fg-dim: var(--review-dim);
 }
 
 .review-row.on {
@@ -721,10 +731,9 @@ mark.review,
   padding: 2px 5px;
   border-radius: 999px;
   background: var(--review-line);
-  color: #fff;
+  color: var(--review-no-fg);
   font: 600 10px/1 var(--ui-font);
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 1px rgb(0 0 0 / 0.35);
   pointer-events: auto;
   cursor: pointer;
   user-select: none;

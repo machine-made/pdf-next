@@ -3269,4 +3269,11 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
 assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, ' '\)\.trim\(\);/,
   'A saved quote holds no newlines: the store and the agent view stay one line per item.');
 
+assert.doesNotMatch(app, /chip\.tabIndex = -1/, 'Tab reaches the review card buttons.');
+assert.match(app, /comment\.setAttribute\('aria-label', 'Review comment'\)/, 'A review comment box has a name.');
+assert.match(styles, /\.review-row \{[^}]*--fg-dim: var\(--review-dim\);/,
+  'Dim text on a review row uses the colour that reads on every tint.');
+assert.match(styles, /\.review-no \{[^}]*color: var\(--review-no-fg\);/, 'Review numbers keep their contrast in both themes.');
+await access('tests/browser/run.mjs');
+
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
