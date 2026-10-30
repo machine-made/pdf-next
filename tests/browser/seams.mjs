@@ -2,6 +2,39 @@
 // zoom gestures, remembered places and tab switches.
 import { start } from './harness.mjs';
 
+// Night recolours a page once it is drawn: a slow page must not show white
+// halfway (PDF.js shows a page that takes over half a second as it draws).
+{
+  const { page, ok, openMenu, close } = await start({ initial: '/d/dense-page.pdf' });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 20_000 });
+  await page.waitForTimeout(500);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 40 });
+  await page.evaluate(() => {
+    window.__white = 0;
+    window.__watch = true;
+    const night = () => document.body.classList.contains('mode-night');
+    const tick = () => {
+      if (!window.__watch) return;
+      for (const canvas of document.querySelectorAll('#viewer .page canvas')) {
+        if (night() && canvas.isConnected && !canvas.hidden && canvas.width && !canvas.dataset.recolored) window.__white += 1;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await openMenu();
+  await page.click('#mode');
+  await page.waitForFunction(() => [...document.querySelectorAll('#viewer .page canvas')].some((c) => c.dataset.recolored), null, { timeout: 60_000 });
+  const white = await page.evaluate(() => {
+    window.__watch = false;
+    return window.__white;
+  });
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+  ok(white === 0, `A slow page in Night shows once it is recoloured, never white halfway (${white} white frames)`);
+  await close();
+}
+
 const { page, ok, finish } = await start({ initial: '/d/navigate.pdf' });
 await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
 await page.waitForTimeout(400);

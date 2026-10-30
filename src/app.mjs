@@ -320,15 +320,24 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+/// PDF.js shows a page that takes over half a second while it is still being
+/// drawn. Night and Sepia recolour a page once it is drawn, so until then it
+/// would show white: in those modes a page shows when it is done.
+function holdUntilRecolored({ source }) {
+  if (source) source.minDurationToUpdateCanvas = PAGE_COLORS[state.mode] ? Infinity : 500;
+}
 // What the last rebuild changed (src/pdf-changes.mjs).
 const pdfChanges = createChangeMarks({ host: ui.stage, container: ui.container, eventBus, viewer: () => pdfViewer });
 
 // Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
 const paneViewers = createPaneViewers({
   load: loadPdf,
-  makeViewer: (options) => new TidyViewer({
-    ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
-  }),
+  makeViewer: (options) => {
+    options.eventBus.on('pagerender', holdUntilRecolored);
+    return new TidyViewer({
+      ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
+    });
+  },
   EventBus,
   createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
@@ -361,6 +370,7 @@ const nav = createNavigator({
   status: (message) => setStatus(message),
 });
 eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
+eventBus.on('pagerender', holdUntilRecolored);
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
