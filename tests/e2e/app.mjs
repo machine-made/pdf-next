@@ -135,14 +135,13 @@ try {
     return dark;`);
   ok(ink > 100, `The page has ink (${ink} dark pixels)`);
 
-  const canvasFilters = await run(`const x = document.createElement('canvas').getContext('2d');
-    x.filter = 'invert(1)'; x.fillStyle = '#fff'; x.fillRect(0, 0, 1, 1); return x.getImageData(0, 0, 1, 1).data[0] < 128;`);
+  const clear = "document.getElementById('mode').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }))";
+  await run(clear);
   await run("document.getElementById('mode').click()");
-  ok(await until(`return document.body.classList.contains('mode-night') && (${canvasFilters}
-    ? getComputedStyle(document.querySelector('#viewer .page .canvasWrapper')).filter === 'none'
-    : document.body.classList.contains('css-page-colors') && /page-night/.test(getComputedStyle(document.querySelector('#viewer .page .canvasWrapper')).filter))`, 'night pages'),
-  `Night recolours the page in this webview (${canvasFilters ? 'in the canvas' : 'by a CSS filter, as the canvas ignores filters'})`);
-  await run("document.getElementById('mode').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }))");
+  ok(await until(`const c = document.querySelector('#viewer .page canvas');
+    return document.body.classList.contains('mode-night') && c?.getContext('2d').getImageData(4, 4, 1, 1).data[0] < 64`, 'a dark page'),
+  `Night darkens the page in this webview (${await run("return document.body.classList.contains('recolored-pages') ? 'recoloured after drawing, as its canvas ignores filters' : 'through the canvas filter'")})`);
+  await run(clear);
 
   await keys([CTRL, SHIFT, 'd']);
   ok(await until("return document.querySelectorAll('#panes .dv-groupview').length === 2", 'two panes'), 'Ctrl+Shift+D splits the real window');

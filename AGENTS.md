@@ -121,7 +121,9 @@ bunx tauri build --no-bundle && xvfb-run -a node tests/e2e/app.mjs   # Linux, re
 `tests/browser/` runs the frontend in Chromium against a mocked Tauri backend,
 one file per area, with axe-core accessibility checks in `a11y.mjs`. The mock
 in `harness.mjs` keeps a review store and can make any command reject
-(`window.__fail[cmd] = 'message'`). Screenshots go to `$RUNNER_TEMP/pdf-next-browser`
+(`window.__fail[cmd] = 'message'`). The page is served with the app's own CSP,
+nonce included as Tauri adds one, so a `<style>` or `<script>` tag the window would block is
+blocked there too. Screenshots go to `$RUNNER_TEMP/pdf-next-browser`
 (or the system temp directory), never the tree. A UI change comes with a check there.
 
 `tests/e2e/app.mjs` drives the real app (Rust and WebKitGTK) through `tauri-driver`

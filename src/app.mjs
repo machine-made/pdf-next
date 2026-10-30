@@ -1,5 +1,6 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
+import { canvasFilters, recolorRendered } from './page-colors.mjs';
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
 import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
@@ -58,22 +59,7 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
-/// PDF.js draws page colors through a canvas filter. WebKit (macOS, Linux)
-/// takes the filter and draws nothing different, so there the pages are
-/// recoloured by the same mapping as an SVG filter in CSS (#page-night,
-/// #page-sepia in index.html) and PDF.js draws them plain.
-const canvasFilters = (() => {
-  try {
-    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
-    context.filter = 'invert(1)';
-    context.fillStyle = '#fff';
-    context.fillRect(0, 0, 1, 1);
-    return context.getImageData(0, 0, 1, 1).data[0] < 128;
-  } catch {
-    return false;
-  }
-})();
-document.body.classList.toggle('css-page-colors', !canvasFilters);
+document.body.classList.toggle('recolored-pages', !canvasFilters);
 const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
@@ -324,6 +310,7 @@ const paneViewers = createPaneViewers({
   }),
   EventBus,
   pageColors: () => pageColorsFor(state.mode),
+  recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
   text: { collect: collectTextParts, wrap: wrapSpanParts },
   onPick: (path) => pickPane(path),
@@ -331,6 +318,7 @@ const paneViewers = createPaneViewers({
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
   },
 });
+eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
