@@ -9,6 +9,7 @@
 // answer. This script runs it once per fixture and fails the build on the
 // first blank window.
 
+import { annotate } from './annotate.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -469,6 +470,7 @@ try {
     } else {
       failed += 1;
       console.log(`  FAIL  ${file}  (exit ${code})`);
+      annotate(`smoke ${basename(file)}`, `exit ${code}\n${output}`);
       console.log(
         output
           .trimEnd()
@@ -496,6 +498,7 @@ try {
   } else {
     failed += 1;
     console.log(`  FAIL  delete key  (exit ${code}); ${onDisk}`);
+    annotate('smoke delete key', `exit ${code}; ${onDisk}\n${output}`);
     console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
   }
 } finally {
@@ -507,6 +510,7 @@ for (const [name, value] of [['startup', median(timings.startup)], ['reload', Ma
   const over = Number.isFinite(value) && value > budgets[name];
   const missing = !Number.isFinite(value);
   slow += over || missing ? 1 : 0;
+  if (over || missing) annotate(`smoke ${name} time`, `${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])})`);
   console.log(`  ${over || missing ? 'FAIL' : 'TIME'}  ${name} ${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])}; samples ${
     timings[name].map((sample) => Math.round(sample)).join(', ') || 'none'})`);
 }

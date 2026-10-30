@@ -2,6 +2,7 @@
 // driven over WebDriver by tauri-driver. Linux only (WebKitWebDriver); needs a
 // display, so CI runs it under xvfb-run.
 //   node tests/e2e/app.mjs            # binary from src-tauri/target, or PDF_NEXT_BIN
+import { annotate } from '../../tools/annotate.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,7 @@ const ok = (condition, message) => {
   if (condition) pass += 1;
   else fail += 1;
   console.log(condition ? 'ok  ' : 'FAIL', message);
+  if (!condition) annotate('e2e', message);
   return condition;
 };
 
@@ -135,6 +137,7 @@ try {
 } catch (error) {
   fail += 1;
   console.log('FAIL', error.message);
+  annotate('e2e', error.stack || error.message);
 } finally {
   await call('DELETE', `/session/${sid}`).catch(() => {});
   stop();
