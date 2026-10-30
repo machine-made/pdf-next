@@ -1,0 +1,35 @@
+name: Release notes
+
+# The notes of every published release are its CHANGELOG.md section on main,
+# as tools/release_notes.mjs prints it. A changelog fix on main reaches the
+# release pages by itself; release.yml calls this once a release is published,
+# so a section edited after its tag is picked up too. Releases without a
+# section keep what they have, and a release that already matches is not
+# touched.
+
+on:
+  push:
+    branches: [main]
+    paths: [CHANGELOG.md, tools/release_notes.mjs, tools/sync_release_notes.mjs]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: sync release notes
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-notes
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+
+      - name: Set each release's notes from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node tools/sync_release_notes.mjs

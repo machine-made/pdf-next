@@ -353,7 +353,7 @@
             <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
           </select></label>
           <label>Status <select id="reviewStatusFilter" aria-label="Filter reviews by status">
-            <option value="all">All</option><option value="open">Open</option><option value="applied">Applied</option><option value="resolved">Resolved</option>
+            <option value="all">All</option><option value="open">Open</option><option value="applied">Applied</option><option value="resolved">Resolved</option><option value="question">Question</option>
           </select></label>
         </div>
         <div id="reviewList"></div>
@@ -366,6 +366,11 @@
             <svg class="icon"><use href="#i-close"/></svg>
           </button>
         </div>
+        <button id="paletteOpen" type="button" class="settings-palette" title="Command palette (Ctrl+K)">
+          <svg class="icon"><use href="#i-find"/></svg>
+          <span>All commands and settings…</span>
+          <kbd>Ctrl+K</kbd>
+        </button>
         <section>
           <h3>Markdown</h3>
           <label>Font <select id="setFont" data-mirror="mdFont"></select></label>
@@ -439,6 +444,8 @@
               <dd>Mozilla PDF.js 6.3.289 renders and searches. lopdf and picamatl (pure Rust) make Reduce PDF. SyncTeX hints use the <code>synctex</code> program of your TeX install, when present.</dd>
               <dt>Markdown</dt>
               <dd>pulldown-cmark parses, ammonia sanitizes, highlight.js 11.12 colours code.</dd>
+              <dt>Reviews</dt>
+              <dd>diff-match-patch 1.0.5 (Google) shows what an agent changed, word by word.</dd>
               <dt>TeX equations</dt>
               <dd>math-core 0.9 turns TeX into MathML, set in New Computer Modern Math.</dd>
               <dt>Panes</dt>
@@ -446,7 +453,7 @@
               <dt>Fonts</dt>
               <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1; Monaspace 1.400 (GitHub Next).</dd>
               <dt>Licences</dt>
-              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; dockview MIT; fonts GUST and SIL OFL. Full list in the README.</dd>
+              <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; diff-match-patch Apache-2.0; dockview MIT; fonts GUST and SIL OFL. Full list in the README.</dd>
             </dl>
           </details>
           <div class="about-links">

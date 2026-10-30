@@ -55,17 +55,19 @@ that survives a build deleting and recreating the file mid-compile.
   the content to the window is the opposite instruction.
 - **Tabs, without the memory.** Open several files and they line up in a strip; `←` / `→`,
   `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip move between them, `Ctrl+W` closes one. A tab is a path, not a
-  loaded document — only the file you are looking at is in memory, so six open papers cost what
+  loaded document — only the files on screen are in memory, so six open papers cost what
   one costs, and a background tab is read fresh from disk when you come back to it rather than
   going stale. Switching costs a re-parse, against a worker that is already warm.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
   splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a pane's tab strip to
   merge; drag the line between panes to resize. `Ctrl+Alt+←/→/↑/↓` moves between panes. Any file
-  kind works in any pane. The pane you click is the live one, with reviews, editing, find and
-  zoom; the others keep a copy of where you left them, and a Markdown copy follows its file as
-  it changes. The layout is saved with the session; with one pane left, the plain tab strip
-  comes back.
+  kind works in any pane. The pane you click is the live one, with editing, find, zoom and the
+  Review panel. The others stay where you left them and follow their files: a PDF beside your
+  Markdown reloads by itself when the agent rebuilds it, keeping its page and scroll, and an
+  image or Markdown pane reloads too. Every pane shows the review marks of its document. Press
+  and drag in another pane to make it live and select text there in one go. The layout is saved
+  with the session; with one pane left, the plain tab strip comes back.
 - **Walk a folder of figures.** With a single file open, `←` / `→` (or the toolbar arrows) step
   through every image next to it, in reading order — `fig2` before `fig10`, not after it. The
   toolbar shows your position, and the window stays where it is instead of resizing on every
@@ -98,6 +100,7 @@ that survives a build deleting and recreating the file mid-compile.
 - **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
 - **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
 - **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
+- **Checking what the agent did.** A Markdown review keeps the source of its paragraph as it was (`before`). When the agent marks it applied, the Review panel shows a word-by-word before/after of that passage: removed words struck out, new ones highlighted, long unchanged stretches folded to …. A passage that is gone shows its old text as removed. Resolve closes the item; Reopen asks for a short note on what is still wrong, adds it to the comment and sends the item back to the agent. The Ask buttons (Why?, How?, More info, Example, Source?, Derive) mean “this text is unclear, rewrite it so it answers this”, so their result is read in the same before/after. When the agent needs you to decide something, it asks back: the item turns `question`, stands out with a ? on its highlight and in the panel, whose head counts the questions, and shows the question with a reply field. Send (or Enter) saves your answer in `reply` and puts the item back to open for the agent. The Status filter has Question.
 - **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
 - **Reduce a PDF** with the toolbar button next to Print. A pure-Rust pass (no Ghostscript) writes `{stem}_reduced.pdf` beside the original when it can shrink the file; the original stays untouched and the smaller copy opens as a tab.
 - **Changed blocks light up on reload:** When a Markdown file rewrites, changed and new paragraphs, headings, list items, tables and equations fade from a highlight over a few seconds. The comparison is by content: adding a paragraph marks only that one. Scroll position is kept.
@@ -146,8 +149,9 @@ that survives a build deleting and recreating the file mid-compile.
   the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
   select it, and drag its corner to resize it (the width is written as `{width=N%}`); double-click, or Ctrl+click, to open it full size in a tab of its own, with zoom and the folder walk.
 - **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), the code font for code blocks, inline code and the raw view (System mono or a Monaspace face), how often to check for changes, and About, with the version and the update check.
+- **Command palette** with `Ctrl+K` (`⌘K` on macOS), or from the top of Settings: one searchable list of every action, setting and open file, with each command's shortcut beside it. Type a few letters of each word (`mono neon`, `split r`, `go paper`) and press Enter. It shows only what applies to the file and window you have: page commands for a PDF, fonts for Markdown, pane moves once the window is split, and selection edits while text is selected. The commands you used last come first.
 - **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
-- **Keyboard first:** `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
+- **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
   `←`/`→` tabs (or folder, with one file open), `Delete` deletes a selection in rendered Markdown (undo with `Ctrl+Z`), otherwise moves the shown file to the trash after confirmation, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
   `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown (in rendered Markdown with a selection, underline it), `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Esc` close the review box without saving, `Ctrl+B`/`Ctrl+I`/`Ctrl+E` bold, italic or edit a Markdown selection, `Ctrl+Z` undo a removed review or an edit, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+F` fit window to content,
@@ -356,7 +360,7 @@ agent has a project instructions file, one line — *"open PDFs with `pdf-next <
 
 #### Review tasks for agents
 
-The review sidecar is a task list for editing the source. An agent needs three things from it,
+The review sidecar is a task list for editing the source. An agent needs a few things from it,
 and each has a short form:
 
 - **Read the open items** from `{stem}_review.agent.txt`, which pdf-next rewrites after every
@@ -364,15 +368,29 @@ and each has a short form:
   line, then one line per open item, in reading order:
 
   ```text
-  # notes.md review, revision 12: 3 open, 0 applied, 0 resolved. Close an item: pdf-next reviews done notes.md <id> "<what you changed>", or append "<id> <what you changed>" to notes_review.done
-  r3 L7 improve: move this before the table | "the table below"
-  r1 L12 improve: say this is an ideal value | "the exit speed v ∗ of the gas"
-  r2 L40-42 delete: (no comment) | "the slab burns from both faces at once, so the burning area stays flat until the two fronts meet near the middle of the…"
+  # notes.md rev 12: 3 open, 0 applied. Fix each in the source. Done: pdf-next reviews done notes.md <id> "<what you changed>" (or the line "<id> <what you changed>" in notes_review.done). Unclear: pdf-next reviews ask notes.md <id> "<question>"
+  r3 L7 move this before the table | "the table below"
+  r1 L12 say this is an ideal value | "the exit speed v ∗ of the gas"
+  r2 L40-42 delete | "the slab burns from both faces at once, so the burning area stays flat until…"
   ```
 
   `L12` and `L40-42` are source lines of the `.md` (`p7` is a PDF page), kept current: while
   pdf-next shows the file it finds each review again after edits and records where it now is.
-  The quote is shortened and only helps find the place; read the exact text from the file.
+  The quote is cut to 80 characters and only helps find the place; read the exact text from the
+  file. A line names its file only when the store holds reviews of more than one file.
+- **Read only what changed**: `pdf-next reviews brief notes.md --since 12` lists the open items
+  changed after revision 12, the one in the header you read last. Every item carries `rev`, the
+  store revision of its last change.
+- **Take one item at a time** with `pdf-next reviews next notes.md`: the first open item in
+  reading order, and for Markdown the source lines it points to, numbered (for a PDF, the page
+  and a longer quote). When nothing is open it says so and exits 0.
+
+  ```text
+  # notes.md: 3 open. Done: pdf-next reviews done notes.md r3 "<what you changed>" (unclear: pdf-next reviews ask notes.md r3 "<question>")
+  r3 L7 move this before the table | "the table below"
+  7| See the table below for the cases.
+  ```
+
 - **Close an item** with `pdf-next reviews done notes.md r1 "stated the ideal-gas assumption"`,
   which marks it `applied` with that text as its resolution. For a PDF, add the build command
   that succeeded: `--built "latexmk -pdf paper.tex"`. An agent that can only write files appends
@@ -380,15 +398,41 @@ and each has a short form:
   it while it has the file open, and every `reviews` command applies it first. The inbox is only
   read, never rewritten; applying it twice changes nothing, the last line for an ID wins, and an
   item you reopen stays open until a new line for it arrives.
+- **Ask the reader** when an item cannot be done without them:
+  `pdf-next reviews ask notes.md r4 "Which reference do you mean?"`, or the inbox line
+  `r4 ? Which reference do you mean?`. The item gets status `question` and the text in
+  `question`; it leaves the list, and the header counts it as waiting on the reader. When the
+  reader answers in the app, the answer is saved in `reply` and the item is `open` again, with
+  `you asked "…", reader replied: "…"` in its line. pdf-next before 0.17 does not know
+  `question`: it cannot read a store while an item waits on the reader, and its inbox reads
+  `r4 ? …` as a done note. Use `ask` only when the app and the CLI are 0.17 or later.
 - **Read one whole item** from the store itself. `{stem}_review.json` holds one item per line,
   so `grep '"id":"r12"' notes_review.json` prints all of it, and every item has every key
   (`comment` and `resolution` are `""` when empty).
 
 Agents never write the JSON store directly: a full rewrite races with the reader adding items in
-the app. `done`, the inbox and `update` take the store's lock.
+the app. `done`, `ask`, `add`, `relocate`, the inbox and `update` take the store's lock.
 
 The `applied` items wait for the reader, who checks the result (the recompiled PDF, or the
 Markdown) and marks them `resolved`, or reopens them.
+
+Scripts and agents can file reviews too:
+
+```bash
+pdf-next reviews add notes.md --line 12 --quote "the exit speed" --request ask:why --request scope:paragraph
+pdf-next reviews add paper.pdf --page 7 --quote "the residual check passes" --action check --comment "with which tolerance?"
+```
+
+`--line N [--end M]` is for Markdown and `--page N [--end M]` for a PDF; `--request` takes the
+review card words below (repeatable), `--action` the actions below, and `--comment` a note. The
+review is checked like one made in the app and the new ID is printed. A Markdown review gets its
+context from the source when the quote is found there.
+
+After editing a Markdown file without pdf-next open, `pdf-next reviews relocate notes.md` finds
+the open reviews again, as the app would, and records their new lines and context. A quote whose
+own words were edited is looked for near its old line. It prints `moved L3 -> L6`, `unchanged` or
+`not found` per item; applied and resolved items are left alone. `--expected-revision N` refuses
+to write if the store changed since you read it, and `--dry-run` writes nothing.
 
 For a PDF, find the quote in the LaTeX entry point or its included chapter files. Use its quote,
 surrounding context and PDF position together; an optional SyncTeX source hint is a candidate
@@ -431,7 +475,8 @@ Use the CLI mutation command instead of editing the JSON directly. A raw writer 
 IDs and unknown fields, write atomically, and check the sidecar revision; writers that skip
 that protocol can overwrite concurrent changes.
 
-The `action` field says what the reader wants: `improve` (the instruction is in `comment`),
+The `status` is `open`, `applied`, `resolved` or `question` (waiting on the reader). The
+`action` field says what the reader wants: `improve` (the instruction is in `comment`),
 `polish` (better wording, same meaning), `clarify` (explain the passage better, same facts; `comment` is an optional note), `shorten`, `expand`, `check` (verify the fact, number or
 equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
 `comment` is an optional suggestion for the agent to revise and expand), `gloss` (add a brief
@@ -444,17 +489,18 @@ The review card also has buttons, clicked instead of typed. They are saved in `r
 
 | Row | Words | The agent reads |
 | --- | --- | --- |
-| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | explain why, explain how, give more information, give an example, give the source, show the derivation |
+| Ask | `ask:why`, `ask:how`, `ask:more`, `ask:example`, `ask:source`, `ask:derive` | make the text say why, make the text say how, add the missing information, add an example, cite the source, show the derivation |
 | Change | `change:simplify`, `change:shorten`, `change:expand`, `change:check`, `change:figure` | simplify, shorten, expand, check facts, numbers and equations, add or improve a figure |
 | Scope (one) | `scope:phrase`, `scope:paragraph`, `scope:section` | how much of the text the request covers |
 | Tone (one) | `tone:formal`, `tone:plain`, `tone:jfm` | more formal, plainer, Journal of Fluid Mechanics style |
 
-Buttons with no note save as action `request`; with another action they refine it. An Ask is a
-question to the agent: the answer goes in the done note (`pdf-next reviews done … "<answer>"`),
-and the text changes only when the item also asks for a change. In the agent view:
+Buttons with no note save as action `request`; with another action they refine it. An Ask means
+the selected text is unclear to the reader: rewrite the text in the document so that it answers
+the question, within the chosen scope and tone. Do not answer on the side; the done note says
+what you changed. In the agent view:
 
 ```text
-r4 L12 request: explain why; explain how; scope: the whole paragraph | "the residual check passes"
+r4 L12 make the text say why; make the text say how; scope: whole paragraph | "the residual check passes"
 ```
 
 The PDF quote is a rendered-text target, not a `.tex` line number. LaTeX commands, macros,
@@ -465,6 +511,9 @@ does not prove that a Delete request succeeded, and completing a task never remo
 Do not delete records from the sidecar to mark them done: set `applied`. While pdf-next shows the
 file, it keeps the open reviews pinned to their text as you edit, and `list` then prints their
 current lines.
+
+`tools/agent_cost.mjs` measures what an agent reads in a full loop over stores of 10, 50 and 200
+reviews; `node tools/agent_cost.mjs --check` fails when the 50-review loop grows past its budget.
 
 ## Security
 
@@ -543,6 +592,11 @@ ever enters the HTTP cache, and the asset protocol has been dropped entirely. On
 hiding the window now also releases the PDF.js font and image caches (they rebuild lazily when
 you come back), and a background tab holds neither a decoded image nor a rendered markdown DOM.
 
+Panes are the one exception, by design: a PDF shown in a pane that is not live has its own
+read-only viewer and document on the same worker, so two PDFs side by side cost about what two
+open PDFs cost. That viewer is torn down as soon as its pane shows another file, the tab closes
+or the window goes back to one pane, and a reload destroys the document it replaces.
+
 ## Building
 
 Needs [Rust](https://rustup.rs) and, on Windows, the MSVC build tools:
@@ -565,7 +619,9 @@ sudo apt-get install libwebkit2gtk-4.1-dev build-essential curl wget file \
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml   # the Rust side
 node tools/check_frontend.mjs                     # the frontend contracts
+node tests/browser/run.mjs                        # the page in Chromium, with axe-core
 bun run build && node tools/smoke.mjs             # open every fixture, for real
+xvfb-run -a node tests/e2e/app.mjs                # Linux: drive the real app over WebDriver
 ```
 
 `check_frontend.mjs` enforces the invariants that are easy to break silently: a real PDF.js
@@ -577,7 +633,24 @@ with `PDF_NEXT_SMOKE=1` in the environment. In that mode the app answers for its
 for a page to be drawn with pixels in it, then reports through a Tauri command and exits on
 that answer, so a window that opens and stays empty fails the run instead of passing it.
 `PDF_NEXT_SMOKE_TIMEOUT` bounds a launch that never reports; `PDF_NEXT_BIN` names a binary
-somewhere else.
+somewhere else. It also prints how long the first page took to draw and how long a changed file
+took to reload, and fails when either is over its budget for the platform.
+
+`tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend, one
+file per area: PDF viewing, Markdown rendering and find, tabs, panes, the command palette, the
+review card, panel and flow, direct edits, Settings, errors on the status line, and axe-core
+accessibility checks (contrast, labels, keyboard reach) on the main views. Run `bun install` and
+`bunx playwright install chromium` once first. `--coverage` also prints the line coverage of
+`src/*.mjs`.
+
+`tests/e2e/app.mjs` drives the built app itself on Linux, through `tauri-driver` and
+`WebKitWebDriver` (`cargo install tauri-driver`, `apt install webkit2gtk-driver`): it opens a temp
+folder with a Markdown file and a PDF, rewrites the file on disk, saves a review in the window,
+and closes it with `pdf-next reviews done`. Build first with `bunx tauri build --no-bundle`.
+
+The Rust tests include property tests (proptest) of the review store and the Markdown sanitizer.
+CI prints Rust line coverage with `cargo llvm-cov --summary-only`; coverage is reported, not
+enforced.
 
 The fixtures are built by `python3 tests/make_fixtures.py`, which writes the same bytes on
 every machine, so a change to them is a change someone made.
@@ -606,6 +679,7 @@ file that records its source and checksum.
 | [cap-std](https://github.com/bytecodealliance/cap-std) | 3.4.6 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
 | [open](https://github.com/Byron/open-rs) | 5.4.1 | Hands a checked web link to the default browser. | MIT |
 | percent-encoding | 2.3.2 | Encodes local paths for the document protocol. | MIT / Apache-2.0 |
+| [diff-match-patch-rs](https://github.com/AnubhabB/diff-match-patch-rs) | 0.5.1 | `reviews relocate`: finds a review quote whose words were edited, near its old line. | MIT / Apache-2.0 |
 | gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.18 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
 
 **Markdown and TeX**
@@ -621,6 +695,7 @@ file that records its source and checksum.
 | [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
 | [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon, Xenon, Radon and Krypton: optional Markdown and code fonts. | SIL OFL 1.1 |
 | [dockview](https://github.com/dockview/dockview) | 8.8.0 | The pane layout: tiles with tabs, split and moved by dragging. | MIT |
+| [diff-match-patch](https://github.com/google/diff-match-patch) | 1.0.5 | The word-by-word before/after of an applied review. | Apache-2.0 |
 
 **PDF**
 
@@ -638,6 +713,7 @@ file that records its source and checksum.
 | [Tauri CLI](https://tauri.app) 2.11.4, run with [Bun](https://bun.sh) | Builds the app and its installers. | MIT / Apache-2.0 |
 | NSIS (Windows), DMG (macOS), deb, rpm and AppImage (Linux) | The installers Tauri makes. | zlib / various |
 | Node.js | Runs `tools/check_frontend.mjs` and the smoke test. | MIT |
+| [Playwright](https://playwright.dev) 1.63 and [axe-core](https://github.com/dequelabs/axe-core) 4.14 | Browser tests and accessibility checks; test-only, not shipped. | Apache-2.0 / MPL-2.0 |
 
 The page itself is plain JavaScript modules, HTML and CSS: no framework and no build step.
 
@@ -674,3 +750,5 @@ The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https
 The Monaspace fonts are © 2023 GitHub, from [githubnext/monaspace](https://github.com/githubnext/monaspace) under the SIL Open Font License 1.1; the licence is in `src/vendor/monaspace/OFL.txt`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.
+
+The review before/after uses Google's diff-match-patch 1.0.5 (Apache-2.0, © the diff-match-patch authors); its licence is in `src/vendor/diff-match-patch/LICENSE`.

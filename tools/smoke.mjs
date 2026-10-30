@@ -9,6 +9,7 @@
 // answer. This script runs it once per fixture and fails the build on the
 // first blank window.
 
+import { annotate } from './annotate.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -235,11 +236,15 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    const started = Date.now();
+    let firstReport = null;
+    let reload = null;
     let output = '';
     let checked = false;
     let checking = false;
     child.stdout.on('data', (chunk) => {
       output += chunk;
+      if (firstReport === null && /^smoke: /m.test(output)) firstReport = Date.now() - started;
       if (!checkFile || checking || !/^smoke: ready .+\n/m.test(output)) {
         return;
       }
@@ -262,6 +267,7 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
             const replacement = `${file}.replacement`;
             writeFileSync(replacement, expectedBytes);
             renameSync(replacement, file);
+            const changed = Date.now();
             const deadline = Date.now() + Math.min(seconds * 1000, 20_000);
             const second = () => output.split('\n').find((line) =>
               line.startsWith('smoke: ready ') && line.includes('stage=2') &&
@@ -270,8 +276,9 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
               if (/^smoke: fail\b/m.test(output) || Date.now() >= deadline) {
                 throw new Error(`no report after the file changed: ${output.split('\n').filter((line) => line.startsWith('smoke:')).join(' | ')}`);
               }
-              await pause(100);
+              await pause(20);
             }
+            reload = Date.now() - changed;
             checked = true;
             output = output.replace(/^smoke: ready (.+)$/m,
               `smoke: ok $1; edited and reloaded: ${second().replace('smoke: ready ', '')}`);
@@ -404,7 +411,7 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
         output += '\nsmoke: fail source-file checks did not run\n';
       }
       const passed = checked && !/^smoke: fail\b/m.test(output);
-      resolvePromise({ code: checkFile ? (passed ? 0 : -1) : code, output });
+      resolvePromise({ code: checkFile ? (passed ? 0 : -1) : code, output, firstReport, reload });
     });
   });
 }
@@ -424,6 +431,23 @@ if (files.length === 0) {
 const seconds = Number(process.env.PDF_NEXT_SMOKE_TIMEOUT || 90);
 console.log(`smoke: ${binary}\n`);
 
+// Launch to the first drawn page, and file change to the reloaded page. The
+// startup figure comes from fixtures whose report follows the first draw
+// directly (the others run more checks first) and takes their median, so one
+// cold webview does not fail a run. Linux under Xvfb measured 1.3 s and 0.8 s;
+// the budgets leave room for slow runners and catch only a real regression.
+const firstDraw = /^(notes|math|images)\.md$|\.png$/i;
+// GitHub's Linux runners draw under Xvfb without a GPU: a first report took
+// 36 s there for 0.16.5 and 0.17.0 alike, against ~1.2 s on a desktop.
+const budgets = {
+  linux: process.env.CI ? { startup: 60_000, reload: 30_000 } : { startup: 10_000, reload: 8_000 },
+  darwin: { startup: 15_000, reload: 8_000 },
+  win32: { startup: 20_000, reload: 10_000 },
+}[process.platform] || { startup: 20_000, reload: 10_000 };
+const timings = { startup: [], reload: [] };
+const ms = (value) => (value === null || value === undefined ? 'n/a' : `${Math.round(value)} ms`);
+const median = (values) => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) / 2)] ?? null;
+
 let failed = 0;
 mkdirSync(join(root, 'scratch'), { recursive: true });
 const copies = mkdtempSync(join(root, 'scratch', 'smoke-fixtures-'));
@@ -438,13 +462,17 @@ try {
       const reviews = denseReviews(opened);
       writeFileSync(join(copies, 'dense-page_review.json'), reviewStore(opened, 1, reviews));
     }
-    const { code, output } = await open(binary, opened, seconds);
+    const { code, output, firstReport, reload } = await open(binary, opened, seconds);
     const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';
+    if (firstReport !== null && firstDraw.test(basename(file))) timings.startup.push(firstReport);
+    if (reload !== null) timings.reload.push(reload);
+    const took = `first report ${ms(firstReport)}${reload !== null ? `, reload ${ms(reload)}` : ''}`;
     if (code === 0 && verdict.startsWith('smoke: ok')) {
-      console.log(`  PASS  ${file}\n        ${verdict}`);
+      console.log(`  PASS  ${file}  (${took})\n        ${verdict}`);
     } else {
       failed += 1;
       console.log(`  FAIL  ${file}  (exit ${code})`);
+      annotate(`smoke ${basename(file)}`, `exit ${code}\n${output}`);
       console.log(
         output
           .trimEnd()
@@ -472,11 +500,23 @@ try {
   } else {
     failed += 1;
     console.log(`  FAIL  delete key  (exit ${code}); ${onDisk}`);
+    annotate('smoke delete key', `exit ${code}; ${onDisk}\n${output}`);
     console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
   }
 } finally {
   rmSync(copies, { recursive: true, force: true });
 }
 
-console.log(`\n${files.length + 1 - failed}/${files.length + 1} passed`);
-process.exit(failed === 0 ? 0 : 1);
+let slow = 0;
+for (const [name, value] of [['startup', median(timings.startup)], ['reload', Math.max(...timings.reload)]]) {
+  const over = Number.isFinite(value) && value > budgets[name];
+  const missing = !Number.isFinite(value);
+  slow += over || missing ? 1 : 0;
+  if (over || missing) annotate(`smoke ${name} time`, `${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])})`);
+  else if (process.env.GITHUB_ACTIONS) console.log(`::notice title=smoke ${name} time::${ms(value)} (budget ${ms(budgets[name])})`);
+  console.log(`  ${over || missing ? 'FAIL' : 'TIME'}  ${name} ${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])}; samples ${
+    timings[name].map((sample) => Math.round(sample)).join(', ') || 'none'})`);
+}
+
+console.log(`\n${files.length + 1 - failed}/${files.length + 1} passed${slow ? `, ${slow} over budget` : ''}`);
+process.exit(failed === 0 && slow === 0 ? 0 : 1);
