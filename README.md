@@ -55,17 +55,19 @@ that survives a build deleting and recreating the file mid-compile.
   the content to the window is the opposite instruction.
 - **Tabs, without the memory.** Open several files and they line up in a strip; `←` / `→`,
   `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip move between them, `Ctrl+W` closes one. A tab is a path, not a
-  loaded document — only the file you are looking at is in memory, so six open papers cost what
+  loaded document — only the files on screen are in memory, so six open papers cost what
   one costs, and a background tab is read fresh from disk when you come back to it rather than
   going stale. Switching costs a re-parse, against a worker that is already warm.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
   splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a pane's tab strip to
   merge; drag the line between panes to resize. `Ctrl+Alt+←/→/↑/↓` moves between panes. Any file
-  kind works in any pane. The pane you click is the live one, with reviews, editing, find and
-  zoom; the others keep a copy of where you left them, and a Markdown copy follows its file as
-  it changes. The layout is saved with the session; with one pane left, the plain tab strip
-  comes back.
+  kind works in any pane. The pane you click is the live one, with editing, find, zoom and the
+  Review panel. The others stay where you left them and follow their files: a PDF beside your
+  Markdown reloads by itself when the agent rebuilds it, keeping its page and scroll, and an
+  image or Markdown pane reloads too. Every pane shows the review marks of its document. Press
+  and drag in another pane to make it live and select text there in one go. The layout is saved
+  with the session; with one pane left, the plain tab strip comes back.
 - **Walk a folder of figures.** With a single file open, `←` / `→` (or the toolbar arrows) step
   through every image next to it, in reading order — `fig2` before `fig10`, not after it. The
   toolbar shows your position, and the window stays where it is instead of resizing on every
@@ -587,6 +589,11 @@ served from a purpose-built `doc://` protocol with `Cache-Control: no-store`, so
 ever enters the HTTP cache, and the asset protocol has been dropped entirely. On top of that,
 hiding the window now also releases the PDF.js font and image caches (they rebuild lazily when
 you come back), and a background tab holds neither a decoded image nor a rendered markdown DOM.
+
+Panes are the one exception, by design: a PDF shown in a pane that is not live has its own
+read-only viewer and document on the same worker, so two PDFs side by side cost about what two
+open PDFs cost. That viewer is torn down as soon as its pane shows another file, the tab closes
+or the window goes back to one pane, and a reload destroys the document it replaces.
 
 ## Building
 

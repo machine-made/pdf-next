@@ -3201,6 +3201,26 @@ assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.js"><
   assert.match(app, /function activateTab[\s\S]*?freezeLivePane\(\);[\s\S]*?if \(panes\.active\) panes\.mount\(tab\.path\)/, 'Switching tabs leaves a copy and moves the live view.');
   assert.match(app, /panes\.visible\(\)\.includes\(path\)\) \{[\s\S]*?await fillPane\(path, revision\)/, 'A copy follows its file.');
   assert.ok(!/markdownStageSplit|splitDivider/.test(page), 'The old split view is gone.');
+  // Panes that are not live: their own PDF viewer on the one worker, freed
+  // whenever a copy leaves its pane; review marks; a drag that goes on live.
+  const viewers = await readFile('src/pane-viewers.mjs', 'utf8');
+  assert.match(app, /const paneViewers = createPaneViewers\(\{\s*load: loadPdf,/, 'Pane viewers load through the app loader.');
+  assert.match(app, /function loadPdf\(url\) \{\s*return getDocument\(\{[\s\S]*?worker: pdfWorker,/, 'Pane viewers share the one worker.');
+  assert.match(viewers, /dispose\(\) \{[\s\S]*?setDocument\(null\)[\s\S]*?abort\.abort\(\);[\s\S]*?task\?\.destroy\(\)/,
+    'A pane viewer drops its pages, its listeners and its document.');
+  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
+  assert.match(viewers, /addEventListener\('pane-detached', \(\) => \{\s*if \(viewers\.get\(path\) === viewer\) drop\(path\);/,
+    'A viewer goes with its copy.');
+  assert.match(panesSource, /const detach = \(element\) => \{[\s\S]*?new Event\('pane-detached'\)/, 'Panes say when a copy leaves.');
+  for (const site of [/onDidRemovePanel\(\(removed\) => \{\s*detach\(/, /for \(const element of bodies\.values\(\)\) detach\(element\);/, /const element = body\(path\);\s*detach\(element\);\s*element\.append\(stage\)/]) {
+    assert.match(panesSource, site, 'Closing a tab, leaving panes and going live free the copy.');
+  }
+  assert.match(app, /function watchVisiblePanes\(\) \{[\s\S]*?paneViewers\.keep\(paths\);/, 'A pane showing another file frees its viewer.');
+  assert.match(app, /if \(paneViewers\.reload\(path, url\)\) \{\s*paneViewers\.setReviews\(path, reviews\);/, 'A PDF pane follows its file and its reviews.');
+  assert.match(app, /paintMarkdownCopy\(article, reviews,/, 'A Markdown copy shows its review marks.');
+  assert.match(app, /paneViewers\.cleanup\(\);\s*try \{\s*await state\.document\?\.cleanup\(\);/, 'A hidden window frees pane caches too.');
+  assert.match(viewers, /cover\.addEventListener\('pointerdown', \(event\) => \{\s*event\.preventDefault\(\);\s*dragIntoLive\(event, onPick\);/,
+    'A press on a copy makes it live and the drag goes on as a selection.');
 }
 
 // Every version has its CHANGELOG.md section before it can be released, in
