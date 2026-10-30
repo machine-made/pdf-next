@@ -12,6 +12,7 @@ import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
+import { createNavigator } from './navigate.mjs';
 import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
@@ -318,6 +319,27 @@ const paneViewers = createPaneViewers({
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
   },
 });
+// The outline and pages sidebar, back and forward, link previews (src/navigate.mjs).
+const nav = createNavigator({
+  file: () => state.file,
+  pdf: () => state.document,
+  viewer: pdfViewer,
+  linkService,
+  container: ui.container,
+  markdown: ui.markdown,
+  markdownStage: ui.markdownStage,
+  capture: captureView,
+  restore: restorePlace,
+  focusPage: () => {
+    if (state.file?.kind !== 'pdf' && !ui.markdownStage.hasAttribute('tabindex')) ui.markdownStage.tabIndex = -1;
+    (state.file?.kind === 'pdf' ? ui.container : ui.markdownStage).focus({ preventScroll: true });
+  },
+  openLink: (url) => void invoke('open_link', { url }).catch((error) => setStatus(String(error), { error: true })),
+  showRendered: () => state.markdownRaw && setRaw(false, { persist: false }),
+  colors: () => PAGE_COLORS[state.mode] || null,
+  onResize: scheduleWrap,
+  status: (message) => setStatus(message),
+});
 eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
@@ -505,6 +527,23 @@ function restoreView(view) {
   // Scroll last: setting the page already moves the container.
   ui.container.scrollTop = view.top;
   ui.container.scrollLeft = view.left;
+}
+
+/// Back to a place `captureView` took, in the file that is open now.
+function restorePlace(view) {
+  if (view?.kind === 'pdf') {
+    restoreView(view);
+    updatePageControls();
+    return;
+  }
+  if (view?.kind !== 'markdown') {
+    return;
+  }
+  state.restoringMarkdownView = null;
+  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw), { persist: false });
+  if (view.scale !== state.markdownScale) setMarkdownScale(view.scale);
+  ui.markdownStage.scrollTop = view.top;
+  ui.markdownStage.scrollLeft = view.left;
 }
 
 function restoreImageView(view) {
@@ -1361,7 +1400,7 @@ function wrapWindowSize() {
   if (!content) {
     return null;
   }
-  const extra = state.reviewOpen ? REVIEW_PANE_WIDTH : 0;
+  const extra = (state.reviewOpen ? REVIEW_PANE_WIDTH : 0) + nav.width();
   return [content[0] + extra, content[1] + chromeHeight()];
 }
 
@@ -1803,6 +1842,7 @@ async function openFile(
       'file-missing',
     );
     setTitle('');
+    nav.refresh();
     setStatus(`Unsupported file type: ${file.name}`, { error: true, sticky: true });
     return;
   }
@@ -1860,6 +1900,7 @@ async function openFile(
     }
     if (state.generation === generation) {
       document.body.classList.remove('file-missing');
+      nav.refresh();
     }
   } catch (error) {
     // A load cancelled by a newer rebuild is expected, not a failure to report.
@@ -1924,6 +1965,7 @@ async function applyTarget(target) {
   if (!target) {
     return;
   }
+  nav.push();
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
     setRaw(false, { persist: false });
@@ -2560,6 +2602,7 @@ async function closeAll() {
     'file-missing',
   );
   setTitle('');
+  nav.refresh();
   ui.waiting.hidden = true;
   updateSiblingControls();
   renderTabs();
@@ -2800,6 +2843,7 @@ function setMode(mode, persist = true) {
     : 'Page mode: off';
   applyPageColors();
   paneViewers.recolor();
+  nav.recolor();
   if (!persist) {
     // A command-line flag styles this window; it is not a new preference.
     return;
@@ -2836,10 +2880,13 @@ function openFind() {
 
 /// Markdown find marks the page, so typing waits for a pause first.
 let findTimer = 0;
+/// Typing a query is one jump, from where you were; each Enter after it is another.
+let findPushed = false;
 
 function closeFind() {
   window.clearTimeout(findTimer);
   findTimer = 0;
+  findPushed = false;
   ui.find.hidden = true;
   ui.findCount.textContent = '';
   clearMarkdownFind();
@@ -2914,6 +2961,10 @@ function clearMarkdownFind() {
 }
 
 function runFind(type = '', again = false, backwards = false) {
+  if (again || !findPushed) {
+    nav.push();
+    findPushed = true;
+  }
   if (state.file?.kind === 'markdown') {
     if (again) {
       stepMarkdownFind(backwards ? -1 : 1);
@@ -5689,6 +5740,7 @@ ui.next.addEventListener('click', () => {
 ui.page.addEventListener('change', () => {
   const requested = Number(ui.page.value);
   if (Number.isFinite(requested)) {
+    nav.push();
     pdfViewer.currentPageNumber = Math.min(
       Math.max(1, Math.trunc(requested)),
       pdfViewer.pagesCount || 1,
@@ -6168,7 +6220,12 @@ ui.markdown.addEventListener('click', (event) => {
   const href = anchor.getAttribute('href') || '';
   if (href.startsWith('#')) {
     // Same page: footnotes, and links to headings.
-    markdownFragmentTarget(href.slice(1))?.scrollIntoView({ block: 'start' });
+    const target = markdownFragmentTarget(href.slice(1));
+    if (target) {
+      nav.hidePreview();
+      nav.push();
+      target.scrollIntoView({ block: 'start' });
+    }
     return;
   }
   if (/^https?:/i.test(href)) {
@@ -6368,6 +6425,10 @@ const palette = createPalette({
     { label: 'Zoom out', group: 'View', shortcut: '-', icon: '#i-zoom-out', when: hasFile, run: () => stepZoom(-1) },
     selectChoices(ui.zoom, { id: 'zoom', label: 'Zoom', group: 'View', when: hasFile }),
     selectChoices(ui.pageView, { id: 'page-view', label: 'Page view', group: 'View', when: reviewable }),
+    { label: 'Show the outline', group: 'View', shortcut: 'Ctrl+Shift+O', when: () => reviewable() && !nav.outlineOpen, run: () => nav.toggleOutline(true) },
+    { label: 'Hide the outline', group: 'View', shortcut: 'Ctrl+Shift+O', when: () => nav.outlineOpen, run: () => nav.toggleOutline(false) },
+    { label: 'Back', group: 'View', shortcut: 'Alt+←', icon: '#i-prev', when: () => nav.canGo('back'), run: () => nav.back() },
+    { label: 'Forward', group: 'View', shortcut: 'Alt+→', icon: '#i-next', when: () => nav.canGo('forward'), run: () => nav.forward() },
     { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
     { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
     { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
@@ -6474,6 +6535,18 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape' && state.reattachReviewId) {
     event.preventDefault();
     cancelReattach();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === 'o') {
+    event.preventDefault();
+    nav.toggleOutline();
+    return;
+  }
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !typing &&
+      (key === 'arrowleft' || key === 'arrowright')) {
+    event.preventDefault();
+    if (key === 'arrowleft') nav.back();
+    else nav.forward();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === 'o') {
@@ -6689,6 +6762,7 @@ window.addEventListener('keydown', (event) => {
         ui.markdownStage.scrollBy({ top: -90 });
         break;
       case 'g':
+        nav.push();
         ui.markdownStage.scrollTo({
           top: event.shiftKey ? ui.markdownStage.scrollHeight : 0,
         });
@@ -6716,6 +6790,7 @@ window.addEventListener('keydown', (event) => {
       ui.prev.click();
       break;
     case 'g':
+      nav.push();
       pdfViewer.currentPageNumber = event.shiftKey ? pdfViewer.pagesCount : 1;
       break;
     default:

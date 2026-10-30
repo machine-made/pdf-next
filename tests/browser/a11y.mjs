@@ -78,10 +78,32 @@ for (const theme of ['light', 'dark']) {
   await close();
 }
 
+// The outline and pages sidebar, and a link preview, in both themes.
+for (const theme of ['light', 'dark']) {
+  const { page, ok, close } = await start({ initial: '/d/navigate.pdf', theme });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.keyboard.press('Control+Shift+O');
+  await page.waitForSelector('#outlineTree [role="treeitem"]');
+  await page.$eval('#viewerContainer', (c) => { c.scrollTop = 150; });
+  await page.waitForTimeout(300);
+  await audit(page, ok, `${theme}: PDF outline`);
+  await page.hover('#viewer .annotationLayer section[data-internal-link] > a[href*="equation"]');
+  await page.waitForSelector('#linkPreview:not([hidden]) canvas');
+  await audit(page, ok, `${theme}: link preview`);
+  await page.click('#outlineTabPages');
+  await page.waitForSelector('#outlineThumbs .outline-thumb canvas');
+  await audit(page, ok, `${theme}: PDF pages`);
+  await close();
+}
+
 const { page, ok, selectText, finish } = await start();
 await page.click('#notes');
 await page.waitForSelector('#reviewPane:not([hidden])');
 await audit(page, ok, 'Markdown with the Review panel');
+await page.keyboard.press('Control+Shift+O');
+await page.waitForSelector('#outline:not([hidden])');
+await audit(page, ok, 'Markdown outline with the Review panel');
+await page.keyboard.press('Control+Shift+O');
 await page.click('#notes');
 await page.evaluate(() => document.activeElement?.blur());
 const toolbar = ['open', 'zoomOut', 'zoom', 'zoomIn', 'findToggle', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'notes', 'print', 'settingsToggle'];

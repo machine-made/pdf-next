@@ -304,6 +304,21 @@
 
     <div id="panes" hidden></div>
     <main id="stage">
+      <aside id="outline" hidden aria-label="Outline and pages">
+        <div class="outline-head">
+          <div id="outlineTabs" role="tablist" aria-label="Sidebar">
+            <button id="outlineTabTree" type="button" role="tab" aria-selected="true" aria-controls="outlineTree">Outline</button>
+            <button id="outlineTabPages" type="button" role="tab" aria-selected="false" aria-controls="outlineThumbs" tabindex="-1">Pages</button>
+          </div>
+          <button id="outlineClose" type="button" title="Hide the outline (Ctrl+Shift+O)" aria-label="Hide the outline">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <div id="outlineTree" role="tree" aria-label="Outline"></div>
+        <p id="outlineEmpty" class="dim" hidden></p>
+        <div id="outlineThumbs" role="group" aria-label="Pages" hidden></div>
+        <div id="outlineGrip" role="separator" aria-orientation="vertical" aria-label="Outline width" tabindex="0"></div>
+      </aside>
       <div id="viewerContainer" tabindex="0">
         <div id="viewer" class="pdfViewer"></div>
       </div>
@@ -548,6 +563,7 @@
     <!-- Empty on screen. A print fills it with one image per PDF page, at
          print resolution, and the print stylesheet hides everything else. -->
     <div id="printPages" aria-hidden="true"></div>
+    <div id="linkPreview" role="tooltip" hidden></div>
 
     <script src="./vendor/dockview/dockview-core.min.noStyle.js"></script>
     <script type="module" src="./smoke.mjs"></script>
