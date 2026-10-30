@@ -3505,4 +3505,18 @@ console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
   }
   assert.ok(site.includes('{{version}}'), 'The website names the version through {{version}}, filled in by pages.yml.');
   for (const match of site.matchAll(/(?:src|href)="((?:shots|fonts)\/[^"]+|icon\.png)"/g)) await access(`site/${match[1]}`);
+  // Every shot on the page is one tools/screenshots.mjs takes, so a release can
+  // replace it; the committed ones are the fallback.
+  const { OUTPUTS } = await import('./screenshots.mjs');
+  const shown = new Set([...site.matchAll(/shots\/([\w.-]+)/g)].map((match) => match[1]));
+  assert.ok(shown.size >= 5 && shown.has('social.png'), 'The website shows its screenshots and a social card.');
+  for (const shot of shown) assert.ok(OUTPUTS.includes(shot), `site/index.html shows shots/${shot}, which tools/screenshots.mjs does not take.`);
+  for (const shot of OUTPUTS) await access(`site/shots/${shot}`);
+  const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+  const pages = await readFile('.github/workflows/pages.yml', 'utf8');
+  const release = await readFile('.github/workflows/release.yml', 'utf8');
+  assert.match(ci, /node tools\/screenshots\.mjs --bin src-tauri\/target\/release\/pdf-next/, 'CI takes the screenshots in the app it built.');
+  assert.match(pages, /node tools\/screenshots\.mjs/, 'A release retakes the website screenshots.');
+  assert.match(pages, /concurrency:\s*\n\s*group: apt-repository/, 'The website never pushes to gh-pages while apt does.');
+  assert.match(release, /website:\s*\n\s*needs: \[publish, apt\][\s\S]*?uses: \.\/\.github\/workflows\/pages\.yml/, 'release.yml publishes the website after apt.');
 }
