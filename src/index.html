@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="./vendor/pdfjs/web/pdf_viewer.css" />
     <link rel="stylesheet" href="./vendor/math-core/mathmlfixes.css" />
     <link rel="stylesheet" href="./vendor/dockview/dockview.css" />
+    <link rel="stylesheet" href="./vendor/fonts/fonts.css" />
     <link rel="stylesheet" href="./style.css" />
     <!-- Filled before a print with the @page rule that gives the paper the
          shape of the PDF's own pages. Empty otherwise, which leaves markdown
@@ -115,6 +116,38 @@
         <path d="M3 4H13M4.5 7.5H11.5M6 11H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         <path d="M8 1.5V5.5M8 5.5L6.2 3.7M8 5.5L9.8 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </symbol>
+      <symbol id="i-kind-pdf" viewBox="0 0 16 16" fill="none">
+        <path d="M4.5 1.5H9.5L12.5 4.5V13.5C12.5 14.05 12.05 14.5 11.5 14.5H4.5C3.95 14.5 3.5 14.05 3.5 13.5V2.5C3.5 1.95 3.95 1.5 4.5 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M9.5 1.5V4.5H12.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="i-kind-md" viewBox="0 0 16 16" fill="none">
+        <path d="M2.5 3.5H13.5M2.5 6.5H13.5M2.5 9.5H13.5M2.5 12.5H9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      </symbol>
+      <symbol id="i-kind-image" viewBox="0 0 16 16" fill="none">
+        <rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/>
+        <path d="M2.5 11.5L6 8L8.5 10.5L10.5 8.5L13.5 11.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        <circle cx="10.5" cy="5.8" r="1" fill="currentColor"/>
+      </symbol>
+      <symbol id="i-outline" viewBox="0 0 16 16" fill="none">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M5.5 2.5V13.5M8 5.5H12M8 8H12M8 10.5H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </symbol>
+      <symbol id="i-view" viewBox="0 0 16 16" fill="none">
+        <path d="M1.5 8C3 5.1 5.3 3.5 8 3.5C10.7 3.5 13 5.1 14.5 8C13 10.9 10.7 12.5 8 12.5C5.3 12.5 3 10.9 1.5 8Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
+      </symbol>
+      <symbol id="i-dock" viewBox="0 0 16 16" fill="none">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="4" y="5" width="4" height="6" rx="0.6" fill="currentColor"/>
+      </symbol>
+      <symbol id="i-fullscreen" viewBox="0 0 16 16" fill="none">
+        <path d="M2.5 6V2.5H6M10 2.5H13.5V6M13.5 10V13.5H10M6 13.5H2.5V10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="i-present" viewBox="0 0 16 16" fill="none">
+        <rect x="1.5" y="2.5" width="13" height="9" rx="1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M6.5 5L10 7L6.5 9Z" fill="currentColor"/>
+        <path d="M8 11.5V14M5.5 14H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </symbol>
     </svg>
 
     <header id="bar">
@@ -128,11 +161,11 @@
         <button id="prev" type="button" title="Previous page (k)" aria-label="Previous page">
           <svg class="icon"><use href="#i-prev"/></svg>
         </button>
+        <input id="page" type="number" min="1" value="1" aria-label="Page number" />
+        <span id="pages" class="dim">/ —</span>
         <button id="next" type="button" title="Next page (j)" aria-label="Next page">
           <svg class="icon"><use href="#i-next"/></svg>
         </button>
-        <input id="page" type="number" min="1" value="1" aria-label="Page number" />
-        <span id="pages" class="dim">/ —</span>
       </div>
       <div class="group image-only">
         <button id="imagePrev" type="button" title="Previous file in folder (Left)" aria-label="Previous file in folder">
@@ -167,127 +200,173 @@
         <button id="zoomIn" type="button" title="Zoom in (+)" aria-label="Zoom in">
           <svg class="icon"><use href="#i-zoom-in"/></svg>
         </button>
-        <button id="copyPath" type="button" class="file-only" title="Copy the full path" aria-label="Copy the full path">
-          <svg class="icon"><use href="#i-copy-path"/></svg>
-        </button>
-        <button id="copyName" type="button" class="file-only" title="Copy the file name" aria-label="Copy the file name">
-          <svg class="icon"><use href="#i-copy-name"/></svg>
-        </button>
       </div>
       <div class="spacer"></div>
       <div class="group">
         <button id="findToggle" type="button" class="find-only" title="Find (Ctrl+F)" aria-label="Find in document">
           <svg class="icon"><use href="#i-find"/></svg>
         </button>
-        <select id="pageView" class="page-view-only" title="Page view" aria-label="Page view">
-          <option value="continuous">Continuous</option>
-          <option value="single">Single page</option>
-          <option value="two">Two pages</option>
-        </select>
-        <button id="raw" type="button" class="md-only" title="Show the raw markdown (Ctrl+U)" aria-label="Show the raw markdown" aria-pressed="false">
-          <svg class="icon"><use href="#i-raw"/></svg>
+        <!-- The two menus sit after their buttons so Tab reaches them in order;
+             position: fixed lets them out of the toolbar's scrolling box. -->
+        <button id="viewMenuButton" type="button" title="View" aria-label="View" aria-haspopup="dialog" aria-expanded="false" aria-controls="viewMenu">
+          <svg class="icon"><use href="#i-view"/></svg>
         </button>
-        <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
-          <optgroup label="TeX">
-            <option value="latin-modern" selected>Latin Modern</option>
-          </optgroup>
-          <optgroup label="System">
-            <option value="sans">Sans</option>
-            <option value="serif">Serif</option>
-            <option value="mono">Mono</option>
-          </optgroup>
-          <optgroup label="Monaspace (GitHub)">
-            <option value="monaspace-neon">Monaspace Neon</option>
-            <option value="monaspace-argon">Monaspace Argon</option>
-            <option value="monaspace-xenon">Monaspace Xenon</option>
-            <option value="monaspace-radon">Monaspace Radon</option>
-            <option value="monaspace-krypton">Monaspace Krypton</option>
-          </optgroup>
-          <optgroup label="machine-made">
-            <option value="weft">mm Weft</option>
-            <option value="mm-sans">mm Sans</option>
-            <option value="heddle">mm Heddle</option>
-          </optgroup>
-        </select>
-        <select id="mdSize" class="md-only" data-md="size" title="Markdown text size" aria-label="Markdown text size">
-          <option value="14">14 px</option>
-          <option value="15">15 px</option>
-          <option value="16">16 px</option>
-          <option value="17" selected>17 px</option>
-          <option value="18">18 px</option>
-          <option value="20">20 px</option>
-          <option value="22">22 px</option>
-          <option value="24">24 px</option>
-          <option value="26">26 px</option>
-          <option value="28">28 px</option>
-          <option value="32">32 px</option>
-          <option value="36">36 px</option>
-          <option value="40">40 px</option>
-          <option value="48">48 px</option>
-        </select>
-        <select id="mdWidth" class="md-only" data-md="width" title="Markdown column width" aria-label="Markdown column width">
-          <option value="520">520 px</option>
-          <option value="600">600 px</option>
-          <option value="680">680 px</option>
-          <option value="720" selected>720 px</option>
-          <option value="800">800 px</option>
-          <option value="900">900 px</option>
-          <option value="1000">1000 px</option>
-          <option value="1120">1120 px</option>
-          <option value="1280">1280 px</option>
-          <option value="1440">1440 px</option>
-          <option value="1600">1600 px</option>
-          <option value="100%">100%</option>
-        </select>
-        <select id="splitView" title="Panes: split right Ctrl+Shift+D, split down Ctrl+Shift+E, move Ctrl+Alt+arrows" aria-label="Panes">
-          <option value="off" selected>1 pane</option>
-          <option value="right">Split right</option>
-          <option value="bottom">Split down</option>
-        </select>
-        <button id="ask" type="button" class="review-only" title="Copy the selection as a review quote (Ctrl+Shift+A)" aria-label="Copy selection for a session">
-          <svg class="icon"><use href="#i-ask"/></svg>
+        <div id="viewMenu" class="popover" role="dialog" aria-label="View" hidden>
+          <label class="menu-row page-view-only"><span>Page view</span>
+            <select id="pageView" class="page-view-only" title="Page view" aria-label="Page view">
+              <option value="continuous">Continuous</option>
+              <option value="single">Single page</option>
+              <option value="two">Two pages</option>
+            </select>
+          </label>
+          <button id="outlineToggle" type="button" class="menu-row page-view-only" title="Outline and pages (Ctrl+Shift+O)" aria-pressed="false">
+            <svg class="icon"><use href="#i-outline"/></svg><span>Outline</span><kbd>Ctrl+Shift+O</kbd>
+          </button>
+          <button id="raw" type="button" class="menu-row md-only" title="Show the raw markdown (Ctrl+U)" aria-pressed="false">
+            <svg class="icon"><use href="#i-raw"/></svg><span>Raw Markdown</span><kbd>Ctrl+U</kbd>
+          </button>
+          <label class="menu-row md-only"><span>Font</span>
+            <select id="mdFont" class="md-only" data-md="font" title="Markdown font" aria-label="Markdown font">
+              <optgroup label="TeX">
+                <option value="latin-modern" selected>Latin Modern</option>
+              </optgroup>
+              <optgroup label="Serif">
+                <option value="literata">Literata</option>
+                <option value="merriweather">Merriweather</option>
+                <option value="source-serif-4">Source Serif 4</option>
+                <option value="libre-baskerville">Libre Baskerville</option>
+                <option value="lora">Lora</option>
+                <option value="eb-garamond">EB Garamond</option>
+                <option value="crimson-pro">Crimson Pro</option>
+                <option value="newsreader">Newsreader</option>
+                <option value="spectral">Spectral</option>
+              </optgroup>
+              <optgroup label="Sans">
+                <option value="atkinson-hyperlegible-next">Atkinson Hyperlegible Next</option>
+                <option value="lexend">Lexend</option>
+                <option value="inter">Inter</option>
+                <option value="source-sans-3">Source Sans 3</option>
+                <option value="geist">Geist</option>
+                <option value="manrope">Manrope</option>
+                <option value="space-grotesk">Space Grotesk</option>
+              </optgroup>
+              <optgroup label="System">
+                <option value="serif">Serif</option>
+                <option value="sans">Sans</option>
+                <option value="mono">Mono</option>
+              </optgroup>
+              <optgroup label="Monaspace (GitHub)">
+                <option value="monaspace-neon">Monaspace Neon</option>
+                <option value="monaspace-argon">Monaspace Argon</option>
+                <option value="monaspace-xenon">Monaspace Xenon</option>
+              </optgroup>
+              <optgroup label="machine-made">
+                <option value="weft">mm Weft</option>
+                <option value="mm-sans">mm Sans</option>
+                <option value="heddle">mm Heddle</option>
+              </optgroup>
+            </select>
+          </label>
+          <label class="menu-row md-only"><span>Text size</span>
+            <select id="mdSize" class="md-only" data-md="size" title="Markdown text size" aria-label="Markdown text size">
+              <option value="14">14 px</option>
+              <option value="15">15 px</option>
+              <option value="16">16 px</option>
+              <option value="17" selected>17 px</option>
+              <option value="18">18 px</option>
+              <option value="20">20 px</option>
+              <option value="22">22 px</option>
+              <option value="24">24 px</option>
+              <option value="26">26 px</option>
+              <option value="28">28 px</option>
+              <option value="32">32 px</option>
+              <option value="36">36 px</option>
+              <option value="40">40 px</option>
+              <option value="48">48 px</option>
+            </select>
+          </label>
+          <label class="menu-row md-only md-width-row"><span>Column width</span>
+            <select id="mdWidth" class="md-only" data-md="width" title="Markdown column width" aria-label="Markdown column width">
+              <option value="520">520 px</option>
+              <option value="600">600 px</option>
+              <option value="680">680 px</option>
+              <option value="720" selected>720 px</option>
+              <option value="800">800 px</option>
+              <option value="900">900 px</option>
+              <option value="1000">1000 px</option>
+              <option value="1120">1120 px</option>
+              <option value="1280">1280 px</option>
+              <option value="1440">1440 px</option>
+              <option value="1600">1600 px</option>
+              <option value="100%">100%</option>
+            </select>
+          </label>
+          <label class="menu-row"><span>Panes</span>
+            <select id="splitView" title="Panes: split right Ctrl+Shift+D, split down Ctrl+Shift+E, move Ctrl+Alt+arrows" aria-label="Panes">
+              <option value="off" selected>1 pane</option>
+              <option value="right">Split right</option>
+              <option value="bottom">Split down</option>
+            </select>
+          </label>
+          <button id="mode" type="button" class="menu-row" title="Page mode (Shift+click to clear)" aria-pressed="false">
+            <svg class="icon"><use href="#i-mode"/></svg><span>Page mode</span><span id="modeName" class="menu-value">Clear</span>
+          </button>
+          <label class="menu-row file-only"><span>Check for changes</span>
+            <select id="poll" title="Check the file and its review JSON for changes every…" aria-label="Auto reload interval">
+              <option value="1">1s</option>
+              <option value="2">2s</option>
+              <option value="3">3s</option>
+              <option value="0">Off</option>
+            </select>
+          </label>
+          <hr class="menu-rule file-only" />
+          <button id="copyPath" type="button" class="menu-row file-only" title="Copy the full path" data-close>
+            <svg class="icon"><use href="#i-copy-path"/></svg><span>Copy the full path</span>
+          </button>
+          <button id="copyName" type="button" class="menu-row file-only" title="Copy the file name" data-close>
+            <svg class="icon"><use href="#i-copy-name"/></svg><span>Copy the file name</span>
+          </button>
+          <button id="print" type="button" class="menu-row" title="Print (Ctrl+P)" data-close>
+            <svg class="icon"><use href="#i-print"/></svg><span>Print…</span><kbd>Ctrl+P</kbd>
+          </button>
+          <button id="reduce" type="button" class="menu-row pdf-only" title="Write a smaller copy as name_reduced.pdf" data-close>
+            <svg class="icon"><use href="#i-reduce"/></svg><span>Reduce PDF size</span>
+          </button>
+        </div>
+        <button id="dockMenuButton" type="button" title="Window: dock, fit, full screen" aria-label="Window" aria-haspopup="dialog" aria-expanded="false" aria-controls="dockMenu">
+          <svg class="icon"><use href="#i-dock"/></svg>
         </button>
-        <button id="note" type="button" class="review-only" title="Add a review of the selection (Ctrl+Shift+N)" aria-label="Add a review of the selection">
-          <svg class="icon"><use href="#i-add-review"/></svg>
-        </button>
+        <div id="dockMenu" class="popover" role="dialog" aria-label="Window" hidden>
+          <div class="dock-grid" id="dockGroup" role="group" aria-label="Dock the window">
+            <button id="dockTop" type="button" title="Fill the top half of the screen (Ctrl+Shift+Up)" aria-label="Fill the top half of the screen" aria-pressed="false" data-close>
+              <svg class="icon"><use href="#i-dock-top"/></svg>
+            </button>
+            <button id="dockLeft" type="button" title="Fill the left half of the screen (Ctrl+Shift+Left)" aria-label="Fill the left half of the screen" aria-pressed="false" data-close>
+              <svg class="icon"><use href="#i-dock-left"/></svg>
+            </button>
+            <button id="dockCenter" type="button" title="Center and fit the window to the page (Ctrl+Shift+Enter)" aria-label="Center and fit the window to the page" data-close>
+              <svg class="icon"><use href="#i-dock-center"/></svg>
+            </button>
+            <button id="dockRight" type="button" title="Fill the right half of the screen (Ctrl+Shift+Right)" aria-label="Fill the right half of the screen" aria-pressed="false" data-close>
+              <svg class="icon"><use href="#i-dock-right"/></svg>
+            </button>
+            <button id="dockBottom" type="button" title="Fill the bottom half of the screen (Ctrl+Shift+Down)" aria-label="Fill the bottom half of the screen" aria-pressed="false" data-close>
+              <svg class="icon"><use href="#i-dock-bottom"/></svg>
+            </button>
+          </div>
+          <button id="wrap" type="button" class="menu-row" title="Fit the window to the content (Ctrl+Shift+F)" aria-pressed="false" data-close>
+            <svg class="icon"><use href="#i-wrap"/></svg><span>Fit the window to the content</span><kbd>Ctrl+Shift+F</kbd>
+          </button>
+          <button id="fullScreen" type="button" class="menu-row" title="Full screen (F11)" aria-pressed="false" data-close>
+            <svg class="icon"><use href="#i-fullscreen"/></svg><span>Full screen</span><kbd>F11</kbd>
+          </button>
+          <button id="present" type="button" class="menu-row page-view-only" title="Present (F5)" data-close>
+            <svg class="icon"><use href="#i-present"/></svg><span>Present</span><kbd>F5</kbd>
+          </button>
+        </div>
         <button id="notes" type="button" class="review-only" title="Review panel (Ctrl+Shift+R)" aria-label="Review panel" aria-pressed="false">
           <svg class="icon"><use href="#i-review"/></svg>
         </button>
-        <button id="print" type="button" title="Print (Ctrl+P)" aria-label="Print">
-          <svg class="icon"><use href="#i-print"/></svg>
-        </button>
-        <button id="reduce" type="button" class="pdf-only" title="Write a smaller copy as name_reduced.pdf" aria-label="Reduce PDF size">
-          <svg class="icon"><use href="#i-reduce"/></svg>
-        </button>
-        <button id="mode" type="button" title="Page mode (Shift+click to clear)" aria-label="Page mode" aria-pressed="false">
-          <svg class="icon"><use href="#i-mode"/></svg>
-        </button>
-        <button id="wrap" type="button" title="Fit the window to the content (Ctrl+Shift+F)" aria-label="Fit the window to the content" aria-pressed="false">
-          <svg class="icon"><use href="#i-wrap"/></svg>
-        </button>
-        <span class="group" id="dockGroup" role="group" aria-label="Dock the window">
-          <button id="dockLeft" type="button" title="Fill the left half of the screen (Ctrl+Shift+Left)" aria-label="Fill the left half of the screen" aria-pressed="false">
-            <svg class="icon"><use href="#i-dock-left"/></svg>
-          </button>
-          <button id="dockTop" type="button" title="Fill the top half of the screen (Ctrl+Shift+Up)" aria-label="Fill the top half of the screen" aria-pressed="false">
-            <svg class="icon"><use href="#i-dock-top"/></svg>
-          </button>
-          <button id="dockCenter" type="button" title="Center and fit the window to the page (Ctrl+Shift+Enter)" aria-label="Center and fit the window to the page">
-            <svg class="icon"><use href="#i-dock-center"/></svg>
-          </button>
-          <button id="dockBottom" type="button" title="Fill the bottom half of the screen (Ctrl+Shift+Down)" aria-label="Fill the bottom half of the screen" aria-pressed="false">
-            <svg class="icon"><use href="#i-dock-bottom"/></svg>
-          </button>
-          <button id="dockRight" type="button" title="Fill the right half of the screen (Ctrl+Shift+Right)" aria-label="Fill the right half of the screen" aria-pressed="false">
-            <svg class="icon"><use href="#i-dock-right"/></svg>
-          </button>
-        </span>
-        <select id="poll" title="Check the file and its review JSON for changes every…" aria-label="Auto reload interval">
-          <option value="1">1s</option>
-          <option value="2">2s</option>
-          <option value="3">3s</option>
-          <option value="0">Off</option>
-        </select>
         <span id="waiting" title="The file is being rebuilt" hidden>
           <span class="dot"></span>
         </span>
@@ -304,6 +383,21 @@
 
     <div id="panes" hidden></div>
     <main id="stage">
+      <aside id="outline" hidden aria-label="Outline and pages">
+        <div class="outline-head">
+          <div id="outlineTabs" role="tablist" aria-label="Sidebar">
+            <button id="outlineTabTree" type="button" role="tab" aria-selected="true" aria-controls="outlineTree">Outline</button>
+            <button id="outlineTabPages" type="button" role="tab" aria-selected="false" aria-controls="outlineThumbs" tabindex="-1">Pages</button>
+          </div>
+          <button id="outlineClose" type="button" title="Hide the outline (Ctrl+Shift+O)" aria-label="Hide the outline">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <div id="outlineTree" role="tree" aria-label="Outline"></div>
+        <p id="outlineEmpty" class="dim" hidden></p>
+        <div id="outlineThumbs" role="group" aria-label="Pages" hidden></div>
+        <div id="outlineGrip" role="separator" aria-orientation="vertical" aria-label="Outline width" tabindex="0"></div>
+      </aside>
       <div id="viewerContainer" tabindex="0">
         <div id="viewer" class="pdfViewer"></div>
       </div>
@@ -419,11 +513,11 @@
               <option value="monaspace-neon">Monaspace Neon</option>
               <option value="monaspace-argon">Monaspace Argon</option>
               <option value="monaspace-xenon">Monaspace Xenon</option>
-              <option value="monaspace-radon">Monaspace Radon</option>
-              <option value="monaspace-krypton">Monaspace Krypton</option>
             </optgroup>
           </select></label>
           <label>Check for changes <select id="setPoll" data-mirror="poll"></select></label>
+          <label class="check"><input id="setFocusMode" type="checkbox" checked />
+            Hide the toolbar while reading</label>
         </section>
         <section class="about">
           <h3>About</h3>
@@ -452,7 +546,7 @@
               <dt>Panes</dt>
               <dd>dockview 8.8 lays out the tiles and their tabs.</dd>
               <dt>Fonts</dt>
-              <dd>Latin Modern Roman; machine-made Weft, Sans and Heddle 0.1; Monaspace 1.400 (GitHub Next).</dd>
+              <dd>Latin Modern Roman; Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope and Space Grotesk (Google Fonts, through Fontsource 5.3); machine-made Weft, Sans and Heddle 0.1; Monaspace Neon, Argon and Xenon 1.400 (GitHub Next).</dd>
               <dt>Licences</dt>
               <dd>pdf-next is MIT. PDF.js Apache-2.0; Tauri, serde and most crates MIT or Apache-2.0; highlight.js BSD-3; diff-match-patch Apache-2.0; dockview MIT; fonts GUST and SIL OFL. Full list in the README.</dd>
             </dl>
@@ -534,12 +628,18 @@
       </div>
 
       <div id="empty">
-        <svg class="empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-          <rect x="9" y="5.5" width="30" height="37" rx="3" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/>
-          <path d="M24 16v14m0 0-5.5-5.5M24 30l5.5-5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <p class="empty-title">Drop a PDF, image or markdown file here</p>
-        <p class="dim">or press <kbd>Ctrl</kbd>+<kbd>O</kbd> to browse</p>
+        <div class="empty-drop">
+          <svg class="empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <rect x="9" y="5.5" width="30" height="37" rx="3" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/>
+            <path d="M24 16v14m0 0-5.5-5.5M24 30l5.5-5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p class="empty-title">Drop a PDF, Markdown file or image here</p>
+          <p class="dim">or press <kbd id="emptyKey">Ctrl</kbd>+<kbd>O</kbd></p>
+        </div>
+        <section id="recent" aria-labelledby="recentTitle" hidden>
+          <h2 id="recentTitle" class="recent-title dim">Recent</h2>
+          <ul id="recentList"></ul>
+        </section>
       </div>
 
       <div id="status" role="status" aria-live="polite"></div>
@@ -548,6 +648,7 @@
     <!-- Empty on screen. A print fills it with one image per PDF page, at
          print resolution, and the print stylesheet hides everything else. -->
     <div id="printPages" aria-hidden="true"></div>
+    <div id="linkPreview" role="tooltip" hidden></div>
 
     <script src="./vendor/dockview/dockview-core.min.noStyle.js"></script>
     <script type="module" src="./smoke.mjs"></script>

@@ -1,0 +1,10 @@
+Geist (variable WOFF2: wght 100-900; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v5.
+Source: npm @fontsource-variable/geist 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/geist), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  71609cbb5c78b5870d712eab73a31d76622635c6ed034ab5cee3b9ecbda8685f  OFL.txt
+  56dc9ac98e3fc45e7ee487d03ee205b35858c672f2e15053eabbb119c0bc1e74  geist-latin-ext-wght-italic.woff2
+  824f485b5d26e2f2da3c2b236132ece1bc8e4e43373452950bb0e40548b4313f  geist-latin-ext-wght-normal.woff2
+  9b10496762af92659f3b05d2b084b0c8f962c3ecdf637aa764e3b7fd17f5acaf  geist-latin-wght-italic.woff2
+  19f9c92546aa300c312235e3125af1b81394d8db9a4bc4a425cd5b641d2d54e1  geist-latin-wght-normal.woff2

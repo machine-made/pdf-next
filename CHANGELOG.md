@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.18.0
+
+- Changed the toolbar to about ten controls: page view, Markdown type, panes, page mode, the watch interval, copy, print and Reduce PDF are now in a View menu, and docking, fit to content, full screen and Present in a Window menu laid out like the screen
+- Added focus mode: the toolbar fades a couple of seconds into reading and comes back at the top edge, on Alt or on Tab; Settings or the palette turns it off
+- Added full screen with F11, and presentation mode with F5: one page at a time fitted to the screen, stepped with the arrows, Space or a clicker; Esc puts everything back
+- Added Ctrl+wheel (⌘+wheel on macOS) and trackpad pinch zoom around the point under the cursor, settling on Fit width and Fit page as you pass them; in Markdown it steps the text size and keeps the paragraph in place
+- Changed `+`, `-` and the zoom menu to zoom around the middle of the view
+- Added a remembered place for every file: a reopened PDF comes back to its page, spot and zoom, Markdown to its paragraph and a picture to its zoom, even after a restart
+- Added the last eight files to the empty window, and "Open recent…" to the command palette
+- Added an outline sidebar (`Ctrl+Shift+O`, or Outline in the View menu) with a PDF's outline or a Markdown file's headings, the current section marked, and a Pages tab of small page pictures
+- Added Back and Forward (`Alt+←` / `Alt+→`, or the mouse's side buttons) after following a link, an outline entry, a find result or a page jump
+- Added previews of internal links: resting on a link to an equation, figure, section, footnote or reference shows what it points to
+- Added change marks to PDF rebuilds: the new words light up for a few seconds, ticks at the right edge show where they are until the next build, and `.` / `,` go to the next and previous change
+- Changed Night and Sepia to keep the colours of figures and plots, so a blue line stays blue, and to look the same on Windows, macOS and Linux
+- Added `Ctrl+Shift+M` (or a double click on an empty tab strip) to give the whole window to one pane, and `Ctrl+Alt+Shift+arrows` to move a pane's edge from the keyboard
+- Added find matches in every pane on screen, not only the live one
+- Added nine serif reading fonts (Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral) and seven easy-to-read sans fonts (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope, Space Grotesk), grouped in the font menu; five of them adjust their letter shapes to the text size
+- Removed the Monaspace Krypton and Radon fonts; a saved choice of either goes back to the default
+- Removed the Ask and Add review toolbar buttons; their shortcuts, the review card and the right-click menu still do both
+- Changed the update button to appear only when a newer version is found
+- Added names to releases: 0.17 is Margin, 0.18 is Quiet
+- Fixed a rebuild pulling the view back to the target of the last internal PDF link you followed
+- Fixed closing a tab opening its neighbour at the closed file's zoom and scroll position
+
 ## 0.17.1
 
 - Fixed split panes showing their tabs as plain text and no document: the pane layout's styles were blocked by the window's security policy since 0.16.4

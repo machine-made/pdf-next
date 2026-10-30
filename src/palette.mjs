@@ -245,6 +245,8 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
   }
 
   function onKey(event) {
+    // F5 and F11 reach the window: kept here, WebView2 would reload the page.
+    if (/^F\d+$/.test(event.key)) return;
     event.stopPropagation();
     const key = event.key;
     const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 8, PageUp: -8 }[key] ??
@@ -378,7 +380,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     }
   }
 
-  function open() {
+  function open(query = '') {
     if (opened) return;
     build();
     previous = document.activeElement;
@@ -386,7 +388,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     savedRange = selection?.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0).cloneRange() : null;
     onOpen();
     candidates = collect();
-    input.value = '';
+    input.value = query;
     opened = true;
     root.hidden = false;
     render();
@@ -423,6 +425,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     add(...items) {
       entries.push(...items);
     },
+    /// Open with `query` already typed, to show one family of commands.
     open,
     close,
     toggle() {

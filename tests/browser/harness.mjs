@@ -54,7 +54,8 @@ export const defaultFiles = {
 
 // A file is its raw text, or { raw, html } to hand the page markup shaped like
 // the Rust renderer's. `window.__fail[cmd] = 'message'` makes a command reject
-// (sessionStorage `fail`, as JSON, does the same across a reload).
+// (sessionStorage `fail`, as JSON, does the same across a reload). A path in
+// `window.__missing` (or sessionStorage `missing`) does not exist.
 function mockTauri({ files, initial, theme, store }) {
   if (store) window.__store = store;
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
@@ -81,6 +82,11 @@ function mockTauri({ files, initial, theme, store }) {
     if (!review) throw new Error('review not found');
     return review;
   };
+  // The launch update check would ask GitHub and, answered, cover the status
+  // line a test is reading; the tests run offline.
+  const fetchFromPage = window.fetch.bind(window);
+  window.fetch = (url, options) => (String(url).startsWith('https://api.github.com/')
+    ? Promise.reject(new TypeError('offline in tests')) : fetchFromPage(url, options));
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
@@ -91,7 +97,13 @@ function mockTauri({ files, initial, theme, store }) {
           case 'launch_options': return { version: '0.0.0-test' };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
-          case 'open_path': return info(args.path);
+          case 'files_exist': {
+            const gone = [...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')];
+            return args.paths.map((path) => !gone.includes(path));
+          }
+          case 'open_path':
+            if ([...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')].includes(args.path)) throw `${args.path} does not exist`;
+            return info(args.path);
           case 'read_markdown': {
             const f = files[args.path];
             return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: `sha256:${text(args.path).length}:${rev}` };
@@ -142,6 +154,15 @@ function mockTauri({ files, initial, theme, store }) {
         }
       },
     },
+    window: {
+      getCurrentWindow: () => ({
+        isFullscreen: async () => Boolean(window.__fullscreen),
+        setFullscreen: async (on) => {
+          window.__calls.push(['setFullscreen', { on }]);
+          window.__fullscreen = on;
+        },
+      }),
+    },
     event: {
       listen: async (name, fn) => {
         (window.__listeners ||= {})[name] = fn;
@@ -162,6 +183,8 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.addInitScript(mockTauri, { files, initial, theme, store });
+  // The launch update check would reach GitHub and race the status line.
+  await page.route('https://api.github.com/**', (route) => route.abort());
   if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   await page.goto(url);
@@ -183,6 +206,12 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     getSelection().removeAllRanges();
     getSelection().addRange(range);
   }, [selector, text]);
+  // Open the View (or Window) menu, as a mouse click would, unless it is open.
+  const openMenu = (id = 'viewMenu') => page.evaluate((id) => {
+    if (document.getElementById(id).hidden) {
+      document.querySelector(`[aria-controls="${id}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    }
+  }, id);
   const shot = (name, options = {}) => {
     mkdirSync(shots, { recursive: true });
     return page.screenshot({ path: join(shots, `${name}.png`), ...options });
@@ -203,7 +232,7 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     console.log(`${tally.pass} passed, ${tally.fail} failed`);
     process.exit(tally.fail || tally.errors.length ? 1 : 0);
   };
-  return { page, ok, errors, selectText, shot, close, finish };
+  return { page, ok, errors, selectText, openMenu, shot, close, finish };
 }
 
 /// Per-file line coverage of src/*.mjs from the V8 coverage each test wrote.

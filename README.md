@@ -22,9 +22,15 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 ### It follows your file
 
 - **Rebuild and look.** Watching is on by default. Save or rebuild and the view updates
-  within a second, keeping your page, scroll position and zoom. The toolbar sets how often it
+  within a second, keeping your page, scroll position and zoom. The View menu sets how often it
   looks (1 s, 2 s, 3 s, or off). If the build deletes the file first, the last page stays on
   screen with a red dot until the new file lands.
+- **See what the rebuild changed.** In Markdown the changed blocks light up for a few seconds;
+  in a PDF the new words do, and thin ticks along the right edge show where on the whole
+  document the changes are. The ticks stay, faint, until the next build; click one to go
+  there, or press `.` and `,` for the next and previous change. Pages that did not change get
+  nothing, and a page the build added is marked whole. A long thesis is compared page by page
+  in the background, so the reload is as quick as before.
 - **It never shows a half-written file.** A build takes hundreds of milliseconds to write a
   PDF, and a naive viewer reloads the half it has. pdf-next waits until the file is whole: on
   Windows the writer holds a lock, so opening it fails until it is done; on macOS and Linux it
@@ -41,12 +47,20 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   as a plot saved at 400 dpi, is scaled down until it fits whole. A page taller than the
   monitor fills the screen's height and scrolls. This only happens when you open a file:
   rebuilds and tab switches never move your window.
-- **Dock it to half the screen** with the toolbar or `Ctrl+Shift+←` / `→` / `↑` / `↓`, so the
-  document takes one half and your editor the other. Docked, it fits the width, so the text
-  stays readable. The centre button, `Ctrl+Shift+Enter`, or the same edge again undocks.
+- **Dock it to half the screen** with the Window menu (a small picker laid out like the
+  screen) or `Ctrl+Shift+←` / `→` / `↑` / `↓`, so the document takes one half and your editor
+  the other. Docked, it fits the width, so the text stays readable. The centre of the picker,
+  `Ctrl+Shift+Enter`, or the same edge again undocks.
 - **Or bring the window to the content** with `Ctrl+Shift+F`: set a figure to the size you
   want and the window closes in on it, edge to edge. It stays on, so zooming moves the window
   with you, up to the size of your screen. Picking a fit from the zoom menu turns it off.
+- **Full screen** with `F11`, or from the Window menu. `F11` again comes back.
+- **Present** with `F5`: full screen, no toolbar, one page at a time fitted to the screen, on
+  black. `←` / `→`, `PageUp` / `PageDown` (what a presentation clicker sends), `Space`, `Home`
+  and `End` move through the pages; `Esc` comes back to the view, zoom and page you had. A
+  Markdown file is shown as its A4 pages. The outline steps aside while you present, `Alt+←`
+  after following a link goes back to the slide you came from, and switching to another tab
+  ends the presentation.
 
 ### Tabs and panes
 
@@ -54,16 +68,47 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   `←` / `→`, `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip; `Ctrl+W` closes one.
   Only the files on screen are in memory, so six papers cost what one does, and a tab you come
   back to is read fresh from disk.
+- **It remembers your place.** Close a file and open it again, later the same day or after a
+  restart, and it comes back on the page, at the spot and the zoom where you left it. Markdown
+  comes back to the paragraph you were reading, a picture to its zoom. `--page`, `--line` and
+  `--find` still say where to land. The last 300 files are remembered, on this computer only.
+- **Start where you left off.** With nothing open the window is a small drop target with the
+  last eight files you opened under it, each with its folder and when you opened it. Click one or
+  press Enter; the arrows move through the list, and `Delete` takes a file off it (never off the
+  disk). A file that is no longer there is dimmed, and leaves the list when you pick it. Open
+  recent… in the command palette lists the same files.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
-  splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
+  splits it down, and the Panes menu in the View menu does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a tab strip to merge;
-  drag the line between panes to resize; `Ctrl+Alt+←/→/↑/↓` moves between them. Any file works
+  drag the line between panes to resize, or move the live pane's edge from the keyboard with
+  `Ctrl+Alt+Shift+←/→/↑/↓`; `Ctrl+Alt+←/→/↑/↓` moves between them. `Ctrl+Shift+M`, or a
+  double click on the empty part of a tab strip, gives the whole window to one pane and brings
+  the others back. Any file works
   in any pane. The pane you click is the live one, with editing, find, zoom and the Review
   panel. The others stay where you left them and keep following their files: the PDF next to
   your notes reloads by itself when it is rebuilt, and images and Markdown do too. Every pane
-  shows its document's review marks. Press and drag in another pane to make it live and select
+  shows its document's review marks, and while find is open, its matches. Press and drag in another pane to make it live and select
   there in one go. The layout is saved with the session; close down to one pane and the plain
   tab strip comes back.
+
+### Find your way
+
+- **An outline when you want one.** `Ctrl+Shift+O` opens a sidebar on the left with the PDF's
+  own outline, or the headings of a Markdown file, and pushes the page over rather than covering
+  it. The section you are reading is marked as you scroll; click one, or move with the arrow keys
+  and press Enter, to go there, and Esc hands the keyboard back to the page. Drag its edge to
+  make it wider; the width is remembered. It stays open and scrolled through rebuilds, and with
+  panes it shows the live one.
+- **Pages at a glance.** The Pages tab shows small pictures of a PDF's pages, drawn only as they
+  come into view and let go when the sidebar closes.
+- **Back where you were.** Following a link, an outline entry, a find result, `g`/`G` or a page
+  number remembers the place you left, page, scroll and zoom. `Alt+←` and `Alt+→`, or the back
+  and forward buttons on the mouse, step through those places; ordinary scrolling does not count.
+  Each tab has its own trail.
+- **See where a link goes before you go.** Rest the pointer on a link to an equation, figure,
+  section or reference for a moment and a small card shows what it points at: the spot on the
+  target page in a PDF, the heading, footnote or equation itself in Markdown. Click to follow it
+  as before; move away or press Esc and it is gone.
 
 ### Figures
 
@@ -75,7 +120,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   Bin or Trash, where you can get it back. Where there is no trash, such as a network share or
   `\\wsl.localhost`, it asks whether to delete for good. In a folder of figures the next one
   opens.
-- Images zoom with the same control and keys as a PDF.
+- Images zoom with the same control, keys, wheel and pinch as a PDF.
 
 ### Markdown that reads like a paper
 
@@ -83,18 +128,23 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   on a 38 em measure, hyphenated, with tables, task lists, footnotes and strikethrough. It is
   parsed by [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) in Rust and
   cleaned by [ammonia](https://github.com/rust-ammonia/ammonia) before it reaches the window,
-  so a hostile file cannot run anything. `Ctrl+U` with nothing selected (or the toolbar button)
-  shows the raw text and back. Zoom reflows the text instead of scaling it.
+  so a hostile file cannot run anything. `Ctrl+U` with nothing selected (or Raw Markdown in the
+  View menu) shows the raw text and back. Zoom reflows the text instead of scaling it.
 - **Equations.** `$…$`, `$$…$$` and a fenced `math` block are TeX, turned into MathML by
   [math-core](https://github.com/tmke8/math-core) in the same Rust pass and set in New Computer
   Modern Math, with no JavaScript maths engine and nothing fetched. Numbered environments,
   `\label` and `\eqref`, `\newcommand` across a file, and `split` work. An equation that fails
   to convert, loops, or is too large shows as its TeX source; an unknown command is marked in
   red and the rest still renders. An `\eqref` to an equation further down shows `(??)`.
-- **Your choice of type.** Toolbar menus set the font (Latin Modern; the machine-made faces
-  Weft, Sans and Heddle; Serif, Sans, Mono; and GitHub's five Monaspace faces Neon, Argon,
-  Xenon, Radon and Krypton), the size (14 to 48 px) and the column width (in pixels, or 100%;
-  720 px by default). Each choice is remembered. The mouse wheel over any toolbar menu (zoom,
+- **Your choice of type.** The View menu sets the font, the size (14 to 48 px) and the column
+  width (in pixels, or 100%; 720 px by default). The fonts come in groups: Latin Modern, the TeX
+  look and the default; nine serifs for long reading (Literata, Merriweather, Source Serif 4,
+  Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral); seven sans faces
+  made to be easy to read (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist,
+  Manrope, Space Grotesk); your system's serif, sans and mono; GitHub's Monaspace Neon, Argon
+  and Xenon; and the machine-made Weft, Sans and Heddle. They all ship with the app, so nothing
+  is fetched, and Literata, Merriweather, Source Serif 4, Newsreader and Inter change their
+  letter shapes with the text size (optical size). Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
   over the zoom menu or its buttons it zooms.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
@@ -155,17 +205,35 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 
 ### Everything else
 
-- **Dark mode that respects the page.** It follows your system, and the mode button can
-  recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
-  back to Clear.
-- **Find** with match counts (`Ctrl+F`), powered by PDF.js.
+- **Zoom where you point.** `Ctrl`+wheel (`⌘`+wheel on macOS) or a pinch on the trackpad zooms
+  around the point under the cursor. The page follows your fingers at once and is drawn again,
+  sharp, the moment you stop; passing Fit width or Fit page, it settles there for a moment. In
+  Markdown the wheel steps the text size and the paragraph under the cursor stays put. `+`, `-`
+  and the zoom menu zoom around the middle of the view.
+- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, the page, zoom,
+  find, the View menu, the Window menu, the Review panel and Settings. The View menu holds the
+  page view, raw Markdown, the Markdown font, size and width, panes, the page mode, how often
+  to check for changes, copying the path or name, print and Reduce PDF; only what applies to
+  the open file shows. Arrows move through a menu, `Esc` closes it. Everything is also in the
+  command palette.
+- **Focus mode.** Once you start reading, the toolbar fades after a couple of seconds, in place,
+  so the page does not move. Bring the pointer to the top of the window, press `Alt`, or tab
+  into it and it comes back; it stays while the Review panel, Settings, find, the palette or a
+  menu is open. Settings ("Hide the toolbar while reading") or the palette turns it off.
+- **Dark mode that respects the page.** It follows your system, and Page mode in the View menu
+  can recolour PDF pages themselves: Clear → Night → Invert → Sepia. Night and Sepia turn the paper
+  and the black text to their own colours but keep a figure's colours: a blue line stays blue,
+  only lighter or darker, so plots stay readable. They look the same on Windows, macOS and
+  Linux, and printing still gives white paper. Shift+click goes straight back to Clear.
+- **Find** with match counts (`Ctrl+F`), powered by PDF.js. The other panes on screen mark the
+  matches too.
 - **Print** with `Ctrl+P`, through your system's own dialog, with your printers, page range,
   copies, duplex and paper size. A PDF is redrawn at 150 dpi on white, so what comes out is
   the page, not the screen, and A4 prints at true size on A4. Markdown reflows across sheets,
   and an image gets a sheet of its own. With nothing to print to, it says so.
-- **Reduce a PDF** with the button next to Print. A pure-Rust pass (no Ghostscript) writes a
+- **Reduce a PDF** from the View menu, under Print. A pure-Rust pass (no Ghostscript) writes a
   smaller `{stem}_reduced.pdf` beside the original when it can, and opens it as a tab.
-- **Copy the path or the name** with the two buttons after zoom.
+- **Copy the path or the name** from the View menu.
 - **Opens where you ask.** `--page 12`, `--find "Figure 3"` and `--dest results` say where to
   land, or write it on the path the way a PDF link does: `paper.pdf#page=7&search=wake`. For
   Markdown, `--line 42` or `#line=42`; `--find` and `#search=` work there too. A file that is
@@ -174,27 +242,29 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **The title names the build** (`paper.pdf — pdf-next 0.17.0`), so a bug report can say
   which version without an About box.
 - **It tells you when there is a newer version.** A few seconds after launch it asks GitHub
-  once for the latest release; if there is one, the last toolbar button lights up and a press
-  opens the installer for your system from the Releases page in your browser. That one request
-  is the only network access the app makes on its own; nothing polls, and downloads only
-  happen when you press.
+  once for the latest release; if there is one, a button appears at the end of the toolbar,
+  and a press opens the installer for your system from the Releases page in your browser.
+  That one request is the only network access the app makes on its own; nothing polls, and
+  downloads only happen when you press.
 - **Settings** (the sliders button, or `Ctrl+,`) has the Markdown font, size and width, how
   figures are sized and captioned, editing in place, the interface font (System, machine-made
   Sans or Weft), the code font (System mono or a Monaspace face), how often to check for
-  changes, and About.
+  changes, focus mode, and About.
 - **Command palette** with `Ctrl+K` (`⌘K` on macOS): every action, setting and open file in
   one list, each with its shortcut. Type a few letters of each word (`mono neon`, `split r`,
   `go paper`) and press Enter. It only shows what applies to what you have open, and the
   commands you used last come first.
 - **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first
-  and last, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
-  `Ctrl+F` find, `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a
-  selection in rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
+  and last, `.`/`,` next and previous change, `+`/`-` or `Ctrl`+wheel zoom, `←`/`→` tabs (or the folder, with one file open),
+  `Ctrl+W` close, `Ctrl+F` find, `Ctrl+Shift+O` outline, `Alt+←`/`Alt+→` back and forward,
+  `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a selection in
+  rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
   edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
   after asking), `Ctrl+Z` undo an edit or a removed review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+N` or Enter (with a selection and the panel open) add a review,
-  `Ctrl+Shift+A` ask, `Esc` close the review box, `Ctrl+Shift+F` fit the window to the
-  content, `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
+  `Ctrl+Shift+A` copy the selection as a review quote, `Esc` close the review box,
+  `Ctrl+Shift+F` fit the window to the content, `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen
+  half, `Ctrl+Shift+Enter` undock, `F11` full screen, `F5` present, `Alt` show the toolbar.
 
 ## Install
 
@@ -637,6 +707,10 @@ read-only viewer and document on the same worker, so two PDFs side by side cost 
 open PDFs cost. That viewer is torn down as soon as its pane shows another file, the tab closes
 or the window goes back to one pane, and a reload destroys the document it replaces.
 
+The Pages sidebar draws its pictures at 112 px wide, only for the pages near the view, one at
+a time, and keeps at most 48 of them (under 14 MB of A4 pages on a 2x screen); closing the
+sidebar or opening another file frees them all. Link previews keep the last six.
+
 ## Building
 
 Needs [Rust](https://rustup.rs) and, on Windows, the MSVC build tools:
@@ -677,9 +751,11 @@ somewhere else. It also prints how long the first page took to draw and how long
 took to reload, and fails when either is over its budget for the platform.
 
 `tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend, one
-file per area: PDF viewing, Markdown rendering and find, tabs, panes, the command palette, the
-review card, panel and flow, direct edits, Settings, errors on the status line, and axe-core
-accessibility checks (contrast, labels, keyboard reach) on the main views. Run `bun install` and
+file per area: PDF viewing and page colours, what a rebuild changed, Markdown rendering and
+find, the outline, back and forward and link previews, zoom and remembered places, the quiet
+toolbar and presentation, tabs, panes, the command palette, the review card, panel and flow,
+direct edits, Settings, errors on the status line, and axe-core accessibility checks
+(contrast, labels, keyboard reach) on the main views. Run `bun install` and
 `bunx playwright install chromium` once first. `--coverage` also prints the line coverage of
 `src/*.mjs`.
 
@@ -693,7 +769,9 @@ CI prints Rust line coverage with `cargo llvm-cov --summary-only`; coverage is r
 enforced.
 
 The fixtures are built by `python3 tests/make_fixtures.py`, which writes the same bytes on
-every machine, so a change to them is a change someone made.
+every machine, so a change to them is a change someone made. The one exception is
+`navigate.pdf`, a short paper with an outline and links, made by pdflatex from `navigate.tex`
+beside it (the file says how).
 
 All three run on Windows, macOS and Linux for every push, and a release stays a draft until
 each platform's bundle has opened a document.
@@ -733,7 +811,8 @@ file that records its source and checksum.
 | Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
 | [highlight.js](https://highlightjs.org) | 11.12.0 | Colours code blocks: Bash, C, C++, CMake, diff, Fortran, INI, JavaScript, JSON, Julia, LaTeX, Makefile, MATLAB, Python, Rust, shell, YAML. | BSD 3-Clause |
 | [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
-| [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon, Xenon, Radon and Krypton: optional Markdown and code fonts. | SIL OFL 1.1 |
+| [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon and Xenon: optional Markdown and code fonts. | SIL OFL 1.1 |
+| Reading fonts from [Google Fonts](https://fonts.google.com), packaged by [Fontsource](https://fontsource.org) | Fontsource 5.3.0 (Source Serif 4, Source Sans 3: 5.3.1) | Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope and Space Grotesk: optional Markdown fonts, latin and latin-ext subsets in `vendor/fonts` (`tools/update_fonts.sh`). | SIL OFL 1.1 |
 | [dockview](https://github.com/dockview/dockview) | 8.8.0 | The pane layout: tiles with tabs, split and moved by dragging. | MIT |
 | [diff-match-patch](https://github.com/google/diff-match-patch) | 1.0.5 | The word-by-word before/after of an applied review. | Apache-2.0 |
 
@@ -788,6 +867,8 @@ contributors, under the Apache License 2.0.
 The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https://github.com/machine-made/type) under the SIL Open Font License 1.1; their licences are in `src/vendor/machine-made-type/`.
 
 The Monaspace fonts are © 2023 GitHub, from [githubnext/monaspace](https://github.com/githubnext/monaspace) under the SIL Open Font License 1.1; the licence is in `src/vendor/monaspace/OFL.txt`.
+
+The reading fonts (Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope, Space Grotesk) are © their authors, from Google Fonts as packaged by Fontsource, under the SIL Open Font License 1.1; each family's licence and version are in `src/vendor/fonts/<family>/`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.
 

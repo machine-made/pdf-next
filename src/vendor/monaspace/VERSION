@@ -1,11 +1,9 @@
-Monaspace Neon, Argon, Xenon, Radon and Krypton (variable WOFF2: wght 200-800, wdth 100-125, slnt -11-0),
+Monaspace Neon, Argon and Xenon (variable WOFF2: wght 200-800, wdth 100-125, slnt -11-0),
 SIL Open Font License 1.1 (OFL.txt), Copyright (c) 2023 GitHub. Unmodified; files renamed only.
 Source: https://github.com/githubnext/monaspace v1.400 (f31794b6e9e65698a062262e2f826f679dcb7070), fonts/Web Fonts/Variable Web Fonts/
 Used for the Markdown body text and for code when chosen.
 Update with: tools/update_monaspace.sh <path to a githubnext/monaspace checkout>
 SHA-256:
   ad0ad84cb65ab56ea82b3098800403aeec1bbc445ba24da0dc87f439b3883db6  MonaspaceArgon-Variable.woff2
-  f1357532c080c3f976e35ec1d18a92b423d4261103acb7d2cdccffa03a989fad  MonaspaceKrypton-Variable.woff2
   6569968f448ae856ab5b57dff1f13b109b220ca8e3f664169e135fcb5c4f0721  MonaspaceNeon-Variable.woff2
-  6411b3c2b3e02e3913248184800d6c5a83bb1ccd1472daeb7bfee605c176cb33  MonaspaceRadon-Variable.woff2
   eea00c02f4c00f09fd50e80efdb8341975f9eb8c82720ce50f44c19a962996c5  MonaspaceXenon-Variable.woff2

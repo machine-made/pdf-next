@@ -3,7 +3,7 @@
 // one-second poll, and the mid-build gap behaviour.
 import { annotate } from './annotate.mjs';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
@@ -16,6 +16,9 @@ import { BEFORE_LIMIT, diffView, passageSource, passageText, wordDiff } from '..
 import { createHash } from 'node:crypto';
 import { fuzzyScore, isTextField, matchCommand, rankCommands, selectChoices, shortcutKeys } from '../src/palette.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
+import { columnAt, linkDestination, locateDestination } from '../src/navigate.mjs';
+import { PLACES_KEY, PLACES_MAX, folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from '../src/places.mjs';
+import { ZOOM_MAX, ZOOM_MIN, clampScale, snapScale, wheelFactor } from '../src/zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -60,7 +63,7 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
   const sync = await readFile('tools/sync_release_notes.mjs', 'utf8');
   assert.match(sync, /'tools\/release_notes\.mjs', tag/, 'Synced notes are exactly what release_notes.mjs prints.');
   assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
-  assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
+  assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\) && name === title\) \{\s*continue;/, 'A release whose notes and title match is not edited.');
   if (process.platform !== 'win32') {
     // Against a stand-in gh (a shell script, so not on Windows): generated and download-only notes follow the
     // changelog; notes written by hand are never replaced.
@@ -71,9 +74,11 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
     const bin = mkdtempSync(join(tmpdir(), 'pdf-next-gh-'));
     const generatedBody = execFileSync(process.execPath, ['tools/release_notes.mjs', '0.16.4'], { encoding: 'utf8' }).replace('- ', '- Old wording: ');
     const releases = [
-      { tag: 'v0.16.4', body: generatedBody },
-      { tag: 'v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
-      { tag: 'v0.16.0', body: 'pdf-next by machine-made.\n\n- Review box: Esc, × and Cancel close it.' },
+      { tag: 'v0.16.4', name: 'pdf-next v0.16.4', body: generatedBody },
+      { tag: 'v0.5.0', name: 'pdf-next v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
+      { tag: 'v0.16.0', name: 'pdf-next v0.16.0', body: 'pdf-next by machine-made.\n\n- Review box: Esc, × and Cancel close it.' },
+      { tag: 'v0.17.0', name: 'pdf-next v0.17.0', body: execFileSync(process.execPath, ['tools/release_notes.mjs', '0.17.0'], { encoding: 'utf8' }) },
+      { tag: 'v0.16.5', name: 'pdf-next v0.16.5', body: execFileSync(process.execPath, ['tools/release_notes.mjs', '0.16.5'], { encoding: 'utf8' }) },
     ].map((release) => JSON.stringify(release)).join('\n');
     writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in *latest*) echo v0.16.4 ;; *paginate*) cat <<'JSON'\n${releases}\nJSON\n;; *) exit 1 ;; esac\n`);
     chmodSync(join(bin, 'gh'), 0o755);
@@ -84,6 +89,8 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
       assert.match(out, /would update v0\.16\.4\n/, 'Generated release notes follow CHANGELOG.md.');
       assert.match(out, /would update v0\.5\.0\n/, 'Download-only notes get their CHANGELOG.md section.');
       assert.doesNotMatch(out, /v0\.16\.0/, 'Release notes written by hand are left alone.');
+      assert.match(out, /would update v0\.17\.0 \(title: pdf-next 0\.17\.0 · Margin\)\n/, 'A named minor gets its name in the release title.');
+      assert.doesNotMatch(out, /v0\.16\.5/, 'A release whose notes and title already match is not edited.');
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
@@ -947,7 +954,7 @@ for (const kind of ['markdown', 'pdf']) {
   let chosen = null;
   appFunction('applyZoomChoice', 'function ', {
     state: { file: { kind: 'image' } },
-    setImageScale(value) { chosen = value; },
+    zoomImageTo(value) { chosen = value; },
   })('page-fit');
   assert.equal(chosen, 'page-fit', 'Fit page in the zoom box keeps fitting when the window changes.');
 }
@@ -1000,11 +1007,12 @@ for (const kind of ['markdown', 'pdf']) {
     image: { removeAttribute() {} }, markdown: {}, markdownRaw: {},
   };
   const open = appFunction('openFile', 'async function openPath(', {
-    state, ui, printPending: false,
+    state, ui, printPending: false, presentation: null,
     flushCommentSave: async () => {}, captureView: () => null,
     clearPrintPages() {}, setTitle() {}, setStatus() {},
     document: { body: { classList: { add() {}, toggle() {}, remove() {} } } },
     showPdf: async () => {}, loadReviews: async () => {}, syncPageViewMenu() {},
+    nav: { refresh() {} },
   });
   await open({ path: 'a.pdf', name: 'a.pdf', kind: 'pdf' }, { preserveView: true });
   assert.equal(state.pendingNote, note, 'Reloading the same document must preserve the selected quote.');
@@ -1024,6 +1032,8 @@ for (const pauseAt of ['save', 'close']) {
   const pause = () => new Promise((resolve) => { finish = resolve; started(); });
   const close = appFunction('closeAll', 'function cycleTab(', {
     state,
+    presentation: null,
+    rememberPlace() {},
     panes: { active: false },
     noteSaveInFlight: false,
     flushCommentSave: pauseAt === 'save' ? pause : async () => {},
@@ -1479,7 +1489,7 @@ assert.match(
 );
 assert.match(
   app,
-  /await showImage\(file, !view && !keepWindow, view, generation\)/,
+  /await showImage\(file, !view && !keepWindow, view, generation, place\)/,
   'Images must refit only on a fresh open — not on reload, not on a tab switch, and not when stepping through a folder.',
 );
 assert.match(
@@ -1680,8 +1690,8 @@ const capabilities = JSON.parse(
 );
 assert.deepEqual(
   capabilities.permissions,
-  ['core:event:allow-listen', 'core:event:allow-unlisten'],
-  'The webview needs events and nothing else; every other permission is reachable by injected script.',
+  ['core:event:allow-listen', 'core:event:allow-unlisten', 'core:window:allow-is-fullscreen', 'core:window:allow-set-fullscreen'],
+  'The webview needs events and full screen (F11, F5) and nothing else; every other permission is reachable by injected script.',
 );
 
 // The command line is a contract for programs, not just people: it answers
@@ -2038,9 +2048,8 @@ for (const file of [
   'monaspace/MonaspaceNeon-Variable.woff2',
   'monaspace/MonaspaceArgon-Variable.woff2',
   'monaspace/MonaspaceXenon-Variable.woff2',
-  'monaspace/MonaspaceRadon-Variable.woff2',
-  'monaspace/MonaspaceKrypton-Variable.woff2',
   'monaspace/OFL.txt',
+  'fonts/fonts.css',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -2268,11 +2277,30 @@ assert.match(page, /id="reviewChip"/, 'A chip after a short hold adds a review.'
 assert.match(page, /id="copyPath"/, 'The toolbar copies the full path after zoom.');
 assert.match(page, /id="copyName"/, 'The toolbar copies the file name after zoom.');
 assert.match(page, /id="reduce"/, 'PDF toolbar can write a smaller name_reduced.pdf.');
-assert.match(
-  page,
-  /id="ask"[\s\S]*?#i-ask[\s\S]*?id="note"[\s\S]*?#i-add-review[\s\S]*?id="notes"[\s\S]*?#i-review/,
-  'Copy selection, add review, and review panel each have their own icon.',
-);
+// The quiet toolbar: about ten controls; the rest live in the View and Window
+// menus, which keep the controls' ids, or in the palette and shortcuts.
+{
+  const bar = page.slice(page.indexOf('<header id="bar">'), page.indexOf('</header>'));
+  const outside = bar.replace(/<div id="(viewMenu|dockMenu)" class="popover"[\s\S]*?\n {8}<\/div>\n/g, '');
+  const controls = outside.match(/<(button|select|input)\b/g) || [];
+  assert.ok(controls.length <= 16, `The toolbar keeps to a few controls (${controls.length}, counting each file kind's own).`);
+  for (const id of ['pageView', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'mode', 'poll', 'copyPath', 'copyName', 'print', 'reduce']) {
+    assert.match(bar, new RegExp(`<div id="viewMenu"[\\s\\S]*id="${id}"[\\s\\S]*id="dockMenuButton"`), `${id} is in the View menu.`);
+  }
+  for (const id of ['dockTop', 'dockLeft', 'dockCenter', 'dockRight', 'dockBottom', 'wrap', 'fullScreen', 'present']) {
+    assert.match(bar, new RegExp(`<div id="dockMenu"[\\s\\S]*id="${id}"`), `${id} is in the Window menu.`);
+  }
+  assert.doesNotMatch(bar, /id="(ask|note)"/, 'Ask and Add review live on their shortcuts, the card and the right-click menu.');
+  assert.match(bar, /id="notes"[^>]*>\s*<svg class="icon"><use href="#i-review"/, 'The Review panel keeps its toolbar button.');
+  assert.match(bar, /id="viewMenuButton"[^>]*aria-haspopup="dialog" aria-expanded="false" aria-controls="viewMenu"/);
+  assert.match(styles, /#update:not\(\.available\) \{\s*display: none/, 'The update button only shows when there is an update.');
+  const capabilities = JSON.parse(await readFile('src-tauri/capabilities/default.json', 'utf8')).permissions;
+  for (const permission of ['core:window:allow-set-fullscreen', 'core:window:allow-is-fullscreen']) {
+    assert.ok(capabilities.includes(permission), `The window may ${permission.split('allow-')[1].replace('-', ' ')}.`);
+  }
+  assert.match(app, /event\.key === 'F11' \|\| event\.key === 'F5'/, 'F11 is full screen and F5 presents.');
+  assert.match(page, /id="setFocusMode" type="checkbox" checked/, 'Settings has the focus mode switch, on by default.');
+}
 assert.match(
   app,
   /invoke\('reduce_pdf'/,
@@ -2688,7 +2716,7 @@ for (const [kind, signature, panels, paints] of [
 {
   const selectors = [];
   await appFunction('applyTarget', '/// Replace each element', {
-    state: { file: { kind: 'markdown' } }, ui: { markdown: {} },
+    state: { file: { kind: 'markdown' } }, ui: { markdown: {} }, nav: { push() {} },
     setRaw() {}, unwrapMarks: (root, selector) => selectors.push(selector),
   })({ line: null, search: null, page: null });
   assert.deepEqual(selectors, ['mark.aim:not(.find)']);
@@ -3176,7 +3204,7 @@ for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machi
 }
 assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
 // Monaspace: each face is declared, offered for the body text and for code.
-for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
+for (const face of ['Neon', 'Argon', 'Xenon']) {
   const value = `monaspace-${face.toLowerCase()}`;
   assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "Monaspace ${face}";`), `Monaspace ${face} has a font face.`);
   assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "Monaspace ${face}"`));
@@ -3187,11 +3215,68 @@ for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
 assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).every((line) => line.includes('--code-font:')),
   'Every monospace stack goes through --code-font.');
 
-// The Markdown font menu is clustered: TeX, System, Monaspace, then machine-made.
+// The Markdown font menu is clustered: TeX, Serif, Sans, System, Monaspace, then machine-made.
 {
   const menu = page.slice(page.indexOf('<select id="mdFont"'), page.indexOf('</select>', page.indexOf('<select id="mdFont"')));
   const groups = [...menu.matchAll(/<optgroup label="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(groups, ['TeX', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+  assert.deepEqual(groups, ['TeX', 'Serif', 'Sans', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+  const group = (label) => {
+    const at = menu.indexOf(`<optgroup label="${label}">`);
+    return [...menu.slice(at, menu.indexOf('</optgroup>', at)).matchAll(/<option value="([^"]+)">([^<]+)<\/option>/g)].map((m) => [m[1], m[2]]);
+  };
+  const reading = [...group('Serif'), ...group('Sans')];
+  assert.deepEqual(reading.map(([, name]) => name), ['Literata', 'Merriweather', 'Source Serif 4', 'Libre Baskerville', 'Lora', 'EB Garamond',
+    'Crimson Pro', 'Newsreader', 'Spectral', 'Atkinson Hyperlegible Next', 'Lexend', 'Inter', 'Source Sans 3', 'Geist', 'Manrope', 'Space Grotesk'],
+  'The reading fonts are offered as nine serifs and seven sans faces.');
+  assert.deepEqual(group('System').map(([value]) => value), ['serif', 'sans', 'mono'], 'System fonts: Serif, Sans, Mono.');
+  // Each reading font is vendored with its licence and a VERSION (pinned in
+  // tools/update_fonts.sh, every file hashed), declared in fonts.css with its
+  // unicode-range subsets, and set by a data-font rule with fallbacks.
+  assert.match(page, /<link rel="stylesheet" href="\.\/vendor\/fonts\/fonts\.css" \/>/, 'The reading fonts stylesheet is linked.');
+  const faces = await readFile('src/vendor/fonts/fonts.css', 'utf8');
+  const updater = await readFile('tools/update_fonts.sh', 'utf8');
+  for (const [value, family] of reading) {
+    const dir = `src/vendor/fonts/${value}`;
+    assert.match(await readFile(`${dir}/OFL.txt`, 'utf8'), /SIL Open Font License, Version 1\.1/, `${family} ships its OFL licence.`);
+    const list = await readFile(`${dir}/VERSION`, 'utf8');
+    const pinned = new RegExp(`^(@fontsource(?:-variable)?/${value})@(\\d+\\.\\d+\\.\\d+)\\|${family}\\|`, 'm').exec(updater);
+    assert.ok(pinned, `tools/update_fonts.sh pins ${family}.`);
+    assert.ok(list.startsWith(`${family} (`) && list.includes(`Source: npm ${pinned[1]} ${pinned[2]} `), `${family} VERSION names its package and version.`);
+    const hashes = [...list.matchAll(/^  ([0-9a-f]{64})  (\S+)$/gm)];
+    const woff2 = (await readdir(dir)).filter((name) => name.endsWith('.woff2'));
+    assert.deepEqual(hashes.map((m) => m[2]).sort(), ['OFL.txt', ...woff2].sort(), `${family} VERSION hashes every file.`);
+    assert.ok(woff2.length && woff2.every((name) => /-latin(-ext)?-/.test(name)), `${family} ships the latin and latin-ext subsets only.`);
+    for (const [, hash, file] of hashes) {
+      assert.equal(createHash('sha256').update(await readFile(`${dir}/${file}`)).digest('hex'), hash, `${dir}/${file} must match its VERSION hash.`);
+    }
+    const rules = faces.split('@font-face').filter((rule) => rule.includes(`font-family: "${family}";`));
+    assert.equal(rules.length, woff2.length, `${family} has one @font-face per file.`);
+    for (const rule of rules) {
+      const file = /src: url\('\.\/([^']+)'\) format\('woff2'\);/.exec(rule)?.[1];
+      assert.ok(file?.startsWith(`${value}/`) && woff2.includes(file.slice(value.length + 1)), `${family} @font-face points at a vendored file (${file}).`);
+      assert.match(rule, /unicode-range: U\+/, `${family} @font-face keeps its unicode-range.`);
+    }
+    const rule = new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "${family}", [^;]*(serif|sans-serif);([^}]*)\\}`).exec(styles);
+    assert.ok(rule, `${family} has a data-font rule with fallbacks.`);
+    assert.equal(/font-optical-sizing: auto;/.test(rule[2]), woff2.some((name) => name.includes('-opsz-')), `${family}: optical sizing follows its opsz axis.`);
+  }
+  assert.deepEqual((await readdir('src/vendor/fonts')).filter((name) => name !== 'fonts.css').sort(), reading.map(([value]) => value).sort(),
+    'src/vendor/fonts holds exactly the offered reading fonts.');
+}
+// Monaspace Krypton and Radon were removed in 0.18: no file, rule, menu or
+// mention is left (the OFL text lists them among its reserved names and stays).
+{
+  const walk = async (dir) => (await Promise.all((await readdir(dir, { withFileTypes: true })).map((entry) => (entry.isDirectory()
+    ? walk(`${dir}/${entry.name}`) : [`${dir}/${entry.name}`])))).flat();
+  const skip = ['src/vendor/monaspace/OFL.txt', 'tools/check_frontend.mjs', 'tests/browser/fonts.mjs'];
+  const texts = [...await walk('src'), ...await walk('tools'), ...await walk('tests'), 'README.md', 'site/index.html']
+    .filter((file) => !skip.includes(file) && !file.startsWith('src/vendor/pdfjs/') && /\.(mjs|js|css|html|md|sh|txt)$|VERSION$/.test(file));
+  for (const file of texts) {
+    assert.doesNotMatch(await readFile(file, 'utf8'), /krypton|radon/i, `${file} must not mention Monaspace Krypton or Radon.`);
+  }
+  for (const face of ['Krypton', 'Radon']) {
+    await assert.rejects(access(`src/vendor/monaspace/Monaspace${face}-Variable.woff2`), `Monaspace ${face} is no longer shipped.`);
+  }
 }
 
 // Review card buttons: the JS list and the Rust list are the same words, and a
@@ -3246,7 +3331,7 @@ assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.noSty
   assert.match(app, /function loadPdf\(url\) \{\s*return getDocument\(\{[\s\S]*?worker: pdfWorker,/, 'Pane viewers share the one worker.');
   assert.match(viewers, /dispose\(\) \{[\s\S]*?setDocument\(null\)[\s\S]*?abort\.abort\(\);[\s\S]*?task\?\.destroy\(\)/,
     'A pane viewer drops its pages, its listeners and its document.');
-  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
+  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*changes\?\.load\(pdf, path\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
   assert.match(viewers, /addEventListener\('pane-detached', \(\) => \{\s*if \(viewers\.get\(path\) === viewer\) drop\(path\);/,
     'A viewer goes with its copy.');
   assert.match(panesSource, /const detach = \(element\) => \{[\s\S]*?new Event\('pane-detached'\)/, 'Panes say when a copy leaves.');
@@ -3482,12 +3567,123 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
   assert.match(readme, /\*\*Command palette\*\*/);
   assert.match(readme, /`Ctrl\+K` command palette/);
 }
+// Finding your way (src/navigate.mjs): the sidebar, back and forward, link previews.
+{
+  const navigate = await readFile('src/navigate.mjs', 'utf8');
+  assert.equal(linkDestination('#section.2'), 'section.2', 'A named destination comes back as its name.');
+  assert.deepEqual(linkDestination(`#${escape(JSON.stringify([{ num: 5, gen: 0 }, { name: 'XYZ' }, 72, 700, null]))}`),
+    [{ num: 5, gen: 0 }, { name: 'XYZ' }, 72, 700, null], 'An explicit destination comes back as its array.');
+  assert.equal(linkDestination('#page=3'), null, 'A hash with parameters is not a destination.');
+  assert.equal(linkDestination('#'), null);
+  const doc = {
+    numPages: 4,
+    getDestination: async (name) => (name === 'eq' ? [{ num: 9, gen: 0 }, { name: 'XYZ' }, 100, 500, null] : null),
+    getPageIndex: async () => 1,
+    cachedPageNumber: () => null,
+  };
+  assert.deepEqual(await locateDestination(doc, 'eq'), { page: 2, explicit: [{ num: 9, gen: 0 }, { name: 'XYZ' }, 100, 500, null], top: 500, left: 100 });
+  assert.deepEqual((await locateDestination(doc, [3, { name: 'FitH' }, 400]))?.page, 4, 'A page index destination lands on that page.');
+  assert.equal(await locateDestination(doc, 'missing'), null, 'A destination that does not exist goes nowhere.');
+  const line = (x, y, width, str = 'text') => ({ str, transform: [10, 0, 0, 10, x, y], width });
+  const twoColumns = { items: [line(50, 490, 200), line(50, 478, 200), line(300, 490, 200), line(300, 478, 200)] };
+  assert.deepEqual(columnAt(twoColumns, 500, 320), [300, 500], 'A preview of the right column takes that column.');
+  assert.deepEqual(columnAt(twoColumns, 500, 60), [50, 250], 'And of the left column the left one.');
+  assert.deepEqual(columnAt(twoColumns, 500, null), [50, 500], 'Without a left edge it takes the whole measure.');
+  const numbered = { items: [line(80, 490, 200), line(80, 478, 300), line(450, 490, 20, '(1)')] };
+  assert.deepEqual(columnAt(numbered, 500, 100), [80, 470], 'An equation number alone at the right is part of the column.');
+  assert.equal(columnAt({ items: [] }, 500, 100), null);
+
+  assert.match(page, /<aside id="outline" hidden aria-label="Outline and pages">/, 'The sidebar is off until asked for.');
+  assert.match(page, /<div id="outlineTree" role="tree"/);
+  assert.match(page, /<div id="outlineGrip" role="separator"[^>]*tabindex="0"/, 'The sidebar edge is a separator the keyboard can reach.');
+  assert.match(page, /<div id="linkPreview" role="tooltip" hidden><\/div>/, 'A link preview is a tooltip.');
+  const viewMenu = page.slice(page.indexOf('id="viewMenu"'), page.indexOf('id="dockMenuButton"'));
+  assert.match(viewMenu, /<button id="outlineToggle" type="button" class="menu-row page-view-only"[^>]*aria-pressed="false"/, 'The sidebar opens from the View menu, not a toolbar button of its own.');
+  assert.match(app, /import \{ createNavigator \} from '\.\/navigate\.mjs';/);
+  for (const [label, shortcut] of [['Show the outline', 'Ctrl\\+Shift\\+O'], ['Hide the outline', 'Ctrl\\+Shift\\+O'], ['Back', 'Alt\\+←'], ['Forward', 'Alt\\+→']]) {
+    assert.match(app, new RegExp(`label: '${label}', group: 'View', shortcut: '${shortcut}'`), `The palette offers ${label} with its shortcut.`);
+  }
+  for (const jump of [/case 'g':\n\s+nav\.push\(\);\n\s+ui\.markdownStage/, /case 'g':\n\s+nav\.push\(\);\n\s+pdfViewer\.currentPageNumber/,
+    /if \(again \|\| !findPushed\) \{\n\s+nav\.push\(\);/, /async function applyTarget\(target\) \{[^}]*\}\n\s+nav\.push\(\);/]) {
+    assert.match(app, jump, `A jump remembers where it started: ${jump}`);
+  }
+  assert.match(navigate, /linkService\.goToDestination = async/, 'Links in a PDF go through the navigator, which remembers the place.');
+  assert.doesNotMatch(navigate, /scrollIntoView\(\{ block: 'nearest'/, 'The sidebar scrolls itself, never the panes behind it.');
+  assert.match(navigate, /const THUMB_CACHE = \d+;/, 'The page pictures are bounded.');
+  assert.match(styles, /#outline \{[^}]*background: var\(--chrome\);/, 'The sidebar uses the theme tokens.');
+  assert.match(styles, /body\.outline-open #stage > #viewerContainer,\nbody\.outline-open #stage > #markdownStage \{\n\s+left: var\(--outline-width/,
+    'The sidebar pushes the page instead of covering it.');
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\n\s+#linkPreview \{\n\s+animation: none;/, 'The preview does not fade in under reduced motion.');
+  assert.match(readme, /### Find your way/);
+  assert.match(readme, /`Ctrl\+Shift\+O` outline, `Alt\+←`\/`Alt\+→` back and forward/);
+}
+// Places: one store, newest first, capped, and a view update never reorders it.
+{
+  const map = new Map();
+  const store = { getItem: (key) => map.get(key) ?? null, setItem: (key, value) => map.set(key, value) };
+  const file = (n) => ({ path: `/p/${n}.pdf`, name: `${n}.pdf`, kind: 'pdf' });
+  for (let n = 0; n < PLACES_MAX + 20; n += 1) notePlace(file(n), null, { opened: true, now: n, store });
+  assert.equal(readPlaces(store).length, PLACES_MAX, `At most ${PLACES_MAX} files are kept.`);
+  assert.equal(recentPlaces(8, store)[0].path, `/p/${PLACES_MAX + 19}.pdf`, 'The file opened last comes first.');
+  assert.equal(placeOf('/p/0.pdf', store), null, 'The oldest files are dropped first.');
+  notePlace(file(100), { kind: 'pdf', page: 3 }, { now: 1e6, store });
+  assert.deepEqual(placeOf('/p/100.pdf', store), { kind: 'pdf', page: 3 }, 'A view is kept per file.');
+  assert.equal(readPlaces(store).findIndex((e) => e.path === '/p/100.pdf'), PLACES_MAX + 19 - 100, 'Saving a view does not move the file up the list.');
+  assert.equal(readPlaces(store).find((e) => e.path === '/p/100.pdf').opened, 100, 'nor change when it was opened.');
+  notePlace(file(100), null, { opened: true, now: 2e6, store });
+  assert.deepEqual([recentPlaces(1, store)[0].path, placeOf('/p/100.pdf', store)?.page], ['/p/100.pdf', 3], 'Opening it again moves it up and keeps its place.');
+  forgetPlace('/p/100.pdf', store);
+  assert.equal(placeOf('/p/100.pdf', store), null, 'A forgotten file is gone.');
+  map.set(PLACES_KEY, '{broken');
+  assert.deepEqual(readPlaces(store), [], 'A damaged store reads as empty.');
+  const full = { getItem: () => null, setItem() { throw new Error('quota'); } };
+  notePlace(file(1), null, { store: full });
+  assert.deepEqual([folderOf('/a/b/c.pdf'), folderOf('C:\\x\\y.md'), folderOf('/c.pdf')], ['/a/b', 'C:\\x', '/']);
+  const now = Date.UTC(2026, 9, 30, 12);
+  assert.deepEqual([0, 5, 180, 60 * 30, 60 * 24 * 3].map((minutes) => openedLabel(now - minutes * 60_000, now)),
+    ['just now', '5 min ago', '3 h ago', 'yesterday', '3 days ago']);
+}
+
+// Ctrl+wheel and pinch: a notch is a 25% step, a pinch follows the fingers,
+// and a fit within 3% is a detent.
+{
+  assert.equal(wheelFactor({ deltaY: -100 }), 1.25);
+  assert.equal(wheelFactor({ deltaY: 120 }), 0.8);
+  assert.equal(wheelFactor({ deltaY: -3, deltaMode: 1 }), 1.25, 'Lines count as pixels.');
+  assert.ok(Math.abs(wheelFactor({ deltaY: -4 }) - Math.exp(0.04)) < 1e-12, 'A pinch delta is followed exactly.');
+  assert.deepEqual([clampScale(10), clampScale(0.01), clampScale(0.05, 0.1)], [ZOOM_MAX, ZOOM_MIN, 0.1],
+    'The zoom stays in range, or where it started when that was outside it.');
+  assert.deepEqual(snapScale(1.47, { 'page-width': 1.5, 'page-fit': 1.2 }), { scale: 1.5, preset: 'page-width' });
+  assert.deepEqual(snapScale(1.4, { 'page-width': 1.5 }), { scale: 1.4, preset: null }, 'Further away it does not snap.');
+  assert.match(app, /pinchZoom\(window, \{ start: startPinch \}\)/, 'A pinch anywhere is caught, so the webview never zooms its own page.');
+  assert.match(app, /label: 'Open recent…', group: 'File'[^\n]*palette\.open\('Open recent: '\)/, 'The palette opens the recent files.');
+  assert.match(page, /<section id="recent"[^>]*hidden>/, 'The recent list starts hidden.');
+  assert.match(readme, /remembers your place/i);
+}
 assert.doesNotMatch(app, /chip\.tabIndex = -1/, 'Tab reaches the review card buttons.');
 assert.match(app, /comment\.setAttribute\('aria-label', 'Review comment'\)/, 'A review comment box has a name.');
 assert.match(styles, /\.review-row \{[^}]*--fg-dim: var\(--review-dim\);/,
   'Dim text on a review row uses the colour that reads on every tint.');
 assert.match(styles, /\.review-no \{[^}]*color: var\(--review-no-fg\);/, 'Review numbers keep their contrast in both themes.');
 await access('tests/browser/run.mjs');
+
+// 0.18: what a rebuild changed, colours that survive Night, panes that fill the window.
+{
+  const colours = await readFile('src/page-colors.mjs', 'utf8');
+  const changes = await readFile('src/pdf-changes.mjs', 'utf8');
+  const panesSource = await readFile('src/panes.mjs', 'utf8');
+  assert.doesNotMatch(app, /pageColors/, 'Every webview draws plain pages; pdf-next recolours them itself.');
+  assert.doesNotMatch(colours, /\.filter\s*=/, 'Recolouring uses blend modes WebKit draws, never ctx.filter.');
+  assert.match(colours, /globalCompositeOperation = 'color';\s*context\.drawImage\(copy\.canvas, 0, 0\);/, 'Colours keep their hue in Night and Sepia.');
+  assert.match(styles, /body\.mode-night \.pdfViewer \.canvasWrapper canvas:not\(\[data-recolored\]\)/, 'A page is never shown white before it is recoloured.');
+  assert.match(changes, /export const CHANGE_BUDGET = \{ pages: [\d_]+, ms: [\d_]+ \}/, 'Background comparison has a page and time budget.');
+  assert.match(app, /case '\.':\s*case ',':\s*stepChange\(key === '\.' \? 1 : -1\);/, '. and , go to the next and previous change.');
+  assert.match(app, /label: 'Next change', group: 'View', shortcut: '\.'/, 'Next change is in the palette.');
+  assert.match(app, /label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl\+Shift\+M'/, 'Maximising a pane is in the palette.');
+  assert.match(panesSource, /live\.api\.maximize\(\)/, 'Maximising uses dockview\'s own maximised group.');
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*#markdown \.changed\.changed-fade,\s*\.change-marks\.fading > i \{/, 'Without motion a change is marked without fading.');
+  assert.match(readme, /`\.`\/`,` next and previous change/);
+}
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
 
@@ -3505,4 +3701,29 @@ console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
   }
   assert.ok(site.includes('{{version}}'), 'The website names the version through {{version}}, filled in by pages.yml.');
   for (const match of site.matchAll(/(?:src|href)="((?:shots|fonts)\/[^"]+|icon\.png)"/g)) await access(`site/${match[1]}`);
+  // Every shot on the page is one tools/screenshots.mjs takes, so a release can
+  // replace it; the committed ones are the fallback.
+  const { OUTPUTS } = await import('./screenshots.mjs');
+  const shown = new Set([...site.matchAll(/shots\/([\w.-]+)/g)].map((match) => match[1]));
+  assert.ok(shown.size >= 5 && shown.has('social.png'), 'The website shows its screenshots and a social card.');
+  for (const shot of shown) assert.ok(OUTPUTS.includes(shot), `site/index.html shows shots/${shot}, which tools/screenshots.mjs does not take.`);
+  for (const shot of OUTPUTS) await access(`site/shots/${shot}`);
+  const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+  const pages = await readFile('.github/workflows/pages.yml', 'utf8');
+  const release = await readFile('.github/workflows/release.yml', 'utf8');
+  assert.match(ci, /node tools\/screenshots\.mjs --bin src-tauri\/target\/release\/pdf-next/, 'CI takes the screenshots in the app it built.');
+  assert.match(pages, /node tools\/screenshots\.mjs/, 'A release retakes the website screenshots.');
+  assert.match(pages, /concurrency:\s*\n\s*group: apt-repository/, 'The website never pushes to gh-pages while apt does.');
+  assert.match(release, /website:\s*\n\s*needs: \[publish, apt\][\s\S]*?uses: \.\/\.github\/workflows\/pages\.yml/, 'release.yml publishes the website after apt.');
+}
+
+// Release names: from 0.17 on, every minor version has a one-word name, used in its release titles.
+{
+  const names = JSON.parse(await readFile('tools/release-names.json', 'utf8'));
+  for (const [minor, name] of Object.entries(names)) {
+    assert.match(minor, /^\d+\.\d+$/, `release-names.json keys are minor versions (${minor}).`);
+    assert.match(name, /^[A-Z][a-z]+$/, `A release name is one capitalised word (${name}).`);
+  }
+  const current = JSON.parse(await readFile('package.json', 'utf8')).version.split('.').slice(0, 2).join('.');
+  assert.ok(names[current], `Version ${current} needs a name in tools/release-names.json.`);
 }
