@@ -1,5 +1,6 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
+import { canvasFilters, recolorRendered } from './page-colors.mjs';
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
 import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
@@ -58,6 +59,8 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
+document.body.classList.toggle('recolored-pages', !canvasFilters);
+const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
 /// The Markdown copies shown in panes that are not live (see src/panes.mjs).
@@ -306,7 +309,8 @@ const paneViewers = createPaneViewers({
     ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
   }),
   EventBus,
-  pageColors: () => PAGE_COLORS[state.mode] || null,
+  pageColors: () => pageColorsFor(state.mode),
+  recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
   text: { collect: collectTextParts, wrap: wrapSpanParts },
   onPick: (path) => pickPane(path),
@@ -314,6 +318,7 @@ const paneViewers = createPaneViewers({
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
   },
 });
+eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
@@ -2764,7 +2769,7 @@ function applyZoomChoice(value) {
 /// and never calls _resetCanvas(). The old bitmap stays, so leaving sepia used
 /// to give a white page with brown text. Dropping each canvas is the fix.
 function applyPageColors() {
-  const pageColors = PAGE_COLORS[state.mode] || null;
+  const pageColors = pageColorsFor(state.mode);
   pdfViewer.pageColors = pageColors;
   const pages = pdfViewer._pages;
   if (!Array.isArray(pages) || !state.document) {

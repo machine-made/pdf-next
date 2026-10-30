@@ -195,7 +195,7 @@ function paintPdfPage(page, number, textPages, reviews, { collect, wrap }) {
 /// `load(url)` starts a PDF.js loading task on the app's shared worker;
 /// `makeViewer(options)` builds a viewer like the app's; `onPick(path)` makes
 /// the pane live and resolves when it is.
-export function createPaneViewers({ load, makeViewer, EventBus, pageColors, spreadMode, text, onPick, remember }) {
+export function createPaneViewers({ load, makeViewer, EventBus, pageColors, recolor, spreadMode, text, onPick, remember }) {
   const viewers = new Map();
 
   function pdfPane(path, { url, view, reviews, still }) {
@@ -290,6 +290,7 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, spre
       restore(kept);
     }
 
+    eventBus.on('pagerendered', (event) => recolor?.(event));
     eventBus.on('pagerendered', () => still?.remove(), { once: true });
     eventBus.on('textlayerrendered', ({ pageNumber }) => void paint(pageNumber));
     void open(url);

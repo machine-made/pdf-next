@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.1
+
+- Fixed split panes showing their tabs as plain text and no document: the pane layout's styles were blocked by the window's security policy since 0.16.4
+- Fixed Night and Sepia leaving PDF pages white in webviews that ignore canvas filters, such as the one on Linux
+- Added a website at machine-made.github.io/pdf-next
+- Changed the README to open with what pdf-next is for, then a short tour
+
 ## 0.17.0
 
 - Added live panes: a PDF shown beside the file you are working on reloads by itself when it is rebuilt, keeping its page, zoom and scroll; images in other panes reload too

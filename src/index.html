@@ -6,6 +6,7 @@
     <title>pdf-next</title>
     <link rel="stylesheet" href="./vendor/pdfjs/web/pdf_viewer.css" />
     <link rel="stylesheet" href="./vendor/math-core/mathmlfixes.css" />
+    <link rel="stylesheet" href="./vendor/dockview/dockview.css" />
     <link rel="stylesheet" href="./style.css" />
     <!-- Filled before a print with the @page rule that gives the paper the
          shape of the PDF's own pages. Empty otherwise, which leaves markdown
@@ -548,7 +549,7 @@
          print resolution, and the print stylesheet hides everything else. -->
     <div id="printPages" aria-hidden="true"></div>
 
-    <script src="./vendor/dockview/dockview-core.min.js"></script>
+    <script src="./vendor/dockview/dockview-core.min.noStyle.js"></script>
     <script type="module" src="./smoke.mjs"></script>
     <script type="module" src="./app.mjs"></script>
   </body>
