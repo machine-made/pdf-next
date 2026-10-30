@@ -79,6 +79,7 @@ await editStore((st) => {
 });
 ok(await row('r1').evaluate((r) => r.classList.contains('question')), 'A question item stands out in the panel');
 ok((await row('r1').locator('.review-question').textContent()).includes('Which paragraph do you mean?'), 'The agent question is shown');
+ok(await row('r1').getByRole('textbox', { name: 'Your answer to the agent' }).count() === 1, 'The reply field has a name of its own');
 ok((await page.textContent('#reviewCount')).includes('1 question'), 'The panel head counts questions');
 ok(await page.$eval('#markdown .review-no[data-review-id="r1"]', (b) => b.dataset.reviewStatus === 'question'), 'The highlight badge marks the question');
 await page.selectOption('#reviewStatusFilter', 'question');

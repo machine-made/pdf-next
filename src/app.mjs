@@ -4131,6 +4131,7 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
   field.rows = 2;
   field.placeholder = placeholder;
+  field.setAttribute('aria-label', kind === 'reply' ? 'Your answer to the agent' : 'What is still wrong');
   field.value = reviewTextDrafts.get(key) ?? '';
   field.addEventListener('click', (event) => event.stopPropagation());
   field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
