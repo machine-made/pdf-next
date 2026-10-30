@@ -47,6 +47,8 @@ jobs:
 
       # GitHub Pages takes a few minutes to serve a new push, and its cache
       # can hand out the old index for a while after that.
+      # The listing is read before grep: under pipefail, grep -q leaving early
+      # breaks apt-cache's pipe and failed the check with the version listed.
       - name: Wait for the repository to list the version
         run: |
           set -uo pipefail
@@ -54,7 +56,7 @@ jobs:
           for attempt in $(seq 1 20); do
             if update=$(sudo apt-get update -o Dir::Etc::sourcelist=sources.list.d/pdf-next.list \
                  -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 -o Acquire::https::No-Cache=true 2>&1) \
-               && apt-cache madison pdf-next | grep -qF " $version "; then
+               && listed=$(apt-cache madison pdf-next) && grep -qF " $version " <<< "$listed"; then
               echo "The repository lists pdf-next $version (attempt $attempt)."
               exit 0
             fi
