@@ -4191,8 +4191,10 @@ async function sendReviewReply(review, text, key) {
     return;
   }
   const path = state.file?.path;
+  // The answer is to this question: a reworded one, or a store write by the
+  // agent elsewhere, is not a conflict, a changed question is.
   const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
-    revision: state.reviewRevision,
+    also: { question: review.question ?? null },
   });
   if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
 }
@@ -4219,11 +4221,16 @@ async function reopenReview(review, note, key) {
   if (!path) return;
   const generation = state.generation;
   const old = String(review.comment || '');
-  const comment = (old ? `${old}\nReopened: ${note}` : `Reopened: ${note}`).slice(-2000);
+  const line = `Reopened: ${note}`;
+  // Sent again after the status write failed: the note is already there.
+  const saved = old === line || old.endsWith(`\n${line}`);
+  const comment = (old ? `${old}\n${line}` : line).slice(-2000);
   try {
-    const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
-    if (state.generation !== generation || state.file?.path !== path) return;
-    applyReviewStore(store);
+    if (!saved) {
+      const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
+      if (state.generation !== generation || state.file?.path !== path) return;
+      applyReviewStore(store);
+    }
   } catch (error) {
     if (state.generation !== generation || state.file?.path !== path) return;
     setStatus(/conflict/i.test(String(error))
@@ -4497,16 +4504,16 @@ async function deleteReview(id) {
   }
 }
 
-/// Compare-and-swap one record: each patched field must still hold the value
-/// shown, and with `revision`, the whole store must be the one shown.
-async function patchReview(review, patch, message, { revision = null } = {}) {
+/// Compare-and-swap one record: each patched field, and each field in `also`,
+/// must still hold the value shown.
+async function patchReview(review, patch, message, { also = {} } = {}) {
   if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
-  const expected = Object.fromEntries(Object.keys(patch).map((key) => [
-    key, Object.hasOwn(review, key) ? review[key] : null,
-  ]));
-  if (Number.isSafeInteger(revision)) expected.$revision = revision;
+  const expected = {
+    ...Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null])),
+    ...also,
+  };
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
     if (state.generation !== generation || state.file?.path !== path) return false;
