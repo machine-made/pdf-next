@@ -67,7 +67,9 @@ request as the version bump. A version without one cannot be released:
 The release notes follow `CHANGELOG.md` on `main`. To fix the notes of a
 published release, fix its section in a pull request: when it merges,
 `release-notes.yml` sets every release that has a section to what
-`node tools/release_notes.mjs <tag>` prints, and leaves the rest alone. See
+`node tools/release_notes.mjs <tag>` prints, and leaves the rest alone. Notes
+written by hand before 0.16.4 (without the generated `## Download` list) are
+never replaced. See
 what it would change with `node tools/sync_release_notes.mjs --dry-run`.
 
 The style is Claude Code's changelog: a `## <version>` heading with no date,

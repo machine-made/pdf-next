@@ -52,6 +52,30 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
   assert.match(sync, /'tools\/release_notes\.mjs', tag/, 'Synced notes are exactly what release_notes.mjs prints.');
   assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
   assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
+  {
+    // Against a stand-in gh: notes written by hand before 0.16.4 are never replaced.
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execFileSync } = await import('node:child_process');
+    const bin = mkdtempSync(join(tmpdir(), 'pdf-next-gh-'));
+    const generatedBody = execFileSync(process.execPath, ['tools/release_notes.mjs', '0.16.4'], { encoding: 'utf8' }).replace('- ', '- Old wording: ');
+    const releases = [
+      { tag: 'v0.16.4', body: generatedBody },
+      { tag: 'v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
+    ].map((release) => JSON.stringify(release)).join('\n');
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in *latest*) echo v0.16.4 ;; *paginate*) cat <<'JSON'\n${releases}\nJSON\n;; *) exit 1 ;; esac\n`);
+    chmodSync(join(bin, 'gh'), 0o755);
+    try {
+      const out = execFileSync(process.execPath, ['tools/sync_release_notes.mjs', '--dry-run'], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      assert.match(out, /would update v0\.16\.4\n/, 'Generated release notes follow CHANGELOG.md.');
+      assert.doesNotMatch(out, /v0\.5\.0/, 'Release notes written by hand are left alone.');
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  }
   const winget = await readFile('.github/workflows/winget.yml', 'utf8');
   assert.match(winget, /Tee-Object -FilePath \$log/, 'winget keeps what wingetcreate printed.');
   assert.match(winget, /Get-Content \$log -Tail 20[\s\S]*?Replace\(\$env:WINGET_CREATE_GITHUB_TOKEN, '\*\*\*'\)[\s\S]*?::error /,
@@ -3363,9 +3387,10 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
   assert.match(app, /const before = picked\.kind === 'markdown' \? passageSource\(state\.markdownSource, picked\.at\) : '';[\s\S]*?\.\.\.\(before \? \{ before \} : \{\}\),\s*\};\s*const store = await invoke\('append_review'/,
     'A new Markdown review saves its passage as before.');
   assert.match(REQUEST_GROUPS[0].hint, /unclear[\s\S]*rewrites it so it answers/, 'The Ask row says Ask means rewrite.');
-  assert.match(app, /patchReview\(review, \{ reply: text, status: 'open' \}, [^)]*\{\s*revision: state\.reviewRevision,\s*\}\)/,
-    'Send saves the reply and opens the item, checked against the store revision.');
-  assert.match(app, /if \(Number\.isSafeInteger\(revision\)\) expected\.\$revision = revision;/);
+  assert.match(app, /patchReview\(review, \{ reply: text, status: 'open' \}, [^)]*\{\s*also: \{ question: review\.question \?\? null \},\s*\}\)/,
+    'Send saves the reply and opens the item, checked against the question it answers.');
+  assert.match(app, /const expected = \{\s*\.\.\.Object\.fromEntries\(Object\.keys\(patch\)[\s\S]*?\.\.\.also,\s*\};/,
+    'A review patch expects each field it changes, plus the ones it names.');
   assert.match(app, /invoke\('update_review', \{ document: path, id: review\.id, expectedComment: old, comment \}\)[\s\S]*?patchReview\(current, \{ status: 'open' \}/,
     'Reopen writes its note into the comment, then reopens through the status path.');
   assert.match(styles, /\.review-row\.question \{/);

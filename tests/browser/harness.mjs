@@ -111,8 +111,8 @@ function mockTauri({ files, initial, theme, store }) {
           case 'patch_review': return write((st) => {
             const review = find(args.id);
             if (args.expected.$revision !== undefined && args.expected.$revision !== st.revision) throw new Error('review conflict: revision changed');
-            for (const key of Object.keys(args.patch)) {
-              if (key in args.expected && JSON.stringify(args.expected[key]) !== JSON.stringify(review[key] ?? null)) throw new Error(`review conflict: ${key} changed on disk`);
+            for (const key of Object.keys(args.expected)) {
+              if (key !== '$revision' && JSON.stringify(args.expected[key]) !== JSON.stringify(review[key] ?? null)) throw new Error(`review conflict: ${key} changed on disk`);
             }
             Object.assign(review, args.patch);
             if (args.patch.reply && review.status === 'question') review.status = 'open';

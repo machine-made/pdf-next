@@ -4131,6 +4131,7 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
   field.rows = 2;
   field.placeholder = placeholder;
+  field.setAttribute('aria-label', kind === 'reply' ? 'Your answer to the agent' : 'What is still wrong');
   field.value = reviewTextDrafts.get(key) ?? '';
   field.addEventListener('click', (event) => event.stopPropagation());
   field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
@@ -4191,8 +4192,10 @@ async function sendReviewReply(review, text, key) {
     return;
   }
   const path = state.file?.path;
+  // The answer is to this question: a reworded one, or a store write by the
+  // agent elsewhere, is not a conflict, a changed question is.
   const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
-    revision: state.reviewRevision,
+    also: { question: review.question ?? null },
   });
   if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
 }
@@ -4219,11 +4222,16 @@ async function reopenReview(review, note, key) {
   if (!path) return;
   const generation = state.generation;
   const old = String(review.comment || '');
-  const comment = (old ? `${old}\nReopened: ${note}` : `Reopened: ${note}`).slice(-2000);
+  const line = `Reopened: ${note}`;
+  // Sent again after the status write failed: the note is already there.
+  const saved = old === line || old.endsWith(`\n${line}`);
+  const comment = (old ? `${old}\n${line}` : line).slice(-2000);
   try {
-    const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
-    if (state.generation !== generation || state.file?.path !== path) return;
-    applyReviewStore(store);
+    if (!saved) {
+      const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
+      if (state.generation !== generation || state.file?.path !== path) return;
+      applyReviewStore(store);
+    }
   } catch (error) {
     if (state.generation !== generation || state.file?.path !== path) return;
     setStatus(/conflict/i.test(String(error))
@@ -4253,21 +4261,25 @@ function appliedPassageNow(review) {
   const text = passageText(raw, review.at);
   if (!text) return null;
   if (status === 'lines') return text;
-  const diffs = wordDiff(review.before, text);
+  const diffs = cachedDiff(review.before, text);
   const kept = diffs ? diffs.filter(([op]) => op === 0).reduce((sum, [, part]) => sum + part.trim().length, 0) : 0;
   return kept >= 0.3 * review.before.trim().length ? text : null;
 }
 
+/// The panel repaints often; each pair of texts is compared once.
+function cachedDiff(before, after) {
+  const key = `${before}\u0000${after}`;
+  if (!reviewDiffCache.has(key)) {
+    if (reviewDiffCache.size > 200) reviewDiffCache.clear();
+    reviewDiffCache.set(key, wordDiff(before, after));
+  }
+  return reviewDiffCache.get(key);
+}
+
 function reviewDiffFor(review) {
   const after = appliedPassageNow(review);
-  const key = `${review.id}\u0000${review.before}\u0000${after}`;
-  const cached = reviewDiffCache.get(key);
-  if (cached) return cached;
-  const diffs = after === null ? [[-1, review.before]] : wordDiff(review.before, after);
-  const view = diffs ? { ...diffView(diffs), gone: after === null } : null;
-  if (reviewDiffCache.size > 200) reviewDiffCache.clear();
-  reviewDiffCache.set(key, view);
-  return view;
+  const diffs = after === null ? [[-1, review.before]] : cachedDiff(review.before, after);
+  return diffs ? { ...diffView(diffs), gone: after === null } : null;
 }
 
 /// Before/after of an applied Markdown review, word by word.
@@ -4497,16 +4509,16 @@ async function deleteReview(id) {
   }
 }
 
-/// Compare-and-swap one record: each patched field must still hold the value
-/// shown, and with `revision`, the whole store must be the one shown.
-async function patchReview(review, patch, message, { revision = null } = {}) {
+/// Compare-and-swap one record: each patched field, and each field in `also`,
+/// must still hold the value shown.
+async function patchReview(review, patch, message, { also = {} } = {}) {
   if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
-  const expected = Object.fromEntries(Object.keys(patch).map((key) => [
-    key, Object.hasOwn(review, key) ? review[key] : null,
-  ]));
-  if (Number.isSafeInteger(revision)) expected.$revision = revision;
+  const expected = {
+    ...Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null])),
+    ...also,
+  };
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
     if (state.generation !== generation || state.file?.path !== path) return false;
