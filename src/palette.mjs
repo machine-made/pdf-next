@@ -245,6 +245,8 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
   }
 
   function onKey(event) {
+    // F5 and F11 reach the window: kept here, WebView2 would reload the page.
+    if (/^F\d+$/.test(event.key)) return;
     event.stopPropagation();
     const key = event.key;
     const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 8, PageUp: -8 }[key] ??

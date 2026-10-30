@@ -94,6 +94,45 @@ await press('Escape', 400);
 ok(await page.$eval('#outline', (o) => getComputedStyle(o).display !== 'none'), 'and it is back afterwards');
 await press('Control+Shift+O', 300);
 
+// Back and forward while presenting turn pages and keep the screen fit.
+await press('g', 300);
+await press('Shift+G', 300);
+ok(await pageNo() === 4, 'G goes to the last page');
+await press('F5', 400);
+await press('Alt+ArrowLeft', 400);
+ok(await presenting() && await pageNo() === 1 && await page.$eval('#zoom', (s) => s.value) === 'page-fit',
+  `Alt+Left while presenting goes back a page, still fitted (page ${await pageNo()})`);
+await press('Alt+ArrowRight', 400);
+ok(await pageNo() === 4 && await page.$eval('#zoom', (s) => s.value) === 'page-fit', 'Alt+Right goes forward again');
+
+// F5 in the palette presents, rather than staying in the palette, where the
+// window would take it as reload (WebView2).
+await press('Escape', 400);
+await press('Control+k');
+await page.evaluate(() => {
+  window.__f5 = null;
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'F5') window.setTimeout(() => { window.__f5 ??= event.defaultPrevented; });
+  }, { capture: true });
+});
+await press('F5', 400);
+ok(await page.evaluate(() => window.__f5) === true && await presenting() && await page.$eval('#palette', (p) => p.hidden),
+  'F5 in the palette is taken by the app and presents');
+await press('Escape', 400);
+
+// A menu stays open, under its button, when the window changes size.
+await page.evaluate(() => document.getElementById('viewMenuButton').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
+await page.setViewportSize({ width: 1300, height: 860 });
+await page.waitForTimeout(200);
+const menu = await page.evaluate(() => ({
+  open: !document.getElementById('viewMenu').hidden,
+  right: document.getElementById('viewMenu').getBoundingClientRect().right,
+}));
+ok(menu.open && menu.right <= 1300, `The View menu stays open inside a resized window (${JSON.stringify(menu)})`);
+await page.mouse.click(600, 500);
+await page.setViewportSize({ width: 1500, height: 900 });
+await page.waitForTimeout(200);
+
 // Another tab, or closing the presented one, ends the presentation.
 await page.evaluate(() => window.__emit('open-files', ['/d/a.md']));
 await page.waitForSelector('#markdown p');

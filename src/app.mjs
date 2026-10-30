@@ -561,6 +561,11 @@ function restoreView(view) {
 
 /// Back to a place `captureView` took, in the file that is open now.
 function restorePlace(view) {
+  if (presentation) {
+    // A presentation keeps its fitted page; back and forward only turn pages.
+    if (view?.kind === 'pdf' && state.document && view.page >= 1) pdfViewer.currentPageNumber = Math.min(view.page, pdfViewer.pagesCount);
+    return;
+  }
   if (view?.kind === 'pdf') {
     restoreView(view);
     updatePageControls();
