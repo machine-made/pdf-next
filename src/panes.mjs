@@ -4,10 +4,13 @@
 /// layout at all: the classic tab strip and the stage, as before. Splitting
 /// builds a dockview layout in `#panes` with one tab per open file; the stage
 /// moves into whichever tab is active, and every other visible tab shows a
-/// snapshot of where it was left (a live render for Markdown, kept current
-/// when the file changes). Clicking a pane makes it the live one. When the
+/// view of its own, kept current when the file changes: a Markdown render,
+/// a read-only PDF viewer or the picture (src/pane-viewers.mjs). A press in
+/// a pane makes it the live one. When the
 /// layout is back to a single group, dockview goes away and the tab strip
 /// returns, in the order the tabs had in that group.
+
+import { paneCover } from './pane-viewers.mjs';
 
 const DIRECTIONS = { right: 'right', bottom: 'below', below: 'below', left: 'left', top: 'above', above: 'above' };
 
@@ -17,6 +20,13 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
   let quiet = 0; // > 0 while our own calls move or activate panels
   let exiting = false;
   const bodies = new Map(); // path -> the panel's content element
+
+  /// Take the copy out of a pane; whatever it holds is freed.
+  const detach = (element) => {
+    const snapshot = element?.querySelector(':scope > .pane-snapshot');
+    snapshot?.dispatchEvent(new Event('pane-detached'));
+    snapshot?.remove();
+  };
 
   const quietly = (run) => {
     quiet += 1;
@@ -62,6 +72,7 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
       onActivate(active.id);
     });
     api.onDidRemovePanel((removed) => {
+      detach(bodies.get(removed.id));
       bodies.delete(removed.id);
       if (quiet || exiting) return;
       onClose(removed.id);
@@ -83,6 +94,7 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
     const disposed = api;
     api = null;
     livePath = null;
+    for (const element of bodies.values()) detach(element);
     bodies.clear();
     disposed.dispose();
     host.textContent = '';
@@ -129,7 +141,7 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
     const target = panel(path);
     if (!target) return;
     const element = body(path);
-    element.querySelector(':scope > .pane-snapshot')?.remove();
+    detach(element);
     element.append(stage);
     livePath = path;
     quietly(() => target.api.setActive());
@@ -139,7 +151,7 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
   function freeze(path, snapshot) {
     if (!api || !snapshot || !bodies.has(path)) return;
     const element = body(path);
-    element.querySelector(':scope > .pane-snapshot')?.remove();
+    if (element.querySelector(':scope > .pane-snapshot') !== snapshot) detach(element);
     element.append(snapshot);
     snapshot.dispatchEvent(new Event('pane-attached'));
   }
@@ -280,8 +292,9 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
 
 /// A still copy of the live view, for a pane the stage is leaving. The copy
 /// keeps the viewer's ids so it is styled exactly like the live one; a cover
-/// on top takes the click that makes the pane live again, and passes the
-/// wheel through so the copy still scrolls.
+/// on top takes the press that makes the pane live again (a drag from it
+/// goes on as a selection there), and passes the wheel through so the copy
+/// still scrolls.
 export function snapshotOfStage({ kind, markdownStage, viewerContainer, imageStage, onPick }) {
   const source = kind === 'pdf' ? viewerContainer : kind === 'image' ? imageStage : markdownStage;
   if (!source) return null;
@@ -301,17 +314,7 @@ export function snapshotOfStage({ kind, markdownStage, viewerContainer, imageSta
       }
     });
   }
-  const cover = document.createElement('div');
-  cover.className = 'pane-cover';
-  cover.title = 'Click to work in this pane';
-  cover.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    onPick?.();
-  });
-  cover.addEventListener('wheel', (event) => {
-    copy.scrollBy({ left: event.deltaX, top: event.deltaY });
-  }, { passive: true });
-  wrap.append(copy, cover);
+  wrap.append(copy, paneCover(onPick, () => copy));
   const top = source.scrollTop;
   const left = source.scrollLeft;
   wrap.addEventListener('pane-attached', () => {
