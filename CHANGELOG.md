@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.17.0
+
+- Added live panes: a PDF shown beside the file you are working on reloads by itself when it is rebuilt, keeping its page, zoom and scroll; images in other panes reload too
+- Added review marks in every pane, not only the one you are working in
+- Added a word-by-word before/after to applied Markdown reviews in the Review panel, with Resolve and Reopen
+- Added a note to Reopen: say what is still wrong and the review goes back to the agent with it in its comment
+- Added agent questions: an agent can ask about a review with `pdf-next reviews ask` or the inbox line `rN ? <question>`; the question shows in the Review panel and on its highlight, and your answer goes back to the agent
+- Added Question to the Review panel's status filter, and a count of open questions in its header
+- Added a command palette (`Ctrl+K`, `⌘K` on macOS) that searches every action, setting and open file, shows each command's shortcut, and lists recent commands first; Settings has an entry for it too
+- Added `pdf-next reviews next` to print the first open review with its Markdown source lines
+- Added `pdf-next reviews add` to file reviews from scripts and agents
+- Added `pdf-next reviews relocate` to find open Markdown reviews again after the file was edited without pdf-next
+- Added `pdf-next reviews brief --since <revision>` to list only the reviews changed since then
+- Added release notes that follow CHANGELOG.md, and an install check after each release (apt, the Windows installer and the macOS .dmg)
+- Added browser, accessibility, real-app and property tests to CI, with startup and reload time budgets
+- Changed the review card's Ask buttons to mean "rewrite the text so it answers this", not "answer in the done note"; the card says so
+- Improved the agent view (`{stem}_review.agent.txt`, `reviews brief`): a shorter header, shorter quotes, and file names only when a store covers more than one file
+- Improved switching panes: press and drag in another pane to make it live and select text there in one go
+- Improved screen reader names for the review comment, reply and reopen fields, and Tab now reaches the review card's request buttons
+- Fixed low-contrast grey text in the empty window and on coloured review rows, and hard-to-read review numbers in the dark theme
+- Fixed Bold, Italic and the other format keys writing broken Markdown when the selection ran from one paragraph into the next
+- Fixed a reload that failed showing "Reloaded" over its own error message
+- Fixed Reopen adding its note twice when sent again after a failed save
+- Fixed the Review panel slowing down with many applied reviews whose text is gone
+- Fixed every `pdf-next reviews` command failing after a long non-English line in the done inbox
+- Fixed a review store over 4 MB being saved and then unreadable; the save is now refused
+- Fixed winget submission failures being unreadable; the cause now shows as an error annotation
+
 ## 0.16.5
 
 - Fixed apt and winget not getting new releases since 0.16.2; they were skipped whenever Windows signing was not set up
