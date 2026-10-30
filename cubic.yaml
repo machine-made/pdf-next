@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+# pdf-next: cubic reviews every pull request automatically, up to its
+# 50,000-line ceiling. Vendored code, fixtures and screenshots are skipped.
+version: 1
+
+reviews:
+  enabled: true
+  sensitivity: medium
+  incremental_commits: true
+  check_drafts: false
+  custom_instructions: |
+    pdf-next is a viewer that redraws a PDF, Markdown file or image when it
+    changes. Nothing may be downloaded at install or run time; the window runs
+    under a strict CSP (no inline scripts or styles, no injected <style> tags);
+    WebKit ignores canvas ctx.filter. Flag real defects first: leaks of
+    listeners, canvases or timers, races around reloads, and anything that
+    breaks on Windows (WebView2) or macOS/Linux (WebKit).
+  ignore:
+    files:
+      - 'src/vendor/**'
+      - 'tests/fixtures/**'
+      - 'site/shots/**'
+      - '**/*.lock'
+      - '**/*.min.js'
+      - '**/*.woff2'
+      - '**/*.pdf'
+    max_changed_lines: 50000
