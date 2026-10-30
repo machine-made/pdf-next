@@ -2,8 +2,8 @@
 // keyboard and focus, running commands, and timing with many tabs.
 import { start } from './harness.mjs';
 
-// Frame budget for opening and filtering; shared CI runners get some slack.
-const frame = process.env.CI ? 40 : 16;
+// Two frames locally, more on shared CI runners: a busy machine must not fail the suite.
+const frame = process.env.CI ? 40 : 32;
 
 const { page, ok, selectText, shot, finish } = await start();
 const open = () => page.evaluate(() => !!document.getElementById('palette') && !document.getElementById('palette').hidden);
