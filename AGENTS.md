@@ -33,6 +33,12 @@ tag is made on GitHub's side:
    then starts `release.yml` on the new tag (`gh workflow run release.yml
    --ref v<version>`). `release.yml` builds Windows, macOS and Linux
    installers and publishes the release, then winget and apt follow.
+4. After apt, `install-check.yml` installs the release on clean runners (apt
+   as the README says, the `.exe` with `/S`, the `.dmg`) and checks that
+   `pdf-next --version` names it. A failure leaves the release published,
+   fails the run and says what broke in an `::error::` annotation. Check a
+   release again with
+   `gh workflow run install-check.yml -R machine-made/pdf-next -f tag=v<version>`.
 
 A merge without a version change tags nothing, so ordinary PRs are safe.
 
@@ -57,6 +63,14 @@ Every release has a section in `CHANGELOG.md`, written in the same pull
 request as the version bump. A version without one cannot be released:
 `tools/check_frontend.mjs` fails in CI, `tag.yml` will not tag it, and
 `release.yml` uses the section as the release notes.
+
+The release notes follow `CHANGELOG.md` on `main`. To fix the notes of a
+published release, fix its section in a pull request: when it merges,
+`release-notes.yml` sets every release that has a section to what
+`node tools/release_notes.mjs <tag>` prints, and leaves the rest alone. Notes
+written by hand before 0.16.4 (without the generated `## Download` list) are
+never replaced. See
+what it would change with `node tools/sync_release_notes.mjs --dry-run`.
 
 The style is Claude Code's changelog: a `## <version>` heading with no date,
 then flat bullets, one sentence each, starting with `Added`, `Fixed`,
@@ -98,9 +112,29 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cd ..
 node tools/check_frontend.mjs
+bun install && bunx playwright install chromium   # once
+node tests/browser/run.mjs                        # or: node tests/browser/run.mjs panes a11y
+node tests/browser/run.mjs --coverage             # also prints line coverage of src/*.mjs
+bunx tauri build --no-bundle && xvfb-run -a node tests/e2e/app.mjs   # Linux, real app
 ```
 
+`tests/browser/` runs the frontend in Chromium against a mocked Tauri backend,
+one file per area, with axe-core accessibility checks in `a11y.mjs`. The mock
+in `harness.mjs` keeps a review store and can make any command reject
+(`window.__fail[cmd] = 'message'`). Screenshots go to `$RUNNER_TEMP/pdf-next-browser`
+(or the system temp directory), never the tree. A UI change comes with a check there.
+
+`tests/e2e/app.mjs` drives the real app (Rust and WebKitGTK) through `tauri-driver`
+and `WebKitWebDriver` (`cargo install tauri-driver`, `apt install webkit2gtk-driver`).
+A change to how the backend and the page work together comes with a check there.
+
+`src-tauri/src/properties.rs` holds proptest property tests of the review store
+and the Markdown sanitizer; keep their case counts so they run in a few seconds.
+CI prints Rust coverage (`cargo llvm-cov`) and frontend coverage; neither is a gate.
+
 CI also builds the app and runs `tools/smoke.mjs` on Windows, macOS and Linux.
+Smoke prints the time from launch to the first drawn document and from a file
+change to the reloaded page, and fails above a per-platform budget.
 A pull request is ready when:
 
 - formatting, lint and tests pass, and CI is green on all three platforms;

@@ -1,0 +1,49 @@
+// The wheel on toolbar menus, the fonts they pick, and Settings mirroring them.
+import { start } from './harness.mjs';
+
+const { page, ok, finish } = await start();
+const value = (selector) => page.$eval(selector, (s) => s.value);
+const zoomLabel = () => page.$eval('#zoom', (s) => s.options[s.selectedIndex].textContent);
+const wheel = async (selector, dy, wait = 50) => {
+  if (selector) await page.hover(selector);
+  await page.mouse.wheel(0, dy);
+  await page.waitForTimeout(wait);
+};
+const before = await value('#mdSize');
+await wheel('#mdSize', -100);
+const after = await value('#mdSize');
+ok(before === '17' && after === '18', `Wheel up on size goes ${before} -> ${after}`);
+ok(await page.$eval('#markdown', (a) => a.dataset.size) === '18', 'The article follows the size menu');
+await wheel(null, 100);
+ok(await value('#mdSize') === '17', 'Wheel down steps back');
+await wheel(null, -20, 20);
+ok(await value('#mdSize') === '17', 'A small trackpad delta does not step alone');
+await page.selectOption('#mdFont', 'mono');
+await wheel('#mdFont', -100);
+ok(await page.$eval('#markdown', (a) => a.dataset.font) === 'monaspace-neon', 'Wheel on font reaches Monaspace Neon');
+await page.waitForTimeout(400);
+ok(await page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('16px "Monaspace Neon"'); }), 'Monaspace Neon loads');
+ok(await page.evaluate(() => getComputedStyle(document.querySelector('#markdown p')).fontFamily.includes('Monaspace Neon')), 'The body text is set in Monaspace Neon');
+const z0 = await zoomLabel();
+await wheel('#zoom', -100, 100);
+const z1 = await zoomLabel();
+ok(z0 !== z1, `Wheel on zoom zooms (${z0} -> ${z1})`);
+await wheel('#zoomIn', -100, 100);
+ok(await zoomLabel() !== z1, 'Wheel on the zoom button zooms');
+await wheel('#poll', -100);
+ok(await value('#poll') === '2', 'Wheel on reload interval steps');
+await page.evaluate(() => {
+  const s = document.getElementById('setCodeFont');
+  s.value = 'monaspace-radon';
+  s.dispatchEvent(new Event('change'));
+});
+ok(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--code-font').includes('Monaspace Radon')), 'Code font setting sets Monaspace Radon');
+ok(await page.evaluate(() => localStorage.getItem('pdf-next.code-font')) === 'monaspace-radon', 'Code font is remembered');
+await page.selectOption('#mdFont', 'monaspace-krypton');
+await wheel('#mdFont', -100);
+ok(await value('#mdFont') === 'weft', 'Wheel crosses from the Monaspace group into machine-made');
+await page.click('#settingsToggle');
+await page.waitForTimeout(100);
+ok(await page.$$eval('#setFont optgroup', (g) => g.map((x) => x.label).join('|')) === 'TeX|System|Monaspace (GitHub)|machine-made', 'Settings font menu keeps the groups');
+ok(await value('#setFont') === 'weft', 'Settings font mirrors the toolbar');
+await finish();

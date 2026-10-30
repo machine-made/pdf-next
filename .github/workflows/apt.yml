@@ -82,7 +82,8 @@ jobs:
           # the file before the scan, and Release would list itself.
           mv Release.tmp dists/stable/Release
 
-          export GNUPGHOME=$(mktemp -d)
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
           chmod 700 "$GNUPGHOME"
           printf '%s' "$PRIVATE_KEY" | gpg --batch --quiet --import
           fingerprint=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')

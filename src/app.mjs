@@ -2,6 +2,7 @@
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
+import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
 import { REQUEST_GROUPS, reviewRequests, requestsLabel, toggleRequest } from './review-requests.mjs';
 import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
@@ -9,6 +10,8 @@ import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
+import { createPalette, isTextField, selectChoices } from './palette.mjs';
+import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -224,6 +227,9 @@ const state = {
   reviewConflicts: new Map(),
   reviewLocations: new Map(),
   reattachReviewId: null,
+  reopenReviewId: null,
+  // Source lines where the paint found each applied review, for its before/after.
+  reviewSpans: new Map(),
   reviewActionFilter: 'all',
   reviewStatusFilter: 'all',
   selectedReviewId: null,
@@ -292,6 +298,22 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+
+// Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
+const paneViewers = createPaneViewers({
+  load: loadPdf,
+  makeViewer: (options) => new TidyViewer({
+    ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
+  }),
+  EventBus,
+  pageColors: () => PAGE_COLORS[state.mode] || null,
+  spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
+  text: { collect: collectTextParts, wrap: wrapSpanParts },
+  onPick: (path) => pickPane(path),
+  remember: (path, view) => {
+    if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
+  },
+});
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
@@ -1489,23 +1511,7 @@ async function showPdf(file, view, generation) {
   if (state.generation !== generation) {
     return;
   }
-  const task = getDocument({
-    url: sourceUrl(file),
-    // Reuse the one worker; without this every reload starts a new thread.
-    worker: pdfWorker,
-    // The doc protocol answers full GETs only (no Accept-Ranges), so range
-    // options would be inert. One streamed read per load is what happens.
-    disableRange: true,
-    // Absolute, because the worker fetches these itself and a relative path
-    // would resolve against the worker's own folder. A wrong folder is a
-    // quiet 404: CJK text loses its glyphs, and a scanned page (CCITT and
-    // JBIG2 both decode in jbig2.wasm) comes up white.
-    cMapUrl: vendorUrl('cmaps/'),
-    cMapPacked: true,
-    standardFontDataUrl: vendorUrl('standard_fonts/'),
-    wasmUrl: vendorUrl('wasm/'),
-    iccUrl: vendorUrl('iccs/'),
-  });
+  const task = loadPdf(sourceUrl(file));
   // Held for teardown: dropping this reference is what leaks the worker.
   state.task = task;
 
@@ -1549,6 +1555,26 @@ async function showPdf(file, view, generation) {
     scheduleWrap();
   }
   updatePageControls();
+}
+
+function loadPdf(url) {
+  return getDocument({
+    url,
+    // Reuse the one worker; without this every reload starts a new thread.
+    worker: pdfWorker,
+    // The doc protocol answers full GETs only (no Accept-Ranges), so range
+    // options would be inert. One streamed read per load is what happens.
+    disableRange: true,
+    // Absolute, because the worker fetches these itself and a relative path
+    // would resolve against the worker's own folder. A wrong folder is a
+    // quiet 404: CJK text loses its glyphs, and a scanned page (CCITT and
+    // JBIG2 both decode in jbig2.wasm) comes up white.
+    cMapUrl: vendorUrl('cmaps/'),
+    cMapPacked: true,
+    standardFontDataUrl: vendorUrl('standard_fonts/'),
+    wasmUrl: vendorUrl('wasm/'),
+    iccUrl: vendorUrl('iccs/'),
+  });
 }
 
 // ── Stepping through a folder ─────────────────────────────────────────────
@@ -1839,6 +1865,7 @@ async function openFile(
       error: true,
       sticky: true,
     });
+    return false;
   }
 }
 
@@ -2113,39 +2140,74 @@ async function restoreSession() {
 // ── Panes (tiles with tabs, src/panes.mjs) ─────────────────────────────
 
 /// Paths shown in a pane but not live: kept current when their file changes.
+/// A PDF viewer whose pane no longer shows its file is freed.
 function watchVisiblePanes() {
-  const paths = panes.active ? panes.visible().filter((path) => path !== state.file?.path) : [];
+  const paths = panes.active ? panes.visible().filter((path) => path !== panes.livePath) : [];
+  paneViewers.keep(paths);
+  for (const path of paths) if (!panes.snapshotOf(path)) void fillPane(path);
   invoke('watch_secondary', { paths }).catch(() => {});
 }
 
-/// Leave a still copy of the live view in its pane before the stage moves on.
+/// The reviews of a document that is not live, to mark its pane with.
+async function paneReviews(path) {
+  try {
+    return (await invoke('read_reviews', { document: path }))?.reviews ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/// Leave the live view in its pane before the stage moves on: a Markdown or
+/// image copy, or a PDF viewer of its own that starts from the pixels.
 function freezeLivePane() {
   const path = panes.livePath;
   if (!panes.active || !path || state.file?.path !== path) return;
-  panes.freeze(path, snapshotOfStage({
+  const still = snapshotOfStage({
     kind: state.file.kind,
     markdownStage: ui.markdownStage,
     viewerContainer: ui.container,
     imageStage: ui.imageStage,
-    onPick: () => void focusPane(path),
-  }));
+    onPick: () => pickPane(path),
+  });
+  panes.freeze(path, state.file.kind === 'pdf' && state.document
+    ? paneViewers.pdf(path, { url: sourceUrl(state.file), view: captureView(), reviews: state.reviews, still })
+    : still);
 }
 
-/// A pane that has never been live this session (a restored layout): Markdown
-/// is rendered for real, anything else shows its name until it is clicked.
+/// Bring a pane that is not live up to date with its file, or fill one that
+/// has nothing yet (a restored layout): Markdown is rendered with its review
+/// marks, a PDF gets a viewer, an image its picture.
 async function fillPane(path, revision = 0) {
   const tab = state.tabs.find((item) => item.path === path);
   if (!tab || !panes.has(path) || path === panes.livePath) return;
   let snapshot = panes.snapshotOf(path);
+  if (tab.kind === 'pdf') {
+    const url = sourceUrl({ path, revision });
+    const reviews = await paneReviews(path);
+    if (!panes.has(path) || path === panes.livePath) return;
+    if (paneViewers.reload(path, url)) {
+      paneViewers.setReviews(path, reviews);
+    } else {
+      panes.freeze(path, paneViewers.pdf(path, { url, view: state.views.get(path) ?? null, reviews }));
+    }
+    return;
+  }
+  if (tab.kind === 'image') {
+    const url = sourceUrl({ path, revision });
+    const image = snapshot?.querySelector('img');
+    if (image) image.src = url;
+    else panes.freeze(path, imagePane({ url, onPick: () => pickPane(path) }));
+    return;
+  }
   if (tab.kind === 'markdown') {
     try {
-      const doc = await invoke('read_markdown', { path });
+      const [doc, reviews] = await Promise.all([invoke('read_markdown', { path }), paneReviews(path)]);
       if (!panes.has(path) || path === panes.livePath) return;
       if (!snapshot?.querySelector('article#markdown')) {
         snapshot = snapshotOfStage({
           kind: 'markdown',
           markdownStage: ui.markdownStage,
-          onPick: () => void focusPane(path),
+          onPick: () => pickPane(path),
         });
         panes.freeze(path, snapshot);
       }
@@ -2157,6 +2219,7 @@ async function fillPane(path, revision = 0) {
       embedMarkdownImages(article, revision);
       colourCode(article);
       markFigures(article);
+      paintMarkdownCopy(article, reviews, { collect: collectTextParts, wrap: wrapSpanParts });
       if (scroller) scroller.scrollTop = top;
     } catch {
       // The file may have gone; the pane keeps what it had.
@@ -2182,6 +2245,19 @@ async function fillPane(path, revision = 0) {
   });
   wrap.append(card, cover);
   panes.freeze(path, wrap);
+}
+
+/// Make a pane live where its copy stands, so that a drag begun on the copy
+/// selects the same text in the live view.
+function pickPane(path) {
+  const scroller = panes.snapshotOf(path)?.querySelector(':scope > #markdownStage');
+  const tab = state.tabs.find((item) => item.path === path);
+  if (scroller && tab) {
+    const { anchorLine, anchorDoc, anchorOffset, ...view } = state.views.get(path) ??
+      { kind: tab.kind, scale: state.markdownScale, raw: state.markdownRaw };
+    state.views.set(path, { ...view, top: scroller.scrollTop, left: scroller.scrollLeft });
+  }
+  return focusPane(path);
 }
 
 async function focusPane(path) {
@@ -2718,6 +2794,7 @@ function setMode(mode, persist = true) {
     ? `Page mode: ${mode} (Shift+click to clear)`
     : 'Page mode: off';
   applyPageColors();
+  paneViewers.recolor();
   if (!persist) {
     // A command-line flag styles this window; it is not a new preference.
     return;
@@ -3372,7 +3449,7 @@ function renderNoteRequests() {
   if (!ui.noteRequests) return;
   const chosen = state.pendingRequests || [];
   if (!ui.noteRequests.childElementCount) {
-    for (const { group, label, items } of REQUEST_GROUPS) {
+    for (const { group, label, hint, items } of REQUEST_GROUPS) {
       const name = document.createElement('span');
       name.className = 'request-group';
       name.textContent = label;
@@ -3380,13 +3457,18 @@ function renderNoteRequests() {
       row.className = 'request-chips';
       row.setAttribute('role', 'group');
       row.setAttribute('aria-label', label);
+      if (hint) {
+        name.title = hint;
+        name.classList.add('has-hint');
+        row.setAttribute('aria-description', hint);
+      }
       for (const [item, text] of items) {
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'request-chip';
         chip.dataset.request = `${group}:${item}`;
         chip.textContent = text;
-        chip.tabIndex = -1;
+        if (hint) chip.title = `${text} ${hint}`;
         row.append(chip);
       }
       ui.noteRequests.append(name, row);
@@ -3529,6 +3611,7 @@ async function saveNote() {
       sourceHintUnavailable = !source;
       if (state.file?.path !== path) return;
     }
+    const before = picked.kind === 'markdown' ? passageSource(state.markdownSource, picked.at) : '';
     const review = {
       file: picked.file,
       kind: picked.kind,
@@ -3542,6 +3625,7 @@ async function saveNote() {
       ...(anchor ? { anchor } : {}),
       ...(source ? { source } : {}),
       ...(requests.length ? { requests } : {}),
+      ...(before ? { before } : {}),
     };
     const store = await invoke('append_review', {
       document: path,
@@ -3656,6 +3740,10 @@ let commentSaveTimer = 0;
 let commentFlushPromise = null;
 let commentFlushAgain = false;
 const pendingComments = new Map();
+// What the reader is typing into a review row besides its comment: a reply to
+// the agent's question, or the note for a reopen. Kept across repaints.
+const reviewTextDrafts = new Map();
+const reviewDiffCache = new Map();
 
 function commentDraftKey(path, id) {
   return `${path}\u0000${id}`;
@@ -3769,8 +3857,9 @@ async function reloadReviewsFromDisk() {
 
 function renderReviewList() {
   const active = document.activeElement;
-  const activeTextarea = active?.matches?.('.review-comment') ? active : null;
+  const activeTextarea = active?.matches?.('.review-comment, .review-reply, .review-reopen-note') ? active : null;
   const activeId = activeTextarea?.closest('.review-row')?.dataset.reviewId;
+  const activeClass = ['review-comment', 'review-reply', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
   const selectionStart = activeTextarea?.selectionStart;
   const selectionEnd = activeTextarea?.selectionEnd;
   ui.reviewList.textContent = '';
@@ -3784,6 +3873,13 @@ function renderReviewList() {
     (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
+  const questions = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'question').length;
+  if (questions) {
+    const asked = document.createElement('span');
+    asked.className = 'review-question-count';
+    asked.textContent = ` · ${questions} question${questions === 1 ? '' : 's'}`;
+    ui.reviewCount.append(asked);
+  }
   if (!visible.length) {
     const empty = document.createElement('p');
     empty.className = 'review-empty';
@@ -3797,7 +3893,8 @@ function renderReviewList() {
     row.dataset.reviewId = review.id;
     row.dataset.reviewTint = String(reviewTint(review));
     row.dataset.action = review.action || 'improve';
-    row.dataset.status = review.status || 'open';
+    row.dataset.status = reviewStatus(review);
+    if (reviewStatus(review) === 'question' && !review._draftOnly) row.classList.add('question');
     const stateKey = reviewStateKey(state.file?.path, review.id);
     const conflict = state.reviewConflicts.get(stateKey);
     if (conflict) row.classList.add('conflict');
@@ -3830,8 +3927,9 @@ function renderReviewList() {
     status.className = 'review-status';
     status.textContent = review._draftOnly
       ? 'Removed on disk · your unsaved draft is preserved'
-      : `${reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
+      : `${reviewStatus(review) === 'question' ? 'question · the agent waits for your answer' : reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
     row.append(status);
+    if (!review._draftOnly) appendReviewQuestion(row, review);
     if (locationStatus === 'preserved') {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -3886,6 +3984,7 @@ function renderReviewList() {
 
     const comment = document.createElement('textarea');
     comment.className = 'review-comment';
+    comment.setAttribute('aria-label', 'Review comment');
     comment.rows = 2;
     const act = reviewAction(review);
     if (act === 'define') {
@@ -3901,6 +4000,16 @@ function renderReviewList() {
       void flushCommentSave();
     });
     row.append(comment);
+    if (review.reply && reviewStatus(review) !== 'question') {
+      const reply = document.createElement('div');
+      reply.className = 'review-reply-text';
+      const label = document.createElement('span');
+      label.className = 'review-reply-label';
+      label.textContent = 'You answered';
+      reply.append(label, document.createTextNode(review.reply));
+      row.append(reply);
+    }
+    if (!review._draftOnly && reviewStatus(review) === 'applied') appendReviewDiff(row, review);
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
@@ -3952,22 +4061,30 @@ function renderReviewList() {
       });
       actions.append(useDisk, saveDraft);
     }
-    if (!review._draftOnly && reviewStatus(review) === 'applied') {
-      const resolve = document.createElement('button');
-      resolve.type = 'button';
-      resolve.textContent = 'Resolve';
-      resolve.addEventListener('click', (event) => {
-        event.stopPropagation();
-        void patchReview(review, { status: 'resolved' }, 'Review resolved');
-      });
-      actions.append(resolve);
-    } else if (!review._draftOnly && reviewStatus(review) === 'resolved') {
+    const settled = !review._draftOnly && ['applied', 'resolved'].includes(reviewStatus(review));
+    if (settled && state.reopenReviewId === review.id) {
+      row.append(reopenForm(review));
+    } else if (settled) {
+      if (reviewStatus(review) === 'applied') {
+        const resolve = document.createElement('button');
+        resolve.type = 'button';
+        resolve.textContent = 'Resolve';
+        resolve.title = 'The change is right: close this review';
+        resolve.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void patchReview(review, { status: 'resolved' }, 'Review resolved');
+        });
+        actions.append(resolve);
+      }
       const reopen = document.createElement('button');
       reopen.type = 'button';
       reopen.textContent = 'Reopen';
+      reopen.title = 'Not right yet: say what is still wrong and send it back to the agent';
       reopen.addEventListener('click', (event) => {
         event.stopPropagation();
-        void patchReview(review, { status: 'open' }, 'Review reopened');
+        state.reopenReviewId = review.id;
+        renderReviewList();
+        reviewRowById(review.id)?.querySelector('.review-reopen-note')?.focus({ preventScroll: true });
       });
       actions.append(reopen);
     }
@@ -3990,14 +4107,216 @@ function renderReviewList() {
     ui.reviewList.append(row);
   }
   if (activeId) {
-    const textarea = reviewRowById(activeId)?.querySelector('.review-comment');
-    if (textarea instanceof HTMLTextAreaElement) {
+    const textarea = reviewRowById(activeId)?.querySelector(`.${activeClass}`);
+    if (textarea instanceof HTMLTextAreaElement || textarea instanceof HTMLInputElement) {
       textarea.focus({ preventScroll: true });
       if (Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) {
         textarea.setSelectionRange(selectionStart, selectionEnd);
       }
     }
   }
+}
+
+function reviewTextDraftKey(id, kind) {
+  return `${state.file?.path}\u0000${id}\u0000${kind}`;
+}
+
+/// A field for the reader to write to the agent, with its send button.
+/// Enter sends, Shift+Enter is a new line; the text survives repaints.
+function reviewTextField(review, kind, { placeholder, label, send, cancel = null }) {
+  const key = reviewTextDraftKey(review.id, kind);
+  const box = document.createElement('div');
+  box.className = `review-${kind}-box`;
+  const field = document.createElement('textarea');
+  field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
+  field.rows = 2;
+  field.placeholder = placeholder;
+  field.setAttribute('aria-label', kind === 'reply' ? 'Your answer to the agent' : 'What is still wrong');
+  field.value = reviewTextDrafts.get(key) ?? '';
+  field.addEventListener('click', (event) => event.stopPropagation());
+  field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
+  const go = () => void send(field.value.trim(), key);
+  field.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      go();
+    } else if (event.key === 'Escape' && cancel) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancel();
+    }
+  });
+  const actions = document.createElement('div');
+  actions.className = 'review-actions';
+  if (cancel) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = 'Cancel';
+    back.addEventListener('click', (event) => {
+      event.stopPropagation();
+      cancel();
+    });
+    actions.append(back);
+  }
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'review-send';
+  button.textContent = label;
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    go();
+  });
+  actions.append(button);
+  box.append(field, actions);
+  return box;
+}
+
+/// The agent's question, for an item it handed back to the reader.
+function appendReviewQuestion(row, review) {
+  if (reviewStatus(review) !== 'question') return;
+  const asked = document.createElement('div');
+  asked.className = 'review-question';
+  const label = document.createElement('span');
+  label.className = 'review-question-label';
+  label.textContent = 'The agent asks';
+  asked.append(label, document.createTextNode(String(review.question || '(no question text)')));
+  row.append(asked, reviewTextField(review, 'reply', {
+    placeholder: 'Your answer (Enter to send)', label: 'Send', send: (text, key) => sendReviewReply(review, text, key),
+  }));
+}
+
+async function sendReviewReply(review, text, key) {
+  if (!text) {
+    setStatus('Write an answer first');
+    return;
+  }
+  const path = state.file?.path;
+  // The answer is to this question: a reworded one, or a store write by the
+  // agent elsewhere, is not a conflict, a changed question is.
+  const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
+    also: { question: review.question ?? null },
+  });
+  if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
+}
+
+function reopenForm(review) {
+  return reviewTextField(review, 'reopen', {
+    placeholder: 'What is still wrong? (Enter to reopen)',
+    label: 'Reopen',
+    send: (text, key) => reopenReview(review, text, key),
+    cancel: () => {
+      state.reopenReviewId = null;
+      renderReviewList();
+    },
+  });
+}
+
+/// Back to the agent, with the reader's note in the comment it reads.
+async function reopenReview(review, note, key) {
+  if (!note) {
+    setStatus('Say in a few words what is still wrong');
+    return;
+  }
+  const path = state.file?.path;
+  if (!path) return;
+  const generation = state.generation;
+  const old = String(review.comment || '');
+  const line = `Reopened: ${note}`;
+  // Sent again after the status write failed: the note is already there.
+  const saved = old === line || old.endsWith(`\n${line}`);
+  const comment = (old ? `${old}\n${line}` : line).slice(-2000);
+  try {
+    if (!saved) {
+      const store = await invoke('update_review', { document: path, id: review.id, expectedComment: old, comment });
+      if (state.generation !== generation || state.file?.path !== path) return;
+      applyReviewStore(store);
+    }
+  } catch (error) {
+    if (state.generation !== generation || state.file?.path !== path) return;
+    setStatus(/conflict/i.test(String(error))
+      ? 'The review changed on disk; reloaded it, your note is kept. Check it and reopen again.'
+      : String(error), { error: true });
+    await loadReviews({ fromDisk: true });
+    return;
+  }
+  const current = state.reviews.find((item) => item.id === review.id) || review;
+  if (await patchReview(current, { status: 'open' }, `Review ${review.id} reopened`)) {
+    reviewTextDrafts.delete(key);
+    if (state.reopenReviewId === review.id) state.reopenReviewId = null;
+    renderReviewList();
+  }
+}
+
+/// The text an applied Markdown review's passage has now: from where the
+/// paint found it, or its saved lines when its quote and context are gone but
+/// the paragraph there still shares words with `before`. Null: passage gone.
+function appliedPassageNow(review) {
+  const raw = state.markdownSource;
+  if (typeof raw !== 'string') return null;
+  const key = reviewStateKey(state.file?.path, review.id);
+  const found = state.reviewSpans?.get(key);
+  if (found?.line) return passageText(raw, found);
+  const status = state.reviewLocations.get(key);
+  const text = passageText(raw, review.at);
+  if (!text) return null;
+  if (status === 'lines') return text;
+  const diffs = cachedDiff(review.before, text);
+  const kept = diffs ? diffs.filter(([op]) => op === 0).reduce((sum, [, part]) => sum + part.trim().length, 0) : 0;
+  return kept >= 0.3 * review.before.trim().length ? text : null;
+}
+
+/// The panel repaints often; each pair of texts is compared once.
+function cachedDiff(before, after) {
+  const key = `${before}\u0000${after}`;
+  if (!reviewDiffCache.has(key)) {
+    if (reviewDiffCache.size > 200) reviewDiffCache.clear();
+    reviewDiffCache.set(key, wordDiff(before, after));
+  }
+  return reviewDiffCache.get(key);
+}
+
+function reviewDiffFor(review) {
+  const after = appliedPassageNow(review);
+  const diffs = after === null ? [[-1, review.before]] : cachedDiff(review.before, after);
+  return diffs ? { ...diffView(diffs), gone: after === null } : null;
+}
+
+/// Before/after of an applied Markdown review, word by word.
+function appendReviewDiff(row, review) {
+  if (state.file?.kind !== 'markdown' || typeof review.before !== 'string' || !review.before) return;
+  const view = reviewDiffFor(review);
+  const box = document.createElement('div');
+  box.className = 'review-diff';
+  const head = document.createElement('div');
+  head.className = 'review-diff-head';
+  if (!view) {
+    head.textContent = 'Before/after · the passage is too long to compare here';
+    box.append(head);
+    row.append(box);
+    return;
+  }
+  head.textContent = view.gone
+    ? 'Before/after · the passage is gone from the file'
+    : view.changed
+      ? `Before/after · ${view.removed} word${view.removed === 1 ? '' : 's'} out, ${view.added} in`
+      : 'Before/after · the passage has not changed';
+  const body = document.createElement('div');
+  body.className = 'review-diff-body';
+  for (const part of view.parts) {
+    const node = document.createElement(part.kind === 'del' ? 'del' : part.kind === 'ins' ? 'ins' : 'span');
+    if (part.kind === 'gap') node.className = 'review-diff-gap';
+    node.textContent = part.text;
+    body.append(node);
+  }
+  if (view.cut) {
+    const more = document.createElement('span');
+    more.className = 'review-diff-gap';
+    more.textContent = ' … (cut)';
+    body.append(more);
+  }
+  box.append(head, body);
+  row.append(box);
 }
 
 function selectReview(id) {
@@ -4190,22 +4509,31 @@ async function deleteReview(id) {
   }
 }
 
-async function patchReview(review, patch, message) {
-  if (!state.file) return;
+/// Compare-and-swap one record: each patched field, and each field in `also`,
+/// must still hold the value shown.
+async function patchReview(review, patch, message, { also = {} } = {}) {
+  if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
-  const expected = Object.fromEntries(Object.keys(patch).map((key) => [
-    key, Object.hasOwn(review, key) ? review[key] : null,
-  ]));
+  const expected = {
+    ...Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null])),
+    ...also,
+  };
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
-    if (state.generation !== generation || state.file?.path !== path) return;
+    if (state.generation !== generation || state.file?.path !== path) return false;
     applyReviewStore(store);
     setStatus(message);
+    return true;
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
-      setStatus(`Review update failed: ${String(error)}`, { error: true });
+      const conflict = /conflict/i.test(String(error));
+      setStatus(conflict
+        ? 'The review changed on disk; reloaded it, your text is kept. Check it and send again.'
+        : `Review update failed: ${String(error)}`, { error: true });
+      if (conflict) await loadReviews({ fromDisk: true });
     }
+    return false;
   }
 }
 
@@ -4343,6 +4671,10 @@ function makeReviewBadge(review) {
   badge.textContent = reviewLabel(review, state.reviews);
   badge.dataset.reviewId = review.id;
   badge.dataset.reviewTint = String(reviewTint(review));
+  if (reviewStatus(review) === 'question') {
+    badge.dataset.reviewStatus = 'question';
+    badge.title = `The agent asks: ${review.question || ''}`;
+  }
   return badge;
 }
 
@@ -4403,6 +4735,7 @@ function applyReviewTint(el, id) {
   const review = state.reviews.find((item) => item.id === id);
   el.dataset.reviewTint = String(reviewTint(review || id));
   if (reviewAction(review) === 'delete') el.dataset.reviewAction = 'delete';
+  if (reviewStatus(review) === 'question') el.dataset.reviewStatus = 'question';
 }
 
 function clearReviewTint(el) {
@@ -4413,6 +4746,7 @@ function clearReviewTint(el) {
   delete el.dataset.reviewId;
   delete el.dataset.reviewTint;
   delete el.dataset.reviewAction;
+  delete el.dataset.reviewStatus;
 }
 
 function unwrapReviewMarks(root) {
@@ -4656,6 +4990,7 @@ function paintMarkdownMarks() {
   }
   const hosts = new Map();
   const heals = [];
+  const spans = new Map();
   let lowest = Infinity;
   for (const item of [...located].sort((one, two) => two.found.start - one.found.start)) {
     if (item.found.end > lowest) {
@@ -4670,6 +5005,10 @@ function paintMarkdownMarks() {
       return last;
     });
     hosts.set(item.review, first && markdownBadgeHost(first));
+    if (first && item.review.before && reviewStatus(item.review) === 'applied') {
+      spans.set(reviewStateKey(state.file.path, item.review.id),
+        atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line'));
+    }
     if (first && !changed) {
       const heal = markdownHealPatch(item.review, joined, item.found, first, last);
       if (heal) heals.push(heal);
@@ -4685,6 +5024,7 @@ function paintMarkdownMarks() {
     }
   }
   state.reviewLocations = locations;
+  state.reviewSpans = spans;
   renderReviewList();
   if (finding) {
     buildMarkdownFind(true);
@@ -5075,6 +5415,10 @@ async function applyDirectFormat(format) {
   }
   const raw = state.markdownSource;
   const span = sourceSpan(raw, target.picked.at.line, target.picked.at.end, target.picked.quote);
+  if (!span.error && /\n[ \t]*\n/.test(raw.slice(span.start, span.end))) {
+    setStatus('Formatting works within one paragraph: select less, or use Edit text… (Ctrl+E)', { error: true });
+    return;
+  }
   if (span.error) {
     setStatus(span.error === 'repeated'
       ? 'That text appears more than once in its paragraph: select a longer passage'
@@ -5981,6 +6325,111 @@ eventBus.on('updatefindcontrolstate', ({ matchesCount, state: findState }) => {
     : '';
 });
 
+// ── Command palette ───────────────────────────────────────────────────────
+// Every command calls what its button or shortcut calls; `when` keeps the list
+// to what applies to the file and window as they are when the palette opens.
+
+const palette = createPalette({
+  platform: () => state.platform,
+  onOpen: syncSettings,
+  onError: (error) => setStatus(String(error?.message || error), { error: true }),
+});
+{
+  const kind = () => state.file?.kind;
+  const hasFile = () => Boolean(state.file);
+  const markdown = () => kind() === 'markdown';
+  const reviewable = () => kind() === 'pdf' || kind() === 'markdown';
+  const rendered = () => markdown() && !state.markdownRaw;
+  const editable = () => rendered() && Boolean(renderedMarkdownSelection());
+  const reviewSelection = () => reviewable() && Boolean(reviewFromSelection());
+  const figureLabels = { width: 'Figure width', height: 'Figure height', align: 'Figure place', caption: 'Figure captions' };
+  const modeLabels = [[null, 'Clear'], ['night', 'Night'], ['invert', 'Invert'], ['sepia', 'Sepia']];
+  const directEdits = (on) => {
+    ui.setDirectEdits.checked = on;
+    ui.setDirectEdits.dispatchEvent(new Event('change'));
+  };
+  palette.add(
+    { label: 'Open file…', group: 'File', shortcut: 'Ctrl+O', icon: '#i-open', run: () => ui.open.click() },
+    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
+    { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
+    { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
+    { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
+    { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf', run: reduceOpenPdf },
+    { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: hasFile, run: trashShownFile },
+    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: () => undoLast().then((done) => done || setStatus('Nothing to undo')) },
+    { label: 'Check for updates', group: 'File', icon: '#i-update', run: () => checkForUpdates() },
+    { label: 'Find', group: 'View', shortcut: 'Ctrl+F', icon: '#i-find', when: reviewable, run: openFind },
+    { label: 'Zoom in', group: 'View', shortcut: '+', icon: '#i-zoom-in', when: hasFile, run: () => stepZoom(1) },
+    { label: 'Zoom out', group: 'View', shortcut: '-', icon: '#i-zoom-out', when: hasFile, run: () => stepZoom(-1) },
+    selectChoices(ui.zoom, { id: 'zoom', label: 'Zoom', group: 'View', when: hasFile }),
+    selectChoices(ui.pageView, { id: 'page-view', label: 'Page view', group: 'View', when: reviewable }),
+    { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
+    { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
+    { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
+    { label: 'Previous file in folder', group: 'View', shortcut: '←', icon: '#i-prev', when: () => kind() === 'image', run: () => stepSibling(-1) },
+    { label: 'Rotate a quarter turn clockwise', group: 'View', icon: '#i-rotate', when: () => kind() === 'image', run: () => setImageRotation(state.imageRotation + 90) },
+    { label: 'Page mode: next', group: 'View', icon: '#i-mode', run: () => cycleMode(false) },
+    () => modeLabels.map(([mode, name]) => ({
+      id: `mode:${mode}`, label: `Page mode: ${name}`, group: 'View', icon: '#i-mode',
+      current: state.mode === mode, run: () => setMode(mode),
+    })),
+    { label: 'Show the raw markdown', group: 'Markdown', shortcut: 'Ctrl+U', icon: '#i-raw', when: rendered, run: () => setRaw(true) },
+    { label: 'Show the rendered markdown', group: 'Markdown', shortcut: 'Ctrl+U', icon: '#i-raw', when: () => markdown() && state.markdownRaw, run: () => setRaw(false) },
+    selectChoices(ui.mdFont, { id: 'md-font', label: 'Font', group: 'Markdown', when: markdown }),
+    selectChoices(ui.mdSize, { id: 'md-size', label: 'Text size', group: 'Markdown', when: markdown }),
+    selectChoices(ui.mdWidth, { id: 'md-width', label: 'Column width', group: 'Markdown', when: markdown }),
+    ...[['bold', 'Ctrl+B'], ['italic', 'Ctrl+I'], ['underline', 'Ctrl+U'], ['strike', 'Ctrl+S'], ['code', '']].map(([format, shortcut]) => ({
+      label: `${FORMAT_LABELS[format]} the selection`, group: 'Markdown', shortcut, when: editable, run: () => applyDirectFormat(format),
+    })),
+    { label: 'Edit the selected text…', group: 'Markdown', shortcut: 'Ctrl+E', when: editable, run: openEditBox },
+    { label: 'Delete the selection', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
+    { label: 'Open the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => reviewable() && !state.reviewOpen, run: toggleReviewPanel },
+    { label: 'Close the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => state.reviewOpen, run: toggleReviewPanel },
+    { label: 'Add a review of the selection', group: 'Review', shortcut: 'Ctrl+Shift+N', icon: '#i-add-review', when: reviewSelection, run: () => openNoteBox() },
+    { label: 'Parenthetical definition of the selection…', group: 'Review', when: reviewSelection, run: () => openNoteBox('define') },
+    { label: 'Gloss the selection…', group: 'Review', when: reviewSelection, run: () => openNoteBox('gloss') },
+    { label: 'Copy the selection as a review quote', group: 'Review', shortcut: 'Ctrl+Shift+A', icon: '#i-ask', when: () => reviewable() && Boolean(describeSelection()), run: askSelection },
+    { label: 'Larger review text', group: 'Review', when: () => state.reviewOpen, run: () => stepReviewSize(1) },
+    { label: 'Smaller review text', group: 'Review', when: () => state.reviewOpen, run: () => stepReviewSize(-1) },
+    selectChoices(ui.reviewActionFilter, { id: 'review-action', label: 'Show reviews by action', group: 'Review', when: () => state.reviewOpen }),
+    selectChoices(ui.reviewStatusFilter, { id: 'review-status', label: 'Show reviews by status', group: 'Review', when: () => state.reviewOpen }),
+    { label: 'Split right', group: 'Panes', shortcut: 'Ctrl+Shift+D', when: hasFile, run: () => splitPane('right') },
+    { label: 'Split down', group: 'Panes', shortcut: 'Ctrl+Shift+E', when: hasFile, run: () => splitPane('bottom') },
+    { label: 'Back to one pane', group: 'Panes', when: () => panes.active, run: () => setSplitView('off') },
+    ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
+      label: `Move to the pane ${direction === 'up' ? 'above' : direction === 'down' ? 'below' : `on the ${direction}`}`,
+      group: 'Panes', shortcut: `Ctrl+Alt+${arrow}`, when: () => panes.active, run: () => movePaneFocus(direction),
+    })),
+    { label: 'Fit the window to the content', group: 'Window', shortcut: 'Ctrl+Shift+F', icon: '#i-wrap', run: toggleWrap },
+    ...[['left', 'left half', '←'], ['right', 'right half', '→'], ['top', 'top half', '↑'], ['bottom', 'bottom half', '↓']].map(([edge, half, arrow]) => ({
+      label: `Fill the ${half} of the screen`, group: 'Window', shortcut: `Ctrl+Shift+${arrow}`, icon: `#i-dock-${edge}`, run: () => dockTo(edge),
+    })),
+    { label: 'Center and fit the window to the page', group: 'Window', shortcut: 'Ctrl+Shift+Enter', icon: '#i-dock-center', run: () => dockTo('center') },
+    { label: 'Open settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => ui.settingsPanel.hidden, run: () => toggleSettings(true) },
+    { label: 'Close settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => !ui.settingsPanel.hidden, run: () => toggleSettings(false) },
+    selectChoices(ui.setUiFont, { id: 'ui-font', label: 'Interface font', group: 'Settings' }),
+    selectChoices(ui.setCodeFont, { id: 'code-font', label: 'Code font', group: 'Settings' }),
+    selectChoices(ui.poll, { id: 'poll', label: 'Check for changes', group: 'Settings' }),
+    ...Array.from(ui.figureSelects, (select) => selectChoices(select, { id: `figure-${select.dataset.figure}`, label: figureLabels[select.dataset.figure], group: 'Settings' })),
+    () => [true, false].map((on) => ({
+      id: `direct-edits:${on}`, label: `Edit the Markdown file in place: ${on ? 'on' : 'off'}`, group: 'Settings',
+      current: directEditsEnabled() === on, run: () => directEdits(on),
+    })),
+    () => state.tabs.map((tab, index) => ({
+      id: `tab:${tab.path}`, label: `Go to ${tab.name}`, group: 'Tabs', detail: tab.path === tab.name ? '' : tab.path,
+      shortcut: index < 9 ? `Ctrl+${index + 1}` : '', current: index === state.active, run: () => activateTab(index),
+    })),
+    { label: 'Next tab', group: 'Tabs', shortcut: 'Ctrl+Tab', icon: '#i-next', when: () => state.tabs.length > 1, run: () => cycleTab(1) },
+    { label: 'Previous tab', group: 'Tabs', shortcut: 'Ctrl+Shift+Tab', icon: '#i-prev', when: () => state.tabs.length > 1, run: () => cycleTab(-1) },
+    { label: 'Close tab', group: 'Tabs', shortcut: 'Ctrl+W', icon: '#i-close', when: hasFile, run: () => closeTab(state.active) },
+    { label: 'Close all tabs', group: 'Tabs', icon: '#i-close', when: () => state.tabs.length > 1, run: closeAll },
+  );
+  el('paletteOpen')?.addEventListener('click', () => {
+    toggleSettings(false);
+    palette.open();
+  });
+}
+
 window.addEventListener('keydown', (event) => {
   const typing =
     event.target instanceof HTMLInputElement ||
@@ -5995,6 +6444,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape' && !ui.noteBox.hidden) {
     event.preventDefault();
     closeNoteBox();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' && !isTextField(event.target)) {
+    event.preventDefault();
+    palette.toggle();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {
@@ -6357,8 +6811,8 @@ listen('file-changed', async (event) => {
     state.pendingRevision = revision;
     return;
   }
-  await openFile({ ...state.file, revision }, { preserveView: true });
-  if (state.file?.path !== path || state.file?.revision !== revision) return;
+  const opened = await openFile({ ...state.file, revision }, { preserveView: true });
+  if (opened === false || state.file?.path !== path || state.file?.revision !== revision) return;
   setStatus('Reloaded');
   if (launch?.smoke && (state.file?.kind === 'pdf' || state.file?.name === 'review-parity.md')) void reportSmoke();
 });
@@ -6369,6 +6823,7 @@ document.addEventListener('visibilitychange', async () => {
     // A hidden window does not need warm font and image caches; they rebuild
     // lazily on return. cleanup() refuses to run mid-render, which is fine —
     // that tick is simply skipped.
+    paneViewers.cleanup();
     try {
       await state.document?.cleanup();
     } catch {
