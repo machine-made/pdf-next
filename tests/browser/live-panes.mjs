@@ -16,7 +16,7 @@ const store = {
   ],
 };
 
-const { page, ok, shot, finish } = await start({ store });
+const { page, ok, shot, openMenu, finish } = await start({ store });
 await page.route('**/d/live.pdf*', (route) => route.fulfill({ body: pdfs[pdfNow], contentType: 'application/pdf' }));
 await page.route('**/d/pic.png*', (route) => route.fulfill({ body: pngs[pngNow], contentType: 'image/png' }));
 // Documents opened and closed on the shared worker.
@@ -124,6 +124,7 @@ await changed('/d/pic.png', 70);
 await page.waitForTimeout(600);
 const second = await size();
 ok(first && second && first !== second, `An image pane reloads when its file changes (${first} -> ${second})`);
+await openMenu();
 await page.selectOption('#splitView', 'off');
 await page.waitForTimeout(400);
 const left = await page.evaluate(() => ({ ...window.__docs, viewers: document.querySelectorAll('.pane-pdf').length }));

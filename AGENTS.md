@@ -39,6 +39,10 @@ tag is made on GitHub's side:
    fails the run and says what broke in an `::error::` annotation. Check a
    release again with
    `gh workflow run install-check.yml -R machine-made/pdf-next -f tag=v<version>`.
+5. After apt, `pages.yml` installs the release's `.deb` from its assets, takes
+   the website screenshots again with `tools/screenshots.mjs` and publishes
+   them in gh-pages `shots/`; the committed `site/shots` are only the fallback.
+   Retake them with `gh workflow run pages.yml -R machine-made/pdf-next -f tag=v<version>`.
 
 A merge without a version change tags nothing, so ordinary PRs are safe.
 
@@ -85,6 +89,14 @@ then flat bullets, one sentence each, starting with `Added`, `Fixed`,
 - Windows: fixed the installer asking twice for permission
 ```
 
+### Release names
+
+Every minor version has a one-word name (0.17 Margin, 0.18 Quiet) in
+`tools/release-names.json`. It goes into the release titles
+(`pdf-next 0.18.0 · Quiet`) and the website. A new minor adds its name in the
+version-bump pull request; use the maintainer's if he gave one, otherwise pick
+a word that says what the release is about. Patches keep their minor's name.
+
 ### Choosing the next version
 
 You choose the next version yourself; do not ask. Look at what changed since
@@ -129,6 +141,13 @@ blocked there too. Screenshots go to `$RUNNER_TEMP/pdf-next-browser`
 `tests/e2e/app.mjs` drives the real app (Rust and WebKitGTK) through `tauri-driver`
 and `WebKitWebDriver` (`cargo install tauri-driver`, `apt install webkit2gtk-driver`).
 A change to how the backend and the page work together comes with a check there.
+
+`tools/screenshots.mjs` takes the website's pictures in that same real window
+(`xvfb-run -a -s '-screen 0 3200x2000x24' node tools/screenshots.mjs --out <dir>`)
+and fails when their pixels are wrong: a light Night page, panes that are not
+side by side, an empty Markdown column, no Review panel. CI runs it after the
+e2e test and keeps the pictures as the `real-window-screenshots` artifact, so
+look at them when a change touches how the window looks.
 
 `src-tauri/src/properties.rs` holds proptest property tests of the review store
 and the Markdown sanitizer; keep their case counts so they run in a few seconds.

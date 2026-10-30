@@ -195,7 +195,7 @@ function paintPdfPage(page, number, textPages, reviews, { collect, wrap }) {
 /// `load(url)` starts a PDF.js loading task on the app's shared worker;
 /// `makeViewer(options)` builds a viewer like the app's; `onPick(path)` makes
 /// the pane live and resolves when it is.
-export function createPaneViewers({ load, makeViewer, EventBus, pageColors, recolor, spreadMode, text, onPick, remember }) {
+export function createPaneViewers({ load, makeViewer, EventBus, createChangeMarks, recolor, spreadMode, text, onPick, remember }) {
   const viewers = new Map();
 
   function pdfPane(path, { url, view, reviews, still }) {
@@ -213,6 +213,7 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
     const abort = new AbortController();
     const eventBus = new EventBus();
     let viewer = null;
+    const changes = createChangeMarks?.({ host: wrap, container, eventBus, viewer: () => viewer });
     let task = null;
     let source = null;
     let kept = view;
@@ -274,7 +275,6 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
       }
       kept = current();
       viewer ??= makeViewer({ container, viewer: pages, eventBus, abortSignal: abort.signal });
-      viewer.pageColors = pageColors();
       const previous = task;
       task = next;
       const ready = Promise.race([
@@ -283,6 +283,7 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
       ]);
       // The old pages go with setDocument, then their document.
       viewer.setDocument(pdf);
+      changes?.load(pdf, path);
       void previous?.destroy();
       await ready;
       if (disposed || mine !== serial) return;
@@ -292,7 +293,11 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
 
     eventBus.on('pagerendered', (event) => recolor?.(event));
     eventBus.on('pagerendered', () => still?.remove(), { once: true });
-    eventBus.on('textlayerrendered', ({ pageNumber }) => void paint(pageNumber));
+    eventBus.on('textlayerrendered', ({ pageNumber, source }) => {
+      const layer = source?.textLayer?.div;
+      if (layer) text.find?.(layer);
+      void paint(pageNumber);
+    });
     void open(url);
 
     return {
@@ -308,11 +313,12 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
           else unwrap(page, 'review-q');
         }
       },
+      refind() {
+        for (const layer of pages.querySelectorAll('.textLayer')) text.find?.(layer);
+      },
       recolor() {
         if (!viewer?.pdfDocument) return;
-        viewer.pageColors = pageColors();
         for (const pageView of viewer._pages ?? []) {
-          pageView.pageColors = viewer.pageColors;
           try {
             pageView.reset();
           } catch {
@@ -334,6 +340,7 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
           // An empty viewer is not an error.
         }
         abort.abort();
+        changes?.dispose();
         void task?.destroy();
         task = null;
         viewer = null;
@@ -375,6 +382,10 @@ export function createPaneViewers({ load, makeViewer, EventBus, pageColors, reco
     },
     recolor() {
       for (const viewer of viewers.values()) viewer.recolor();
+    },
+    /// Mark the find query again in every PDF pane.
+    refind() {
+      for (const viewer of viewers.values()) viewer.refind();
     },
     cleanup() {
       for (const viewer of viewers.values()) viewer.cleanup();

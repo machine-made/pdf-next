@@ -71,6 +71,26 @@ for (const theme of ['light', 'dark']) {
   await page.waitForSelector('#empty');
   await page.waitForTimeout(300);
   await audit(page, ok, 'empty window');
+  const now = Date.now();
+  await page.evaluate((now) => {
+    const view = null;
+    localStorage.setItem('pdf-next.places', JSON.stringify([
+      { path: '/d/three-pages.pdf', name: 'three-pages.pdf', kind: 'pdf', opened: now - 60_000, view },
+      { path: '/d/a.md', name: 'a.md', kind: 'markdown', opened: now - 3_600_000 * 30, view },
+      { path: '/d/gone/figure.png', name: 'figure.png', kind: 'image', opened: now - 86_400_000 * 40, view },
+    ]));
+    sessionStorage.setItem('missing', JSON.stringify(['/d/gone/figure.png']));
+  }, now);
+  await page.reload();
+  await page.waitForSelector('#recentList .recent-item.missing');
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+    await audit(page, ok, `${theme}: empty window with recent files`);
+  }
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await page.focus('#viewerContainer');
+  await page.keyboard.press('ArrowDown');
+  ok(await page.evaluate(() => document.activeElement.classList.contains('recent-item')), 'The keyboard reaches the recent files');
   await page.click('#settingsToggle');
   await page.waitForSelector('#settingsPanel:not([hidden])');
   await audit(page, ok, 'Settings');
@@ -78,15 +98,43 @@ for (const theme of ['light', 'dark']) {
   await close();
 }
 
+// The outline and pages sidebar, and a link preview, in both themes.
+for (const theme of ['light', 'dark']) {
+  const { page, ok, close } = await start({ initial: '/d/navigate.pdf', theme });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.keyboard.press('Control+Shift+O');
+  await page.waitForSelector('#outlineTree [role="treeitem"]');
+  await page.$eval('#viewerContainer', (c) => { c.scrollTop = 150; });
+  await page.waitForTimeout(300);
+  await audit(page, ok, `${theme}: PDF outline`);
+  await page.hover('#viewer .annotationLayer section[data-internal-link] > a[href*="equation"]');
+  await page.waitForSelector('#linkPreview:not([hidden]) canvas');
+  await audit(page, ok, `${theme}: link preview`);
+  await page.click('#outlineTabPages');
+  await page.waitForSelector('#outlineThumbs .outline-thumb canvas');
+  await audit(page, ok, `${theme}: PDF pages`);
+  await close();
+}
+
 const { page, ok, selectText, finish } = await start();
 await page.click('#notes');
 await page.waitForSelector('#reviewPane:not([hidden])');
 await audit(page, ok, 'Markdown with the Review panel');
+await page.keyboard.press('Control+Shift+O');
+await page.waitForSelector('#outline:not([hidden])');
+await audit(page, ok, 'Markdown outline with the Review panel');
+await page.keyboard.press('Control+Shift+O');
 await page.click('#notes');
 await page.evaluate(() => document.activeElement?.blur());
-const toolbar = ['open', 'zoomOut', 'zoom', 'zoomIn', 'findToggle', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'notes', 'print', 'settingsToggle'];
+const toolbar = ['open', 'zoomOut', 'zoom', 'zoomIn', 'findToggle', 'viewMenuButton', 'dockMenuButton', 'notes', 'settingsToggle'];
 const missed = await tabTo(page, toolbar);
 ok(missed.length === 0, `Tab reaches the toolbar controls${missed.length ? ` (missed ${missed.join(', ')})` : ''}`);
+for (const menu of ['viewMenu', 'dockMenu']) {
+  await page.click(`[aria-controls="${menu}"]`);
+  await page.waitForSelector(`#${menu}:not([hidden])`);
+  await audit(page, ok, `${menu === 'viewMenu' ? 'View' : 'Window'} menu`);
+  await page.keyboard.press('Escape');
+}
 await selectText('#markdown', 'Second paragraph');
 await page.keyboard.press('Control+Shift+N');
 await page.waitForSelector('#noteBox:not([hidden])');

@@ -1,0 +1,10 @@
+Crimson Pro (variable WOFF2: wght 200-900; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v28.
+Source: npm @fontsource-variable/crimson-pro 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/crimson-pro), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  a36998c273ee904e6303921fce9da2fe49c96b42cfb0bc1b70de9c3b58546a41  OFL.txt
+  01df7b443a6f81915a65df47439121da8307f8a574fadd7cde57c77d0b68c77b  crimson-pro-latin-ext-wght-italic.woff2
+  ac89a08a6e022ad4f3af961eb95474b7d8531c67ff88b40194bb3569d2d64e1d  crimson-pro-latin-ext-wght-normal.woff2
+  b3faa8f9ce36db53253e11fb107d77b983150c5c21dc8fcf3906234530ab69f2  crimson-pro-latin-wght-italic.woff2
+  20ce4189b9e41b3439a2a36dd63deff44b6d91182532202cb96b65521b4a3c23  crimson-pro-latin-wght-normal.woff2

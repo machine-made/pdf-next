@@ -1,0 +1,43 @@
+% The fixture for tests/browser/navigate.mjs: an outline, and links to an
+% equation, a figure, a section and a reference, over four pages. Rebuild it
+% from tests/fixtures with pdflatex, twice (the second run fills the links):
+%   pdflatex -interaction=batchmode navigate.tex
+% then delete navigate.aux, navigate.log and navigate.out. The first three
+% lines keep the bytes the same on every machine.
+\pdfinfoomitdate=1
+\pdftrailerid{}
+\pdfsuppressptexinfo=-1
+\documentclass[a5paper]{article}
+\usepackage{amsmath}
+\usepackage[pdfcreator={},pdfproducer={}]{hyperref}
+\begin{document}
+\section{Introduction}
+The wake behind a cylinder is governed by equation~\eqref{eq:wake}, drawn in
+figure~\ref{fig:box} and discussed in section~\ref{sec:results},
+following~\cite{ref}.
+\subsection{Background}
+Background text on the first page.
+\newpage
+\section{Method}
+\subsection{Equations}
+Some text before the equation.
+\begin{equation}
+  \partial_t u + u \cdot \nabla u = -\nabla p + \nu \Delta u
+  \label{eq:wake}
+\end{equation}
+Some text after the equation.
+\newpage
+\section{Results}\label{sec:results}
+\begin{figure}[h]
+  \centering
+  \rule{4cm}{2cm}
+  \caption{A box standing in for a wake.}
+  \label{fig:box}
+\end{figure}
+\newpage
+\section{Conclusion}
+The end.
+\begin{thebibliography}{1}
+\bibitem{ref} A. Author, A paper about wakes, 2026.
+\end{thebibliography}
+\end{document}

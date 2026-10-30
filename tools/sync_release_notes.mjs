@@ -17,14 +17,14 @@ const generated = (body) => /\n## Download\n\n- \*\*Windows\*\*: /.test(tidy(bod
   tidy(body).startsWith('Download the build for your system below.');
 
 const releases = gh(['api', '--paginate', `repos/${repo}/releases?per_page=100`,
-  '--jq', '.[] | select(.draft | not) | {tag: .tag_name, body}'])
+  '--jq', '.[] | select(.draft | not) | {tag: .tag_name, name, body}'])
   .split('\n').filter(Boolean).map((line) => JSON.parse(line));
 const latest = gh(['api', `repos/${repo}/releases/latest`, '--jq', '.tag_name']).trim();
 
 const changed = [];
 const without = [];
 const kept = [];
-for (const { tag, body } of releases) {
+for (const { tag, name, body } of releases) {
   if (!generated(body)) {
     kept.push(tag);
     continue;
@@ -34,15 +34,16 @@ for (const { tag, body } of releases) {
     without.push(tag);
     continue;
   }
-  if (tidy(body) === tidy(notes.stdout)) {
+  const title = spawnSync(process.execPath, ['tools/release_notes.mjs', tag, '--title'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+  if (tidy(body) === tidy(notes.stdout) && name === title) {
     continue;
   }
   changed.push(tag);
-  console.log(`${dryRun ? 'would update' : 'updating'} ${tag}`);
+  console.log(`${dryRun ? 'would update' : 'updating'} ${tag}${name === title ? '' : ` (title: ${title})`}`);
   if (!dryRun) {
     // Editing an older release must not make it the one the update check offers.
     const keep = tag === latest ? [] : ['--latest=false'];
-    gh(['release', 'edit', tag, '--repo', repo, '--notes-file', '-', ...keep], notes.stdout);
+    gh(['release', 'edit', tag, '--repo', repo, '--title', title, '--notes-file', '-', ...keep], notes.stdout);
   }
 }
 

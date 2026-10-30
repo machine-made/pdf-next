@@ -4,23 +4,43 @@ name: Website
 # the apt repository. It shares apt's concurrency group so the two never push
 # to gh-pages at the same time. A version bump changes package.json, so the
 # page names each release as it lands.
+#
+# With a tag (release.yml passes one after publishing), the screenshots in
+# shots/ are taken again by tools/screenshots.mjs in that release's Linux .deb,
+# installed from the release assets rather than from apt, which may not list it
+# yet. Without one, the site keeps the shots of the last release, or the
+# committed site/shots when no release has taken any.
 
 on:
   push:
     branches: [main]
     paths: [site/**, package.json, .github/workflows/pages.yml]
+  workflow_call:
+    inputs:
+      tag:
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release whose .deb takes the screenshots, for example v0.18.0 (empty keeps the current ones)
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
 
-concurrency:
-  group: apt-repository
-  cancel-in-progress: false
-
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # WebKitWebDriver (webkit2gtk-driver) is verified on Ubuntu 24.04.
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -28,12 +48,63 @@ jobs:
           ref: gh-pages
           path: pages
 
+      - name: Install the release's .deb and the WebDriver tools
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Website screenshots ${TAG}::$*"; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_amd64.deb' --dir "$RUNNER_TEMP/deb" \
+            || fail "the release has no *_amd64.deb to install"
+          sudo apt-get update
+          sudo apt-get install -y "$RUNNER_TEMP"/deb/*_amd64.deb webkit2gtk-driver xvfb python3-pil
+          printed=$(pdf-next --version 2>&1) || fail "pdf-next --version failed: $printed"
+          grep -qF "${TAG#v}" <<< "$printed" || fail "the installed app says '$printed', not ${TAG#v}"
+          cargo install tauri-driver --version 2.1.0 --locked
+
+      - name: Screenshots in the released app
+        id: shots
+        if: env.TAG != ''
+        run: >-
+          xvfb-run -a -s '-screen 0 3200x2000x24'
+          node tools/screenshots.mjs --bin "$(command -v pdf-next)" --out "$RUNNER_TEMP/shots"
+
+      - name: Use them on the site
+        if: steps.shots.outcome == 'success'
+        run: |
+          mkdir -p pages/shots
+          cp "$RUNNER_TEMP"/shots/*.webp "$RUNNER_TEMP"/shots/social.png pages/shots/
+          echo "$TAG" > pages/shots/RELEASE
+
+      - name: Keep the screenshots
+        if: always() && env.TAG != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: website-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+
+      # Published even when the new shots failed their checks, with the ones
+      # already there; the run still fails and the annotation says why.
       - name: Copy the site into gh-pages
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          cp -R site/. pages/
-          sed -i "s/{{version}}/$version/g" pages/index.html
+          # Shots a release took stay; the committed ones fill in only what is missing.
+          if [ -f pages/shots/RELEASE ]; then
+            find site -mindepth 1 -maxdepth 1 ! -name shots -exec cp -R {} pages/ \;
+            for shot in site/shots/*; do
+              [ -e "pages/shots/${shot##*/}" ] || cp "$shot" pages/shots/
+            done
+          else
+            cp -R site/. pages/
+          fi
+          # "0.18.0 · Quiet", or "0.19.0" for a minor without a name yet.
+          release=$(node tools/release_notes.mjs "$version" --title)
+          release=${release#pdf-next }
+          sed -i "s/{{version}}/${release#v}/g" pages/index.html
           if grep -q '{{' pages/index.html; then
             echo "::error title=Website::index.html still has a {{placeholder}}"
             exit 1
@@ -42,5 +113,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m "Website for pdf-next $version" || { echo 'Nothing changed.'; exit 0; }
+          git commit -m "Website for pdf-next $version${TAG:+, screenshots from $TAG}" || { echo 'Nothing changed.'; exit 0; }
           git push

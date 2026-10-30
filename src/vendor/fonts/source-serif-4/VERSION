@@ -1,0 +1,10 @@
+Source Serif 4 (variable WOFF2: wght 200-900, opsz 8-60; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v15.
+Source: npm @fontsource-variable/source-serif-4 5.3.1 (https://www.npmjs.com/package/@fontsource-variable/source-serif-4), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3  OFL.txt
+  2078240cee94e627d0e180d56d74a11b2a1d387bbd61a9b7269f0a43df756896  source-serif-4-latin-ext-opsz-italic.woff2
+  155f6e701097cc269cf8d5d7ac86795f263f1afbeb47c14d1d747108c9335389  source-serif-4-latin-ext-opsz-normal.woff2
+  96e6393209728ab93c334ae739af8a040cd2006c82e8614d6465a8084db88f89  source-serif-4-latin-opsz-italic.woff2
+  f2ea9c12d2fe9bd3a9589b02ad2c0909da88f30938c91adc838c4f4098f9f9e0  source-serif-4-latin-opsz-normal.woff2

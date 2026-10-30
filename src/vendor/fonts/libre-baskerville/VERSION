@@ -1,0 +1,10 @@
+Libre Baskerville (variable WOFF2: wght 400-700; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v24.
+Source: npm @fontsource-variable/libre-baskerville 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/libre-baskerville), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  8490e863633e537100d6d18755d994ea30b0b44741876a17809d28becf45ce11  OFL.txt
+  890c2ae602dfc42b941667f13dcb5ddb196a31e8d7aa76cea20f2afaa7531eff  libre-baskerville-latin-ext-wght-italic.woff2
+  8f7537ce3a6c1c0d0e93a9530432df13953312d378713a059e9a6cf0d0cde8b9  libre-baskerville-latin-ext-wght-normal.woff2
+  1203eb6186789060d1376ca7ab20734b179e241c85ddc2d84502c818afb63210  libre-baskerville-latin-wght-italic.woff2
+  22219fb90e3b9bd28debd1825fe8d9a0154a0e31f8b3fa601ac1a0a5aa5e6d1b  libre-baskerville-latin-wght-normal.woff2

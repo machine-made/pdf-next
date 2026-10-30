@@ -1,0 +1,10 @@
+Literata (variable WOFF2: wght 200-900, opsz 7-72; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v40.
+Source: npm @fontsource-variable/literata 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/literata), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  9895ebc015226accf416b758ac1ca02a2fb4f83a89d316791ef697c3dc0852aa  OFL.txt
+  09e48237261b84a90f2d6011c050d10d4bacd060cd884a10fe4edf69c0bf3870  literata-latin-ext-opsz-italic.woff2
+  1160835f4cdae6a86572ed501c13b62b341480cc7c13fc88ba0c21efdf1fcd73  literata-latin-ext-opsz-normal.woff2
+  97bc5aa317653eb249d66782c8533e5f1bd7d27a97b5265155a3d1700e785b7b  literata-latin-opsz-italic.woff2
+  29de894c768689feef6ab4ef274a9a16d19bfc5b0c3cbfcdac80ef220816210c  literata-latin-opsz-normal.woff2

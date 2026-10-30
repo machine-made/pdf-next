@@ -1,0 +1,10 @@
+EB Garamond (variable WOFF2: wght 400-800; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v33.
+Source: npm @fontsource-variable/eb-garamond 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/eb-garamond), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  f03c8eda63076cd52317dcd40aa04db8472d4cb592dfaafa385129dfdafc7f9c  OFL.txt
+  fa866520f8b7fb646ebc730fd0d3cbf8945db74d92f25fdd6fee486808652fdf  eb-garamond-latin-ext-wght-italic.woff2
+  f8d3fa06e20989a938972165406a1b731cdc7fe33ff2b0b6798c75aa63709901  eb-garamond-latin-ext-wght-normal.woff2
+  c664773f7e1d42d36326aa457becf7674236168c74cf7d74e87e5778ef7640f9  eb-garamond-latin-wght-italic.woff2
+  88603384163d301aebd5bd769832a8bfe3c9004ec24178417b9817f0ad32c63b  eb-garamond-latin-wght-normal.woff2

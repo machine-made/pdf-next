@@ -1,6 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
-import { canvasFilters, recolorRendered } from './page-colors.mjs';
+import { recolorRendered } from './page-colors.mjs';
+import { createChangeMarks } from './pdf-changes.mjs';
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
 import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
@@ -12,7 +13,11 @@ import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
+import { createNavigator } from './navigate.mjs';
+import { createFocusMode, isFullscreen, setFullscreen, wirePopover } from './quiet.mjs';
 import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
+import { folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from './places.mjs';
+import { clampScale, pinchZoom, snapScale } from './zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -26,7 +31,7 @@ import * as pdfjsLib from './vendor/pdfjs/build/pdf.min.mjs';
 globalThis.pdfjsLib = pdfjsLib;
 
 const { getDocument, GlobalWorkerOptions, PDFWorker } = pdfjsLib;
-const { EventBus, PDFFindController, PDFLinkService, PDFViewer, SpreadMode } = await import(
+const { EventBus, PDFFindController, PDFLinkService, PDFViewer, ScrollMode, SpreadMode } = await import(
   './vendor/pdfjs/web/pdf_viewer.mjs'
 );
 
@@ -59,8 +64,6 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
-document.body.classList.toggle('recolored-pages', !canvasFilters);
-const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
 /// The Markdown copies shown in panes that are not live (see src/panes.mjs).
@@ -79,14 +82,20 @@ const ui = {
   copyPath: el('copyPath'),
   copyName: el('copyName'),
   mode: el('mode'),
+  modeName: el('modeName'),
   wrap: el('wrap'),
+  viewMenuButton: el('viewMenuButton'),
+  viewMenu: el('viewMenu'),
+  dockMenuButton: el('dockMenuButton'),
+  dockMenu: el('dockMenu'),
+  fullScreen: el('fullScreen'),
+  present: el('present'),
   raw: el('raw'),
   mdFont: el('mdFont'),
   mdSize: el('mdSize'),
   mdWidth: el('mdWidth'),
   pageView: el('pageView'),
   splitView: el('splitView'),
-  ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
   dockButtons: {
@@ -128,7 +137,6 @@ const ui = {
   printPages: el('printPages'),
   printRules: el('printRules'),
   status: el('status'),
-  note: el('note'),
   noteBox: el('noteBox'),
   noteRef: el('noteRef'),
   noteQuote: el('noteQuote'),
@@ -170,13 +178,20 @@ const ui = {
   setWidth: el('setWidth'),
   setPoll: el('setPoll'),
   setDirectEdits: el('setDirectEdits'),
+  setFocusMode: el('setFocusMode'),
   setUiFont: el('setUiFont'),
   setCodeFont: el('setCodeFont'),
   aboutVersion: el('aboutVersion'),
   aboutUpdate: el('aboutUpdate'),
   aboutSource: el('aboutSource'),
+  recent: el('recent'),
+  recentList: el('recentList'),
+  emptyKey: el('emptyKey'),
   figureSelects: document.querySelectorAll('#settingsPanel select[data-figure]'),
 };
+
+/// What a presentation took over (view, zoom, page, full screen), to give back on Esc; null otherwise.
+let presentation = null;
 
 const state = {
   file: null,
@@ -239,6 +254,10 @@ const state = {
   reviewOpen: false,
   reviewGrown: false,
   reviewSize: REVIEW_SIZE_DEFAULT,
+  /// Places are saved once the launch says this is not a smoke run, and only
+  /// while the file on screen has been put where it belongs.
+  placesOn: false,
+  placeReady: false,
 };
 
 // One pane by default; splitting tiles the window (src/panes.mjs).
@@ -301,24 +320,57 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+/// PDF.js shows a page that takes over half a second while it is still being
+/// drawn. Night and Sepia recolour a page once it is drawn, so until then it
+/// would show white: in those modes a page shows when it is done.
+function holdUntilRecolored({ source }) {
+  if (source) source.minDurationToUpdateCanvas = PAGE_COLORS[state.mode] ? Infinity : 500;
+}
+// What the last rebuild changed (src/pdf-changes.mjs).
+const pdfChanges = createChangeMarks({ host: ui.stage, container: ui.container, eventBus, viewer: () => pdfViewer });
 
 // Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
 const paneViewers = createPaneViewers({
   load: loadPdf,
-  makeViewer: (options) => new TidyViewer({
-    ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
-  }),
+  makeViewer: (options) => {
+    options.eventBus.on('pagerender', holdUntilRecolored);
+    return new TidyViewer({
+      ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
+    });
+  },
   EventBus,
-  pageColors: () => pageColorsFor(state.mode),
+  createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
-  text: { collect: collectTextParts, wrap: wrapSpanParts },
+  text: { collect: collectTextParts, wrap: wrapSpanParts, find: (layer) => markPdfLayer(layer) },
   onPick: (path) => pickPane(path),
   remember: (path, view) => {
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
   },
 });
+// The outline and pages sidebar, back and forward, link previews (src/navigate.mjs).
+const nav = createNavigator({
+  file: () => state.file,
+  pdf: () => state.document,
+  viewer: pdfViewer,
+  linkService,
+  container: ui.container,
+  markdown: ui.markdown,
+  markdownStage: ui.markdownStage,
+  capture: captureView,
+  restore: restorePlace,
+  focusPage: () => {
+    if (state.file?.kind !== 'pdf' && !ui.markdownStage.hasAttribute('tabindex')) ui.markdownStage.tabIndex = -1;
+    (state.file?.kind === 'pdf' ? ui.container : ui.markdownStage).focus({ preventScroll: true });
+  },
+  openLink: (url) => void invoke('open_link', { url }).catch((error) => setStatus(String(error), { error: true })),
+  showRendered: () => state.markdownRaw && setRaw(false, { persist: false }),
+  colors: () => PAGE_COLORS[state.mode] || null,
+  onResize: scheduleWrap,
+  status: (message) => setStatus(message),
+});
 eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
+eventBus.on('pagerender', holdUntilRecolored);
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
@@ -507,6 +559,28 @@ function restoreView(view) {
   ui.container.scrollLeft = view.left;
 }
 
+/// Back to a place `captureView` took, in the file that is open now.
+function restorePlace(view) {
+  if (presentation) {
+    // A presentation keeps its fitted page; back and forward only turn pages.
+    if (view?.kind === 'pdf' && state.document && view.page >= 1) pdfViewer.currentPageNumber = Math.min(view.page, pdfViewer.pagesCount);
+    return;
+  }
+  if (view?.kind === 'pdf') {
+    restoreView(view);
+    updatePageControls();
+    return;
+  }
+  if (view?.kind !== 'markdown') {
+    return;
+  }
+  state.restoringMarkdownView = null;
+  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw), { persist: false });
+  if (view.scale !== state.markdownScale) setMarkdownScale(view.scale);
+  ui.markdownStage.scrollTop = view.top;
+  ui.markdownStage.scrollLeft = view.left;
+}
+
 function restoreImageView(view) {
   if (!view || view.kind !== 'image') {
     return;
@@ -515,6 +589,86 @@ function restoreImageView(view) {
   setImageScale(view.scale, { refit: false });
   ui.imageStage.scrollTop = view.top;
   ui.imageStage.scrollLeft = view.left;
+}
+
+// ── Your place in each file, kept after the tab closes (src/places.mjs) ───
+
+/// A PDF place is the page at the top of the view and how far down it the
+/// view starts, so it comes back right in a window of another size.
+function placeView() {
+  const kind = state.file?.kind;
+  if (kind === 'image') {
+    return { kind, scale: state.imageScale };
+  }
+  if (kind === 'markdown') {
+    const { raw, ...view } = captureView() || {};
+    return view.kind ? view : null;
+  }
+  if (kind !== 'pdf' || !state.document) {
+    return null;
+  }
+  const top = ui.container.getBoundingClientRect().top + ui.container.clientTop;
+  const count = pdfViewer.pagesCount || 0;
+  const rectAt = (index) => pdfViewer.getPageView(index)?.div?.getBoundingClientRect();
+  let index = Math.max(0, (pdfViewer.currentPageNumber || 1) - 1);
+  let rect = rectAt(index);
+  while (rect && index > 0 && rect.top > top) rect = rectAt(--index);
+  while (rect && index < count - 1 && rect.bottom <= top) rect = rectAt(++index);
+  if (!rect?.height) {
+    return null;
+  }
+  const wide = ui.container.scrollWidth;
+  return {
+    kind,
+    page: index + 1,
+    within: Math.round(((top - rect.top) / rect.height) * 10_000) / 10_000,
+    scale: pdfViewer.currentScaleValue || 'auto',
+    left: wide ? Math.round((ui.container.scrollLeft / wide) * 10_000) / 10_000 : 0,
+  };
+}
+
+function restorePdfPlace(place) {
+  if (place?.kind !== 'pdf') {
+    return;
+  }
+  pdfViewer.currentScaleValue = String(place.scale || 'auto');
+  const count = pdfViewer.pagesCount || 1;
+  const div = pdfViewer.getPageView(Math.min(Math.max(1, Math.round(place.page) || 1), count) - 1)?.div;
+  if (!div) {
+    return;
+  }
+  const rect = div.getBoundingClientRect();
+  const top = ui.container.getBoundingClientRect().top + ui.container.clientTop;
+  ui.container.scrollTop += rect.top + (Number(place.within) || 0) * rect.height - top;
+  ui.container.scrollLeft = (Number(place.left) || 0) * ui.container.scrollWidth;
+}
+
+let placeTimer = 0;
+
+function rememberPlace() {
+  window.clearTimeout(placeTimer);
+  placeTimer = 0;
+  const file = state.file;
+  // A presentation's fitted page is not where you were reading.
+  if (!state.placesOn || !state.placeReady || presentation || !file || state.tabs[state.active]?.path !== file.path) {
+    return;
+  }
+  notePlace(file, placeView());
+}
+
+/// Scrolling and zooming save a moment after they stop, not on every frame.
+function schedulePlace() {
+  if (!state.placesOn || !state.placeReady || presentation) {
+    return;
+  }
+  window.clearTimeout(placeTimer);
+  placeTimer = window.setTimeout(rememberPlace, 400);
+}
+
+/// Where a file opened afresh should land: where you left it, unless the
+/// opening names a place of its own.
+function placeFor(path, target) {
+  return state.placesOn && !target ? placeOf(path) : null;
 }
 
 // ── Loading ───────────────────────────────────────────────────────────────
@@ -596,6 +750,7 @@ function setImageScale(value, { refit = true } = {}) {
   if (refit) {
     scheduleWrap();
   }
+  schedulePlace();
 }
 
 /// The picture's natural size as it reads on screen: a quarter turn swaps
@@ -928,6 +1083,7 @@ function setMarkdownScale(scale) {
   updateZoomControl(String(scale), scale);
   schedulePaginate();
   scheduleWrap();
+  schedulePlace();
   if (state.selectedFigure && typeof positionFigureResizer === 'function') {
     positionFigureResizer();
   }
@@ -971,7 +1127,8 @@ function setPageView(value, { persist = true, apply = true } = {}) {
 /// document is set, so this runs after every load.
 function applyPdfSpread() {
   if (state.document) {
-    pdfViewer.spreadMode = state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE;
+    pdfViewer.spreadMode = state.pageViews.pdf === 'two' && !presentation ? SpreadMode.EVEN : SpreadMode.NONE;
+    if (presentation) pdfViewer.scrollMode = ScrollMode.PAGE;
   }
 }
 
@@ -1197,14 +1354,14 @@ function markFigures(root) {
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
 /// assigning innerHTML here does not hand the document a script surface, and
 /// the CSP forbids inline script besides.
-async function showMarkdown(file, view, generation, fit) {
+async function showMarkdown(file, view, generation, fit, place = null) {
   await releaseDocument();
   const doc = await invoke('read_markdown', { path: file.path });
   if (state.generation !== generation) {
     return;
   }
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
-  state.restoringMarkdownView = view || null;
+  state.restoringMarkdownView = view || place || null;
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   colourCode(ui.markdown);
@@ -1213,7 +1370,7 @@ async function showMarkdown(file, view, generation, fit) {
   state.markdownDigest = doc.digest;
   state.markdownSource = doc.raw;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
-  setMarkdownScale(view?.scale || 1);
+  setMarkdownScale(view?.scale || place?.scale || 1);
 
   // The anchors are read where the renderer put them, before any block moves.
   const newBlocks = markdownBlocks(ui.markdown);
@@ -1260,10 +1417,12 @@ async function showMarkdown(file, view, generation, fit) {
     return;
   }
   ui.markdownStage.scrollTop = 0;
-  if (!fit) {
-    return;
+  if (fit) {
+    await trimWindowToContent({ recenter: true });
   }
-  await trimWindowToContent({ recenter: true });
+  if (place && state.generation === generation) {
+    applyRestoredMarkdownScroll(place);
+  }
 }
 
 /// `_review.json` is prose too, but it is already text — no renderer.
@@ -1361,7 +1520,7 @@ function wrapWindowSize() {
   if (!content) {
     return null;
   }
-  const extra = state.reviewOpen ? REVIEW_PANE_WIDTH : 0;
+  const extra = (state.reviewOpen ? REVIEW_PANE_WIDTH : 0) + nav.width();
   return [content[0] + extra, content[1] + chromeHeight()];
 }
 
@@ -1475,7 +1634,7 @@ function setWrap(on) {
     ? 'Window follows the content — click to stop (Ctrl+Shift+F)'
     : 'Fit the window to the content (Ctrl+Shift+F)';
   ui.wrap.title = label;
-  ui.wrap.setAttribute('aria-label', label);
+  ui.dockMenuButton.classList.toggle('on', on || Boolean(state.docked));
 }
 
 async function toggleWrap() {
@@ -1511,7 +1670,7 @@ function pinScale() {
   }
 }
 
-async function showPdf(file, view, generation) {
+async function showPdf(file, view, generation, place = null) {
   await releaseDocument();
   if (state.generation !== generation) {
     return;
@@ -1529,7 +1688,7 @@ async function showPdf(file, view, generation) {
 
   pdfViewer.setDocument(pdfDocument);
   linkService.setDocument(pdfDocument, null);
-  applyPageColors();
+  pdfChanges.load(pdfDocument, file.path);
 
   // Never wait forever: if setDocument fails internally, pagesinit never fires
   // and this closure would be retained for the life of the process.
@@ -1557,6 +1716,10 @@ async function showPdf(file, view, generation) {
     pdfViewer.currentScaleValue = '1';
     await waitForPdfPageBox();
     await trimWindowToContent({ recenter: true });
+    if (state.generation !== generation) {
+      return;
+    }
+    restorePdfPlace(place);
     scheduleWrap();
   }
   updatePageControls();
@@ -1634,6 +1797,7 @@ async function stepSibling(delta) {
 /// tab per file — browsing 200 PNGs must not leave 200 tabs behind.
 async function showInActiveTab(path) {
   const file = await invoke('open_path', { path });
+  rememberPlace();
   const tab = state.tabs[state.active];
   if (tab) {
     state.views.delete(tab.path);
@@ -1734,7 +1898,7 @@ async function stageSettled(limit = 1500) {
   }
 }
 
-async function showImage(file, fit, view, generation) {
+async function showImage(file, fit, view, generation, place = null) {
   await releaseDocument();
   if (state.generation !== generation) {
     return;
@@ -1750,8 +1914,12 @@ async function showImage(file, fit, view, generation) {
   if (state.generation !== generation) {
     return;
   }
+  const remembered = !view && place?.kind === 'image' &&
+    (place.scale > 0 || ['fit', 'page-fit'].includes(place.scale)) ? place.scale : null;
   if (view) {
     restoreImageView(view);
+  } else if (remembered !== null) {
+    setImageScale(remembered, { refit: false });
   } else {
     // A window that wraps the picture opens it at up to 100%. A kept or docked
     // window keeps its size, so the picture fills it: stepping through a
@@ -1760,7 +1928,7 @@ async function showImage(file, fit, view, generation) {
   }
   if (fit) {
     await trimWindowToContent({ recenter: true });
-    if (!view) {
+    if (!view && remembered === null) {
       await shrinkImageToWindow(generation);
     }
   }
@@ -1769,14 +1937,17 @@ async function showImage(file, fit, view, generation) {
 
 async function openFile(
   file,
-  { preserveView = false, keepWindow = false, view: given = null } = {},
+  { preserveView = false, keepWindow = false, view: given = null, place = null } = {},
 ) {
   // Rebuilds can outpace loading; only the newest one may touch the UI.
   const generation = ++state.generation;
+  state.placeReady = false;
   await flushCommentSave();
   if (state.generation !== generation) {
     return;
   }
+  // A presentation is of one file: another one ends it.
+  if (presentation && presentation.path !== file.path) void stopPresentation();
   const view = given || (preserveView ? captureView() : null);
   // Pages rendered for paper belong to the document that was open then — but
   // not while a dialog is holding them: a rebuild lands every second in the
@@ -1803,6 +1974,8 @@ async function openFile(
       'file-missing',
     );
     setTitle('');
+    nav.refresh();
+    renderRecent();
     setStatus(`Unsupported file type: ${file.name}`, { error: true, sticky: true });
     return;
   }
@@ -1831,6 +2004,9 @@ async function openFile(
   if (file.kind !== 'image') {
     ui.image.removeAttribute('src');
   }
+  if (file.kind !== 'pdf') {
+    pdfChanges.clear();
+  }
   if (file.kind !== 'markdown' && file.kind !== 'json') {
     state.selectedFigure = null;
     if (ui.figureResizer) ui.figureResizer.hidden = true;
@@ -1840,12 +2016,12 @@ async function openFile(
 
   try {
     if (file.kind === 'pdf') {
-      await showPdf(file, view, generation);
+      await showPdf(file, view, generation, place);
     } else if (file.kind === 'image') {
-      await showImage(file, !view && !keepWindow, view, generation);
+      await showImage(file, !view && !keepWindow, view, generation, place);
       void loadSiblings(file);
     } else if (file.kind === 'markdown') {
-      await showMarkdown(file, view, generation, !view && !keepWindow);
+      await showMarkdown(file, view, generation, !view && !keepWindow, place);
     } else if (file.kind === 'json') {
       await showJson(file, view, generation, !view && !keepWindow);
     }
@@ -1860,6 +2036,8 @@ async function openFile(
     }
     if (state.generation === generation) {
       document.body.classList.remove('file-missing');
+      nav.refresh();
+      state.placeReady = true;
     }
   } catch (error) {
     // A load cancelled by a newer rebuild is expected, not a failure to report.
@@ -1924,6 +2102,7 @@ async function applyTarget(target) {
   if (!target) {
     return;
   }
+  nav.push();
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
     setRaw(false, { persist: false });
@@ -2130,9 +2309,11 @@ async function restoreSession() {
   const tiled = saved.panes && panes.restore(saved.panes, state.tabs);
   renderTabs();
   if (tiled) panes.mount(activeEntry.path);
+  notePlace(activeEntry.file, null, { opened: true });
   await openFile(activeEntry.file, {
     keepWindow: false,
     view: state.views.get(activeEntry.path) || null,
+    place: placeFor(activeEntry.path, null),
   });
   if (tiled) {
     for (const path of panes.visible()) void fillPane(path);
@@ -2150,6 +2331,7 @@ function watchVisiblePanes() {
   const paths = panes.active ? panes.visible().filter((path) => path !== panes.livePath) : [];
   paneViewers.keep(paths);
   for (const path of paths) if (!panes.snapshotOf(path)) void fillPane(path);
+  if (!ui.find.hidden) scheduleFindInPanes();
   invoke('watch_secondary', { paths }).catch(() => {});
 }
 
@@ -2177,6 +2359,8 @@ function freezeLivePane() {
   panes.freeze(path, state.file.kind === 'pdf' && state.document
     ? paneViewers.pdf(path, { url: sourceUrl(state.file), view: captureView(), reviews: state.reviews, still })
     : still);
+  const article = still?.querySelector('article#markdown');
+  if (article && state.file.kind === 'markdown') markMarkdownCopy(article);
 }
 
 /// Bring a pane that is not live up to date with its file, or fill one that
@@ -2225,6 +2409,7 @@ async function fillPane(path, revision = 0) {
       colourCode(article);
       markFigures(article);
       paintMarkdownCopy(article, reviews, { collect: collectTextParts, wrap: wrapSpanParts });
+      markMarkdownCopy(article);
       if (scroller) scroller.scrollTop = top;
     } catch {
       // The file may have gone; the pane keeps what it had.
@@ -2320,6 +2505,7 @@ async function splitPane(direction = 'right') {
     // The stage was in the window; the pane that had it is the live one now.
     panes.mount(activePath);
   } else {
+    panes.unmaximize();
     panes.split(next, direction);
   }
   state.paneDirection = direction;
@@ -2344,6 +2530,21 @@ function onPanesExit(order) {
   syncPaneControl();
 }
 
+/// The live pane fills the window, or the other panes come back.
+function maximizePane() {
+  if (!panes.active) {
+    setStatus('Only one pane is open');
+    return;
+  }
+  panes.maximize();
+  saveSession();
+}
+
+/// Move the live pane's edge toward `direction` by a twentieth of the window.
+function resizePane(direction) {
+  if (panes.resize(direction)) saveSession();
+}
+
 function syncPaneControl() {
   if (ui.splitView) ui.splitView.value = panes.active ? (state.paneDirection === 'bottom' ? 'bottom' : 'right') : 'off';
 }
@@ -2358,6 +2559,7 @@ async function setSplitView(mode) {
 }
 
 async function movePaneFocus(direction) {
+  panes.unmaximize();
   const path = panes.neighbour(direction);
   if (path) await focusPane(path);
 }
@@ -2419,6 +2621,7 @@ function renderTabs() {
 /// cost one parse, not ten, and the one you are looking at stays put. A file
 /// already open is left alone in that case.
 async function openInTab(file, { activate = true, target = null } = {}) {
+  if (state.placesOn) notePlace(file, null, { opened: true });
   const existing = state.tabs.findIndex((tab) => tab.path === file.path);
   if (existing >= 0) {
     // A file that is already open is aimed rather than opened twice: a second
@@ -2450,7 +2653,7 @@ async function openInTab(file, { activate = true, target = null } = {}) {
   state.active = at;
   renderTabs();
   if (panes.active) panes.mount(file.path);
-  await openFile(file, { keepWindow: state.tabs.length > 1 });
+  await openFile(file, { keepWindow: state.tabs.length > 1, place: placeFor(file.path, target) });
   await consumeTarget(entry);
 }
 
@@ -2458,9 +2661,11 @@ async function openInTab(file, { activate = true, target = null } = {}) {
 /// place you left it rather than to the top of the document.
 function stashView() {
   const current = state.tabs[state.active];
-  if (!current) {
+  // After a close the active tab is already the neighbour, not what is shown.
+  if (!current || state.file?.path !== current.path) {
     return;
   }
+  rememberPlace();
   const view = captureView();
   if (view) {
     state.views.set(current.path, view);
@@ -2485,6 +2690,7 @@ async function activateTab(index, { force = false } = {}) {
     await openFile(file, {
       keepWindow: true,
       view: state.views.get(tab.path) || null,
+      place: placeFor(tab.path, tab.target),
     });
     if (panes.active) watchVisiblePanes();
     // After the remembered view, not before: an explicit page wins over where
@@ -2500,6 +2706,7 @@ async function closeTab(index) {
   if (!tab) {
     return;
   }
+  if (index === state.active) rememberPlace();
   state.views.delete(tab.path);
   state.tabs.splice(index, 1);
   if (!state.tabs.length) {
@@ -2524,6 +2731,9 @@ async function closeTab(index) {
 
 /// Back to the small empty window you get on a cold start.
 async function closeAll() {
+  if (presentation) void stopPresentation();
+  rememberPlace();
+  state.placeReady = false;
   const generation = ++state.generation;
   await flushCommentSave();
   if (state.generation !== generation) {
@@ -2560,6 +2770,7 @@ async function closeAll() {
     'file-missing',
   );
   setTitle('');
+  nav.refresh();
   ui.waiting.hidden = true;
   updateSiblingControls();
   renderTabs();
@@ -2574,6 +2785,7 @@ async function closeAll() {
   }
   applyReviewStore({ reviews: [] });
   setStatus('');
+  renderRecent();
 }
 
 function cycleTab(delta) {
@@ -2583,6 +2795,94 @@ function cycleTab(delta) {
   const count = state.tabs.length;
   void activateTab((state.active + delta + count) % count);
 }
+
+// ── The empty window ──────────────────────────────────────────────────────
+// A drop target and the files opened last, from the same store as the places.
+// A file that is gone is shown dimmed and leaves the list when picked.
+
+const RECENT_SHOWN = 8;
+const KIND_ICONS = { pdf: '#i-kind-pdf', image: '#i-kind-image' };
+
+async function renderRecent() {
+  if (state.file) return;
+  const entries = recentPlaces(RECENT_SHOWN);
+  ui.recent.hidden = !entries.length;
+  ui.recentList.replaceChildren(...entries.map((entry) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'recent-item';
+    button.dataset.path = entry.path;
+    button.title = entry.path;
+    const glyph = icon(KIND_ICONS[entry.kind] || '#i-kind-md');
+    glyph.setAttribute('aria-hidden', 'true');
+    const parts = [['recent-name', entry.name], ['recent-folder', `‎${folderOf(entry.path)}‎`], ['recent-when', openedLabel(entry.opened)]]
+      .map(([className, text]) => {
+        const span = document.createElement('span');
+        span.className = className;
+        span.textContent = text;
+        return span;
+      });
+    button.append(glyph, ...parts);
+    item.append(button);
+    return item;
+  }));
+  const exists = await invoke('files_exist', { paths: entries.map((entry) => entry.path) }).catch(() => []);
+  entries.forEach((entry, i) => {
+    if (exists[i] !== false) return;
+    const button = [...ui.recentList.querySelectorAll('.recent-item')].find((item) => item.dataset.path === entry.path);
+    if (!button) return;
+    button.classList.add('missing');
+    button.querySelector('.recent-when').textContent = 'not found';
+  });
+}
+
+async function openRecent(path) {
+  const name = readPlaces().find((entry) => entry.path === path)?.name || path;
+  let file;
+  try {
+    file = await invoke('open_path', { path });
+  } catch {
+    forgetPlace(path);
+    renderRecent();
+    setStatus(`${name} is no longer there; removed it from the list`);
+    return;
+  }
+  await openInTab(file);
+}
+
+ui.recentList.addEventListener('click', (event) => {
+  const button = event.target.closest?.('.recent-item');
+  if (button) void openRecent(button.dataset.path);
+});
+ui.recentList.addEventListener('keydown', (event) => {
+  const items = [...ui.recentList.querySelectorAll('.recent-item')];
+  const at = items.indexOf(event.target);
+  if (at < 0 || event.ctrlKey || event.metaKey || event.altKey) return;
+  const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+  if (to !== undefined) {
+    event.preventDefault();
+    event.stopPropagation();
+    items[Math.max(0, Math.min(items.length - 1, to))].focus();
+  } else if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault();
+    event.stopPropagation();
+    const name = event.target.querySelector('.recent-name').textContent;
+    forgetPlace(event.target.dataset.path);
+    renderRecent();
+    const left = ui.recentList.querySelectorAll('.recent-item');
+    (left[Math.min(at, left.length - 1)] || ui.container).focus();
+    setStatus(`Removed ${name} from the list`);
+  }
+});
+// With nothing open, the arrows reach into the list from wherever focus is.
+document.addEventListener('keydown', (event) => {
+  if (state.file || ui.recent.hidden || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+  if (ui.recentList.contains(event.target) || (event.target !== document.body && !ui.stage.contains(event.target))) return;
+  const items = ui.recentList.querySelectorAll('.recent-item');
+  event.preventDefault();
+  items[event.key === 'ArrowDown' ? 0 : items.length - 1]?.focus();
+});
 
 // The wheel over the tab strip walks the tabs, wrapping at the ends. A
 // trackpad sends a stream of small deltas, so they are summed until they
@@ -2706,7 +3006,9 @@ function removeCustomZoom() {
   ui.zoom.querySelector('option[value="custom"]')?.remove();
 }
 
-function stepZoom(direction) {
+/// `at` is the point to keep still, in client pixels; the middle of the view
+/// when the zoom comes from a key, a button or the menu.
+function stepZoom(direction, at = null) {
   const kind = state.file?.kind;
   const image = kind === 'image';
   const markdown = kind === 'markdown' || kind === 'json';
@@ -2726,11 +3028,11 @@ function stepZoom(direction) {
     return;
   }
   if (image) {
-    setImageScale(next);
+    zoomImageTo(next, at);
   } else if (markdown) {
-    setMarkdownScale(next);
+    zoomMarkdownTo(next, at);
   } else {
-    pdfViewer.currentScaleValue = String(next);
+    zoomPdfTo(String(next), at);
   }
 }
 
@@ -2741,42 +3043,215 @@ function applyZoomChoice(value) {
   if (state.file?.kind === 'markdown' || state.file?.kind === 'json') {
     // Prose has no page to fit; every preset lands back at the natural size.
     const scale = Number(value);
-    setMarkdownScale(Number.isFinite(scale) && scale > 0 ? scale : 1);
+    zoomMarkdownTo(Number.isFinite(scale) && scale > 0 ? scale : 1);
     return;
   }
   if (state.file?.kind !== 'image') {
-    pdfViewer.currentScaleValue = value;
+    zoomPdfTo(value);
     return;
   }
   if (value === 'page-fit') {
-    setImageScale('page-fit');
+    zoomImageTo('page-fit');
   } else if (value === 'auto' || value === 'page-width') {
-    setImageScale('fit');
+    zoomImageTo('fit');
   } else {
     const scale = Number(value);
     if (Number.isFinite(scale) && scale > 0) {
-      setImageScale(scale);
+      zoomImageTo(scale);
     }
   }
 }
 
+// ── Zoom around a point ───────────────────────────────────────────────────
+// A point is remembered as a fraction of the element under it (a PDF page,
+// the picture, a Markdown block), then scrolled back under the same pixel once
+// the element has its new size.
+
+function middleOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+function pointIn(element, { x, y }) {
+  const rect = element?.getBoundingClientRect();
+  if (!rect?.width || !rect.height) return null;
+  return { element, x, y, fx: (x - rect.left) / rect.width, fy: (y - rect.top) / rect.height };
+}
+
+/// Scroll so the point is at `to`, where it was unless a pinch says otherwise.
+function holdPoint(point, scroller, to = point) {
+  const rect = point?.element.isConnected ? point.element.getBoundingClientRect() : null;
+  if (!rect) return;
+  scroller.scrollLeft += rect.left + point.fx * rect.width - to.x;
+  scroller.scrollTop += rect.top + point.fy * rect.height - to.y;
+}
+
+/// Where a point lands on one axis once the content is `r` times its size:
+/// still under the cursor where the content can scroll that far, otherwise
+/// where the layout puts content smaller than the view (centred, or at the
+/// start). A pinch previews exactly this, so letting go never jumps.
+function settleAxis({ at, view, size, start, extent, pad, centred }, r) {
+  const grown = extent * r;
+  const offset = (at - start) * r;
+  if (grown + 2 * pad <= size) return (centred ? view + (size - grown) / 2 : view + pad) + offset;
+  const scroll = Math.min(Math.max(pad + offset - (at - view), 0), grown + 2 * pad - size);
+  return view + pad + offset - scroll;
+}
+
+/// The two axes of `scroller` for settleAxis, with `content` the box whose
+/// size changes and `along` (optional) the box that runs the length of it.
+function pinchAxes(scroller, at, content, { along = content, pad = [0, 0], centred = [true, true] } = {}) {
+  const view = scroller.getBoundingClientRect();
+  const box = content.getBoundingClientRect();
+  const run = along.getBoundingClientRect();
+  return [
+    { at: at.x, view: view.left + scroller.clientLeft, size: scroller.clientWidth, start: box.left, extent: box.width, pad: pad[0], centred: centred[0] },
+    { at: at.y, view: view.top + scroller.clientTop, size: scroller.clientHeight, start: run.top, extent: run.height, pad: pad[1], centred: centred[1] },
+  ];
+}
+
+function pdfPoint(at) {
+  const hit = document.elementFromPoint(at.x, at.y)?.closest?.('#viewer .page');
+  const number = Number(hit?.dataset.pageNumber) || pdfViewer.currentPageNumber || 1;
+  return pointIn(pdfViewer.getPageView(number - 1)?.div, at);
+}
+
+/// The block of the column under the point, or the first one below it.
+function markdownPoint(at) {
+  if (state.markdownRaw || state.file?.kind === 'json') {
+    return pointIn(ui.markdownRaw, at);
+  }
+  const owner = (node) => node?.parentElement === ui.markdown || node?.parentElement?.classList.contains('md-page');
+  let node = document.elementFromPoint(at.x, at.y);
+  while (node && ui.markdown.contains(node) && !owner(node)) node = node.parentElement;
+  if (!owner(node)) {
+    node = [...ui.markdown.querySelectorAll(':scope > *:not(.md-page), :scope > .md-page > *')]
+      .find((block) => block.getBoundingClientRect().bottom > at.y);
+  }
+  return pointIn(node, at);
+}
+
+function zoomPdfTo(value, at = null, to = undefined) {
+  const point = pdfPoint(at || middleOf(ui.container));
+  pdfViewer.currentScaleValue = String(value);
+  holdPoint(point, ui.container, to);
+}
+
+function zoomImageTo(value, at = null, to = undefined) {
+  const point = pointIn(ui.imageBox, at || middleOf(ui.imageStage));
+  setImageScale(value);
+  holdPoint(point, ui.imageStage, to);
+}
+
+/// Markdown zoom reflows, so the block under the point is what stays put.
+function zoomMarkdownTo(scale, at = null) {
+  const point = markdownPoint(at || middleOf(ui.markdownStage));
+  setMarkdownScale(scale);
+  if (ui.markdown.querySelector(':scope > .md-page')) paginateMarkdown({ keepPosition: false });
+  holdPoint(point, ui.markdownStage);
+}
+
+/// While the fingers move, the picture on screen is scaled by the compositor;
+/// the real scale is set once, when they stop, and the pages are drawn again
+/// sharp at it. Passing near a fit lands on it.
+function scaledPinch({ layer, base, at, axes, fits, apply }) {
+  const rect = layer.getBoundingClientRect();
+  layer.style.transformOrigin = '0 0';
+  let raw = base;
+  let shown = { scale: base, preset: null };
+  let to = at;
+  return {
+    update(factor) {
+      raw = clampScale(raw * factor, base);
+      shown = snapScale(raw, fits);
+      const r = shown.scale / base;
+      to = { x: settleAxis(axes[0], r), y: settleAxis(axes[1], r) };
+      const x = to.x - rect.left - (at.x - rect.left) * r;
+      const y = to.y - rect.top - (at.y - rect.top) * r;
+      layer.style.transform = `translate(${x}px, ${y}px) scale(${r})`;
+      updateZoomControl(shown.preset || String(shown.scale), shown.scale);
+    },
+    commit() {
+      layer.style.transform = '';
+      layer.style.transformOrigin = '';
+      if (shown.preset && state.wrap) setWrap(false);
+      apply(shown.preset, Math.round(shown.scale * 1000) / 1000, to);
+    },
+  };
+}
+
+function pdfFits() {
+  const view = pdfViewer.getPageView((pdfViewer.currentPageNumber || 1) - 1);
+  if (!view?.width) return {};
+  // The paddings PDF.js itself leaves when it computes these presets.
+  const across = pdfViewer.spreadMode !== SpreadMode.NONE ? 2 : 1;
+  const width = ((ui.container.clientWidth - 40) / view.width) * view.scale / across;
+  const height = ((ui.container.clientHeight - 5) / view.height) * view.scale;
+  return { 'page-width': width, 'page-fit': Math.min(width, height) };
+}
+
+function startPinch(event) {
+  if (presentation) return null;
+  const kind = state.file?.kind;
+  const at = { x: event.clientX, y: event.clientY };
+  const over = (element) => element.contains(event.target);
+  if ((kind === 'markdown' || kind === 'json') && over(ui.markdownStage)) {
+    // Text has sizes, not a continuum: a notch or a tenth of a pinch is a step.
+    let sum = 0;
+    return {
+      update(factor) {
+        sum += Math.log(factor);
+        if (Math.abs(sum) < 0.1) return;
+        const direction = Math.sign(sum);
+        sum = 0;
+        stepZoom(direction, at);
+      },
+      commit() {},
+    };
+  }
+  if (kind === 'image' && over(ui.imageStage) && ui.image.naturalWidth) {
+    const [padX, padY] = stagePadding();
+    const width = (ui.imageStage.clientWidth - padX) / turnedNatural()[0];
+    return scaledPinch({
+      layer: ui.imageBox, base: imageScale(), at,
+      axes: pinchAxes(ui.imageStage, at, ui.imageBox, { pad: [padX / 2, padY / 2] }),
+      fits: { 'page-width': width, 'page-fit': pageFitScale() },
+      apply: (preset, scale, to) => {
+        zoomImageTo(preset === 'page-fit' ? 'page-fit' : scale, at, to);
+        if (preset === 'page-width') updateZoomControl('page-width', scale);
+      },
+    });
+  }
+  const sheet = kind === 'pdf' && state.document && over(ui.container) ? pdfPoint(at)?.element : null;
+  if (sheet) {
+    // A page narrower than the view is centred; the pages run down from the top.
+    const row = sheet.closest('.spread') || sheet;
+    const wide = ui.container.scrollWidth > ui.container.clientWidth + 1;
+    return scaledPinch({
+      layer: ui.viewer, base: pdfViewer.currentScale, at, fits: pdfFits(),
+      axes: pinchAxes(ui.container, at, row, {
+        along: ui.viewer, pad: [wide ? (ui.container.scrollWidth - row.offsetWidth) / 2 : 0, 0], centred: [true, false],
+      }),
+      apply: (preset, scale, to) => zoomPdfTo(preset || String(scale), at, to),
+    });
+  }
+  return null;
+}
+
 // ── Page modes ────────────────────────────────────────────────────────────
 
-/// Page colors are drawn into the page canvas, not laid over it, so changing
-/// them only shows once the canvas is drawn again. Setting the colors and
-/// calling refresh() is not that: refresh() goes through PDFPageView.update(),
-/// which — with the page geometry unchanged — resets with keepCanvasWrapper
-/// and never calls _resetCanvas(). The old bitmap stays, so leaving sepia used
-/// to give a white page with brown text. Dropping each canvas is the fix.
+/// Page colours are drawn into the page canvas (src/page-colors.mjs), not
+/// laid over it, so changing them only shows once the canvas is drawn again.
+/// refresh() is not that: it goes through PDFPageView.update(), which — with
+/// the page geometry unchanged — resets with keepCanvasWrapper and never
+/// calls _resetCanvas(). The old bitmap stays, so leaving sepia used to give a
+/// white page with brown text. Dropping each canvas is the fix.
 function applyPageColors() {
-  const pageColors = pageColorsFor(state.mode);
-  pdfViewer.pageColors = pageColors;
   const pages = pdfViewer._pages;
   if (!Array.isArray(pages) || !state.document) {
     return;
   }
   for (const pageView of pages) {
-    pageView.pageColors = pageColors;
     try {
       // No keepCanvasWrapper: the canvas has to go or the old colors stay.
       pageView.reset();
@@ -2798,8 +3273,10 @@ function setMode(mode, persist = true) {
   ui.mode.title = mode
     ? `Page mode: ${mode} (Shift+click to clear)`
     : 'Page mode: off';
+  ui.modeName.textContent = mode ? mode[0].toUpperCase() + mode.slice(1) : 'Clear';
   applyPageColors();
   paneViewers.recolor();
+  nav.recolor();
   if (!persist) {
     // A command-line flag styles this window; it is not a new preference.
     return;
@@ -2809,6 +3286,11 @@ function setMode(mode, persist = true) {
   } catch {
     // Storage is a convenience here, never a requirement.
   }
+}
+
+/// Go to the next (+1) or previous (-1) place the last rebuild changed.
+function stepChange(direction) {
+  if (!pdfChanges.step(direction)) setStatus('Nothing changed in the last rebuild');
 }
 
 function cycleMode(clear) {
@@ -2832,17 +3314,22 @@ function openFind() {
   ui.find.hidden = false;
   ui.findInput.focus();
   ui.findInput.select();
+  scheduleFindInPanes();
 }
 
 /// Markdown find marks the page, so typing waits for a pause first.
 let findTimer = 0;
+/// Typing a query is one jump, from where you were; each Enter after it is another.
+let findPushed = false;
 
 function closeFind() {
   window.clearTimeout(findTimer);
   findTimer = 0;
+  findPushed = false;
   ui.find.hidden = true;
   ui.findCount.textContent = '';
   clearMarkdownFind();
+  findInPanes();
   eventBus.dispatch('findbarclose', { source: null });
   ui.container.focus();
 }
@@ -2913,7 +3400,47 @@ function clearMarkdownFind() {
   }
 }
 
+// The panes that are not live mark the query too, while find is open: their
+// Markdown copies and the text layers of their PDF viewers.
+let paneFindTimer = 0;
+
+function markFindIn(root, inline, make) {
+  unwrapMarks(root, inline ? 'mark.aim.find' : 'find-q');
+  const want = ui.find.hidden ? '' : normalizeReviewText(ui.findInput.value);
+  if (want.length < 2) return;
+  const { joined, parts } = collectTextParts(root, inline);
+  const spans = findAllSpans(joined, want, FIND_LIMIT);
+  for (let at = spans.length - 1; at >= 0; at -= 1) wrapSpanParts(root, parts, spans[at], make);
+}
+
+function markMarkdownCopy(article) {
+  markFindIn(article, true, () => {
+    const mark = document.createElement('mark');
+    mark.className = 'aim find';
+    return mark;
+  });
+}
+
+const markPdfLayer = (layer) => markFindIn(layer, false, () => document.createElement('find-q'));
+
+function findInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = 0;
+  if (!panes.active) return;
+  for (const article of paneArticles()) markMarkdownCopy(article);
+  paneViewers.refind();
+}
+
+function scheduleFindInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = panes.active ? window.setTimeout(findInPanes, 150) : 0;
+}
+
 function runFind(type = '', again = false, backwards = false) {
+  if (again || !findPushed) {
+    nav.push();
+    findPushed = true;
+  }
   if (state.file?.kind === 'markdown') {
     if (again) {
       stepMarkdownFind(backwards ? -1 : 1);
@@ -3200,6 +3727,7 @@ function setDocked(edge) {
     button.classList.toggle('on', edge === name);
     button.setAttribute('aria-pressed', String(edge === name));
   }
+  ui.dockMenuButton.classList.toggle('on', Boolean(edge) || state.wrap);
 }
 
 
@@ -5573,7 +6101,7 @@ function applyUiFont(value, { persist = true } = {}) {
   }
 }
 
-const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon', 'monaspace-radon', 'monaspace-krypton'];
+const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon'];
 
 /// The font for code blocks, inline code and the raw Markdown view.
 function applyCodeFont(value, { persist = true } = {}) {
@@ -5608,6 +6136,7 @@ function syncSettings() {
     select.value = ui[theirs].value;
   }
   ui.setDirectEdits.checked = directEditsEnabled();
+  ui.setFocusMode.checked = focusModeEnabled();
   for (const select of ui.figureSelects) select.value = figureSetting(select.dataset.figure);
   ui.aboutVersion.textContent = state.version ? `Version ${state.version}` : '';
 }
@@ -5689,6 +6218,7 @@ ui.next.addEventListener('click', () => {
 ui.page.addEventListener('change', () => {
   const requested = Number(ui.page.value);
   if (Number.isFinite(requested)) {
+    nav.push();
     pdfViewer.currentPageNumber = Math.min(
       Math.max(1, Math.trunc(requested)),
       pdfViewer.pagesCount || 1,
@@ -5713,6 +6243,11 @@ ui.zoom.addEventListener('change', () => {
 ui.zoomIn.addEventListener('click', () => stepZoom(1));
 ui.zoomOut.addEventListener('click', () => stepZoom(-1));
 wireMenuWheel();
+// On the window, so a pinch anywhere never zooms the webview's own page.
+pinchZoom(window, { start: startPinch });
+for (const scroller of [ui.container, ui.markdownStage, ui.imageStage]) {
+  scroller.addEventListener('scroll', schedulePlace, { passive: true });
+}
 ui.copyPath.addEventListener('click', () => void copyFileText('path'));
 ui.copyName.addEventListener('click', () => void copyFileText('name'));
 ui.mode.addEventListener('click', (event) => cycleMode(event.shiftKey || event.altKey));
@@ -5874,6 +6409,9 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
+el('outlineToggle').addEventListener('click', () => nav.toggleOutline());
+new MutationObserver(() => el('outlineToggle').setAttribute('aria-pressed', String(nav.outlineOpen)))
+  .observe(document.body, { attributes: true, attributeFilter: ['class'] });
 ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
 ui.splitView?.addEventListener('change', () => void setSplitView(ui.splitView.value));
 // A figure that arrives after the cut changes its block's height.
@@ -5897,8 +6435,6 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
     if (state.selectedFigure) positionFigureResizer();
   });
 }
-ui.ask.addEventListener('click', () => void askSelection());
-ui.note.addEventListener('click', () => void openNoteBox());
 ui.notes.addEventListener('click', () => toggleReviewPanel());
 ui.reviewSizeDown.addEventListener('click', () => stepReviewSize(-1));
 ui.reviewSizeUp.addEventListener('click', () => stepReviewSize(1));
@@ -6168,7 +6704,12 @@ ui.markdown.addEventListener('click', (event) => {
   const href = anchor.getAttribute('href') || '';
   if (href.startsWith('#')) {
     // Same page: footnotes, and links to headings.
-    markdownFragmentTarget(href.slice(1))?.scrollIntoView({ block: 'start' });
+    const target = markdownFragmentTarget(href.slice(1));
+    if (target) {
+      nav.hidePreview();
+      nav.push();
+      target.scrollIntoView({ block: 'start' });
+    }
     return;
   }
   if (/^https?:/i.test(href)) {
@@ -6262,6 +6803,7 @@ ui.findPrev.addEventListener('click', () => runFind('again', true, true));
 
 ui.findInput.addEventListener('input', () => {
   window.clearTimeout(findTimer);
+  scheduleFindInPanes();
   if (state.file?.kind === 'markdown') {
     findTimer = window.setTimeout(() => {
       findTimer = 0;
@@ -6314,6 +6856,7 @@ eventBus.on('scalechanging', (event) => {
   const value = event.presetValue || pdfViewer.currentScaleValue || event.scale;
   updateZoomControl(String(value), event.scale);
   scheduleWrap();
+  schedulePlace();
 });
 eventBus.on('updatefindmatchescount', ({ matchesCount }) => {
   ui.findCount.textContent = matchesCount?.total
@@ -6355,6 +6898,11 @@ const palette = createPalette({
   };
   palette.add(
     { label: 'Open file…', group: 'File', shortcut: 'Ctrl+O', icon: '#i-open', run: () => ui.open.click() },
+    { label: 'Open recent…', group: 'File', icon: '#i-open', when: () => recentPlaces(1).length > 0, run: () => palette.open('Open recent: ') },
+    () => recentPlaces(RECENT_SHOWN).map((entry) => ({
+      id: `recent:${entry.path}`, label: `Open recent: ${entry.name}`, group: 'File', icon: KIND_ICONS[entry.kind] || '#i-kind-md',
+      detail: folderOf(entry.path), current: entry.path === state.file?.path, run: () => openRecent(entry.path),
+    })),
     { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
     { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
     { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
@@ -6368,8 +6916,14 @@ const palette = createPalette({
     { label: 'Zoom out', group: 'View', shortcut: '-', icon: '#i-zoom-out', when: hasFile, run: () => stepZoom(-1) },
     selectChoices(ui.zoom, { id: 'zoom', label: 'Zoom', group: 'View', when: hasFile }),
     selectChoices(ui.pageView, { id: 'page-view', label: 'Page view', group: 'View', when: reviewable }),
+    { label: 'Show the outline', group: 'View', shortcut: 'Ctrl+Shift+O', when: () => reviewable() && !nav.outlineOpen, run: () => nav.toggleOutline(true) },
+    { label: 'Hide the outline', group: 'View', shortcut: 'Ctrl+Shift+O', when: () => nav.outlineOpen, run: () => nav.toggleOutline(false) },
+    { label: 'Back', group: 'View', shortcut: 'Alt+←', icon: '#i-prev', when: () => nav.canGo('back'), run: () => nav.back() },
+    { label: 'Forward', group: 'View', shortcut: 'Alt+→', icon: '#i-next', when: () => nav.canGo('forward'), run: () => nav.forward() },
     { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
     { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
+    { label: 'Next change', group: 'View', shortcut: '.', icon: '#i-next', when: () => kind() === 'pdf', run: () => stepChange(1) },
+    { label: 'Previous change', group: 'View', shortcut: ',', icon: '#i-prev', when: () => kind() === 'pdf', run: () => stepChange(-1) },
     { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
     { label: 'Previous file in folder', group: 'View', shortcut: '←', icon: '#i-prev', when: () => kind() === 'image', run: () => stepSibling(-1) },
     { label: 'Rotate a quarter turn clockwise', group: 'View', icon: '#i-rotate', when: () => kind() === 'image', run: () => setImageRotation(state.imageRotation + 90) },
@@ -6405,17 +6959,29 @@ const palette = createPalette({
       label: `Move to the pane ${direction === 'up' ? 'above' : direction === 'down' ? 'below' : `on the ${direction}`}`,
       group: 'Panes', shortcut: `Ctrl+Alt+${arrow}`, when: () => panes.active, run: () => movePaneFocus(direction),
     })),
+    { label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.active && !panes.maximized, run: maximizePane },
+    { label: 'Bring the other panes back', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.maximized, run: maximizePane },
+    ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
+      label: `Move the pane edge ${direction}`, group: 'Panes', shortcut: `Ctrl+Alt+Shift+${arrow}`,
+      when: () => panes.active && !panes.maximized, run: () => resizePane(direction),
+    })),
     { label: 'Fit the window to the content', group: 'Window', shortcut: 'Ctrl+Shift+F', icon: '#i-wrap', run: toggleWrap },
     ...[['left', 'left half', '←'], ['right', 'right half', '→'], ['top', 'top half', '↑'], ['bottom', 'bottom half', '↓']].map(([edge, half, arrow]) => ({
       label: `Fill the ${half} of the screen`, group: 'Window', shortcut: `Ctrl+Shift+${arrow}`, icon: `#i-dock-${edge}`, run: () => dockTo(edge),
     })),
     { label: 'Center and fit the window to the page', group: 'Window', shortcut: 'Ctrl+Shift+Enter', icon: '#i-dock-center', run: () => dockTo('center') },
+    { label: 'Full screen', group: 'Window', shortcut: 'F11', icon: '#i-fullscreen', run: () => toggleFullScreen() },
+    { label: 'Present', group: 'View', shortcut: 'F5', icon: '#i-present', when: reviewable, run: startPresentation },
     { label: 'Open settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => ui.settingsPanel.hidden, run: () => toggleSettings(true) },
     { label: 'Close settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => !ui.settingsPanel.hidden, run: () => toggleSettings(false) },
     selectChoices(ui.setUiFont, { id: 'ui-font', label: 'Interface font', group: 'Settings' }),
     selectChoices(ui.setCodeFont, { id: 'code-font', label: 'Code font', group: 'Settings' }),
     selectChoices(ui.poll, { id: 'poll', label: 'Check for changes', group: 'Settings' }),
     ...Array.from(ui.figureSelects, (select) => selectChoices(select, { id: `figure-${select.dataset.figure}`, label: figureLabels[select.dataset.figure], group: 'Settings' })),
+    () => [true, false].map((on) => ({
+      id: `focus-mode:${on}`, label: `Hide the toolbar while reading: ${on ? 'on' : 'off'}`, group: 'Settings',
+      current: focusModeEnabled() === on, run: () => setFocusModeEnabled(on),
+    })),
     () => [true, false].map((on) => ({
       id: `direct-edits:${on}`, label: `Edit the Markdown file in place: ${on ? 'on' : 'off'}`, group: 'Settings',
       current: directEditsEnabled() === on, run: () => directEdits(on),
@@ -6434,6 +7000,202 @@ const palette = createPalette({
     palette.open();
   });
 }
+
+// ── Quiet toolbar, focus mode, full screen, presentation ─────────────────
+
+const viewMenu = wirePopover(ui.viewMenuButton, ui.viewMenu);
+const dockMenu = wirePopover(ui.dockMenuButton, ui.dockMenu);
+
+function focusModeEnabled() {
+  try {
+    return localStorage.getItem('pdf-next.focus-mode') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function setFocusModeEnabled(on) {
+  try {
+    localStorage.setItem('pdf-next.focus-mode', on ? '1' : '0');
+  } catch {
+    // Preference only.
+  }
+  ui.setFocusMode.checked = on;
+  focusMode.check();
+}
+
+const focusMode = createFocusMode({
+  bar: ui.bar,
+  enabled: focusModeEnabled,
+  blocked: () => !state.file || state.reviewOpen || palette.isOpen || viewMenu.isOpen || dockMenu.isOpen ||
+    [ui.settingsPanel, ui.find, ui.noteBox, ui.editBox, ui.reviewMenu].some((box) => !box.hidden),
+});
+ui.setFocusMode.addEventListener('change', () => setFocusModeEnabled(ui.setFocusMode.checked));
+
+function showFullScreen(on) {
+  ui.fullScreen.classList.toggle('on', on);
+  ui.fullScreen.setAttribute('aria-pressed', String(on));
+}
+
+async function toggleFullScreen(on) {
+  try {
+    const next = on ?? !(await isFullscreen());
+    // Wrap sizes the window to the page; full screen is the opposite instruction.
+    if (next && state.wrap) setWrap(false);
+    holdResize();
+    await setFullscreen(next);
+    showFullScreen(next);
+  } catch (error) {
+    setStatus(`Full screen did not work: ${error?.message || error}`, { error: true });
+  }
+}
+
+/// Markdown pages fill the screen in presentation: one A4 box, scaled to fit.
+const A4_PX = { width: (210 * 96) / 25.4, height: (297 * 96) / 25.4 };
+
+const presentedSheets = () => Array.from(ui.markdown.querySelectorAll(':scope > .md-page'));
+
+function presentedSheet() {
+  const stage = ui.markdownStage.getBoundingClientRect();
+  const middle = stage.top + stage.height / 2;
+  const sheets = presentedSheets();
+  let best = 0;
+  sheets.forEach((sheet, index) => {
+    const box = sheet.getBoundingClientRect();
+    const old = sheets[best].getBoundingClientRect();
+    if (Math.abs(box.top + box.height / 2 - middle) < Math.abs(old.top + old.height / 2 - middle)) best = index;
+  });
+  return best;
+}
+
+function showSheet(index) {
+  const sheet = presentedSheets()[index];
+  if (!sheet) return;
+  const stage = ui.markdownStage;
+  const box = sheet.getBoundingClientRect();
+  const top = stage.getBoundingClientRect().top;
+  stage.scrollTop += box.top - top - Math.max(0, (stage.clientHeight - box.height) / 2);
+}
+
+function fitPresentation() {
+  if (presentation?.kind !== 'markdown') return;
+  const index = presentedSheet();
+  const stage = ui.markdownStage;
+  setMarkdownScale(Math.min((stage.clientHeight - 16) / A4_PX.height, (stage.clientWidth - 16) / A4_PX.width));
+  paginateMarkdown({ keepPosition: false });
+  showSheet(index);
+}
+
+async function startPresentation() {
+  const kind = state.file?.kind;
+  if (presentation) return;
+  if (!(kind === 'pdf' && state.document) && kind !== 'markdown') {
+    setStatus('Open a PDF or Markdown file to present');
+    return;
+  }
+  if (panes.active) {
+    setStatus('Go back to one pane to present');
+    return;
+  }
+  if (palette.isOpen) palette.close();
+  viewMenu.close(false);
+  dockMenu.close(false);
+  toggleSettings(false);
+  if (!ui.find.hidden) closeFind();
+  hideReviewChrome();
+  presentation = {
+    kind,
+    path: state.file.path,
+    fullscreen: await isFullscreen().catch(() => false),
+    wrap: state.wrap,
+    page: pdfViewer.currentPageNumber,
+    scale: kind === 'pdf' ? pdfViewer.currentScaleValue : state.markdownScale,
+    scrollMode: pdfViewer.scrollMode,
+    view: state.pageViews.md,
+    raw: state.markdownRaw,
+    scrollTop: ui.markdownStage.scrollTop,
+  };
+  document.body.classList.add('presenting');
+  if (state.wrap) setWrap(false);
+  if (kind === 'pdf') {
+    applyPdfSpread();
+    pdfViewer.currentScaleValue = 'page-fit';
+    pdfViewer.currentPageNumber = presentation.page;
+  } else {
+    if (state.markdownRaw) setRaw(false, { persist: false });
+    setPageView('single', { persist: false, apply: false });
+    paginateMarkdown();
+    fitPresentation();
+  }
+  holdResize();
+  await setFullscreen(true).catch(() => {});
+}
+
+function stepPresentation(delta) {
+  if (presentation.kind === 'pdf') {
+    pdfViewer.currentPageNumber = Math.min(Math.max(1, pdfViewer.currentPageNumber + delta), pdfViewer.pagesCount);
+  } else {
+    showSheet(Math.min(Math.max(0, presentedSheet() + delta), presentedSheets().length - 1));
+  }
+}
+
+async function stopPresentation() {
+  const saved = presentation;
+  if (!saved) return;
+  presentation = null;
+  document.body.classList.remove('presenting');
+  const here = () => state.file?.path === saved.path;
+  const restore = () => {
+    if (!here()) return;
+    if (saved.kind === 'pdf' && state.document) pdfViewer.currentPageNumber = saved.page;
+    else if (saved.kind === 'markdown') ui.markdownStage.scrollTop = saved.scrollTop;
+  };
+  if (saved.kind === 'pdf' && state.document) {
+    pdfViewer.scrollMode = saved.scrollMode;
+    applyPdfSpread();
+    pdfViewer.currentScaleValue = String(saved.scale);
+  } else if (saved.kind === 'markdown') {
+    setMarkdownScale(saved.scale);
+    setPageView(saved.view, { persist: false, apply: false });
+    paginateMarkdown({ keepPosition: false });
+    if (saved.raw) setRaw(true, { persist: false });
+  }
+  restore();
+  if (!saved.fullscreen) {
+    holdResize();
+    await setFullscreen(false).catch(() => {});
+  }
+  if (saved.wrap) {
+    setWrap(true);
+    scheduleWrap();
+  }
+  // Leaving full screen reshapes the window a moment later; land on the page again then.
+  window.setTimeout(restore, 200);
+}
+
+ui.fullScreen.addEventListener('click', () => void toggleFullScreen());
+ui.present.addEventListener('click', () => void startPresentation());
+window.addEventListener('resize', () => {
+  if (presentation) fitPresentation();
+  void isFullscreen().then(showFullScreen, () => {});
+});
+
+// Ahead of every other key handler: while presenting, the reading keys and a
+// clicker (which sends PageUp and PageDown) step pages, and Esc gives the view back.
+window.addEventListener('keydown', (event) => {
+  if (!presentation || event.ctrlKey || event.metaKey || event.altKey) return;
+  // The palette or Settings opened over the slides keeps its keys.
+  if (palette.isOpen || !ui.settingsPanel.hidden || isTextField(event.target)) return;
+  const steps = {
+    ArrowRight: 1, ArrowDown: 1, PageDown: 1, Enter: 1, n: 1, j: 1, ' ': event.shiftKey ? -1 : 1,
+    ArrowLeft: -1, ArrowUp: -1, PageUp: -1, Backspace: -1, p: -1, k: -1, Home: -Infinity, End: Infinity,
+  };
+  if (event.key === 'Escape' || event.key === 'F5') void stopPresentation();
+  else if (event.key in steps) stepPresentation(steps[event.key]);
+  else return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 
 window.addEventListener('keydown', (event) => {
   const typing =
@@ -6456,6 +7218,11 @@ window.addEventListener('keydown', (event) => {
     palette.toggle();
     return;
   }
+  if ((event.key === 'F11' || event.key === 'F5') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    void (event.key === 'F11' ? toggleFullScreen() : startPresentation());
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {
     event.preventDefault();
     toggleSettings();
@@ -6476,6 +7243,18 @@ window.addEventListener('keydown', (event) => {
     cancelReattach();
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === 'o') {
+    event.preventDefault();
+    nav.toggleOutline();
+    return;
+  }
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !typing &&
+      (key === 'arrowleft' || key === 'arrowright')) {
+    event.preventDefault();
+    if (key === 'arrowleft') nav.back();
+    else nav.forward();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key === 'o') {
     event.preventDefault();
     ui.open.click();
@@ -6487,15 +7266,21 @@ window.addEventListener('keydown', (event) => {
     void splitPane(key === 'd' ? 'right' : 'bottom');
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && panes.active) {
+  if ((event.ctrlKey || event.metaKey) && event.altKey && panes.active) {
     const paneKeys = { arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down' };
     if (paneKeys[key]) {
       event.preventDefault();
-      void movePaneFocus(paneKeys[key]);
+      if (event.shiftKey) resizePane(paneKeys[key]);
+      else void movePaneFocus(paneKeys[key]);
       return;
     }
   }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === 'm') {
+    event.preventDefault();
+    maximizePane();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey) {
     const dockKeys = {
       arrowleft: 'left',
       arrowright: 'right',
@@ -6689,6 +7474,7 @@ window.addEventListener('keydown', (event) => {
         ui.markdownStage.scrollBy({ top: -90 });
         break;
       case 'g':
+        nav.push();
         ui.markdownStage.scrollTo({
           top: event.shiftKey ? ui.markdownStage.scrollHeight : 0,
         });
@@ -6716,7 +7502,12 @@ window.addEventListener('keydown', (event) => {
       ui.prev.click();
       break;
     case 'g':
+      nav.push();
       pdfViewer.currentPageNumber = event.shiftKey ? pdfViewer.pagesCount : 1;
+      break;
+    case '.':
+    case ',':
+      stepChange(key === '.' ? 1 : -1);
       break;
     default:
       return;
@@ -6824,6 +7615,7 @@ listen('file-changed', async (event) => {
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') {
+    rememberPlace();
     saveSession();
     // A hidden window does not need warm font and image caches; they rebuild
     // lazily on return. cleanup() refuses to run mid-render, which is fine —
@@ -6941,6 +7733,8 @@ if (!launch?.smoke) {
 }
 state.version = String(launch?.version || '');
 state.platform = String(launch?.platform || '');
+state.placesOn = !launch?.smoke;
+if (state.platform === 'macos') ui.emptyKey.textContent = '⌘';
 setTitle(state.file?.name || '');
 if (typeof launch?.poll === 'number') {
   // The flag wins over the saved preference, which was already sent above.
@@ -6959,6 +7753,7 @@ if (launch?.mode) {
 }
 
 window.addEventListener('beforeunload', () => {
+  rememberPlace();
   saveSession();
 });
 
@@ -6990,6 +7785,7 @@ if (initial) {
 } else if (!launch?.smoke) {
   await restoreSession();
 }
+if (!state.file) renderRecent();
 mark('open');
 ui.container.focus();
 
