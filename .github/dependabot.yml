@@ -6,6 +6,12 @@ updates:
     open-pull-requests-limit: 5
     schedule:
       interval: monthly
+    ignore:
+      # picamatl 0.4.x depends on lopdf 0.44. main.rs preflights PDF bytes
+      # with the same lopdf that picamatl loads them with, so lopdf stays on
+      # 0.44 until picamatl moves to a newer lopdf.
+      - dependency-name: "lopdf"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       cargo-src-tauri-updates:
         patterns:

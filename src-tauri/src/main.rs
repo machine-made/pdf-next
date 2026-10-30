@@ -3986,14 +3986,25 @@ fn file_sha256(mut file: std::fs::File) -> Result<String, String> {
         }
         digest.update(&buffer[..count]);
     }
-    Ok(format!("sha256:{:x}", digest.finalize()))
+    Ok(format!("sha256:{}", hex_lower(&digest.finalize())))
+}
+
+/// Lowercase hex of a digest. sha2 0.11 digests no longer implement `LowerHex`.
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 /// Same digest as `file_sha256`, for text already read. `read_to_string`
 /// accepts only valid UTF-8, so the string holds exactly the file's bytes.
 fn text_sha256(text: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+    format!("sha256:{}", hex_lower(&Sha256::digest(text.as_bytes())))
 }
 
 struct ReviewLock(std::fs::File);
@@ -9875,7 +9886,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let pdf = dir.join("paper.pdf");
         let bytes = b"%PDF-1.1\nsmall stable fixture\n%%EOF\n";
         std::fs::write(&pdf, bytes).unwrap();
-        let expected = format!("sha256:{:x}", Sha256::digest(bytes));
+        let expected = format!("sha256:{}", super::hex_lower(&Sha256::digest(bytes)));
         let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let stored = write_review(pdf.to_str().unwrap(), pdf_review(), &allowed).unwrap();
         assert_eq!(
