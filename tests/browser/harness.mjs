@@ -97,6 +97,10 @@ function mockTauri({ files, initial, theme, store }) {
           case 'launch_options': return { version: '0.0.0-test' };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
+          case 'files_exist': {
+            const gone = [...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')];
+            return args.paths.map((path) => !gone.includes(path));
+          }
           case 'open_path':
             if ([...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')].includes(args.path)) throw `${args.path} does not exist`;
             return info(args.path);

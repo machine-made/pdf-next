@@ -2803,7 +2803,7 @@ function cycleTab(delta) {
 const RECENT_SHOWN = 8;
 const KIND_ICONS = { pdf: '#i-kind-pdf', image: '#i-kind-image' };
 
-function renderRecent() {
+async function renderRecent() {
   if (state.file) return;
   const entries = recentPlaces(RECENT_SHOWN);
   ui.recent.hidden = !entries.length;
@@ -2827,14 +2827,14 @@ function renderRecent() {
     item.append(button);
     return item;
   }));
-  for (const entry of entries) {
-    invoke('open_path', { path: entry.path, activate: false }).catch(() => {
-      const button = [...ui.recentList.querySelectorAll('.recent-item')].find((item) => item.dataset.path === entry.path);
-      if (!button) return;
-      button.classList.add('missing');
-      button.querySelector('.recent-when').textContent = 'not found';
-    });
-  }
+  const exists = await invoke('files_exist', { paths: entries.map((entry) => entry.path) }).catch(() => []);
+  entries.forEach((entry, i) => {
+    if (exists[i] !== false) return;
+    const button = [...ui.recentList.querySelectorAll('.recent-item')].find((item) => item.dataset.path === entry.path);
+    if (!button) return;
+    button.classList.add('missing');
+    button.querySelector('.recent-when').textContent = 'not found';
+  });
 }
 
 async function openRecent(path) {

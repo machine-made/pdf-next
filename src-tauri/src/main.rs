@@ -369,6 +369,19 @@ fn open_path(
     adopt(&watched, PathBuf::from(path), activate.unwrap_or(true))
 }
 
+/// Whether each path is a file, for the recent list. Only metadata is read:
+/// nothing is opened, watched or added to the files the frontend may read.
+#[tauri::command]
+fn files_exist(paths: Vec<String>) -> Vec<bool> {
+    paths
+        .iter()
+        .take(MAX_RECENT_PROBES)
+        .map(|path| std::path::Path::new(path).is_file())
+        .collect()
+}
+
+const MAX_RECENT_PROBES: usize = 16;
+
 #[tauri::command]
 fn close_document(watched: State<'_, Watched>) -> Result<(), String> {
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
@@ -6132,6 +6145,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             open_path,
+            files_exist,
             close_document,
             watch_secondary,
             trash_document,
@@ -6234,6 +6248,25 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn files_exist_reads_only_metadata_and_caps_the_list() {
+        let dir = std::env::temp_dir().join(format!("pdf-next-exist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("paper.pdf");
+        std::fs::write(&file, b"%PDF-1.4\n%%EOF\n").unwrap();
+        let paths = vec![
+            file.to_string_lossy().into_owned(),
+            dir.join("gone.pdf").to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(crate::files_exist(paths), vec![true, false, false]);
+        assert_eq!(
+            crate::files_exist(vec![String::new(); 40]).len(),
+            crate::MAX_RECENT_PROBES
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     use super::{
         adopt, empty_store, review_sidecar, save_store as save_bound_store, ReviewDocument,
         Watched, LEGACY_REVIEW_FILE,
