@@ -253,8 +253,16 @@ const html = [
   '<div class="footnote-definition" id="md-1"><sup class="footnote-definition-label">1</sup><p>The footnote text.</p></div>',
 ].join('\n');
 const files = { '/d/a.md': { raw: '# Intro\n', html }, '/d/b.md': 'Plain text, no headings.\n' };
-const { page, ok, finish } = await start({ files, viewport: { width: 1200, height: 700 } });
+const { page, ok, openMenu, finish } = await start({ files, viewport: { width: 1200, height: 700 } });
 await page.waitForSelector('#markdown h1');
+await openMenu();
+await page.click('#outlineToggle');
+await settle(page, 300);
+ok(await page.evaluate(() => document.body.classList.contains('outline-open')) && await page.$eval('#outlineToggle', (b) => b.getAttribute('aria-pressed')) === 'true', 'Outline in the View menu opens the sidebar and shows as pressed');
+await page.click('#outlineToggle');
+await settle(page, 300);
+ok(!await page.evaluate(() => document.body.classList.contains('outline-open')) && await page.$eval('#outlineToggle', (b) => b.getAttribute('aria-pressed')) === 'false', 'and closes it again');
+await page.keyboard.press('Escape');
 await page.keyboard.press('Control+Shift+O');
 await page.waitForSelector('#outlineTree [role="treeitem"]');
 const mdLabels = await page.$$eval('#outlineTree .outline-label', (l) => l.map((x) => `${x.closest('[role="treeitem"]').getAttribute('aria-level')}${x.textContent}`));

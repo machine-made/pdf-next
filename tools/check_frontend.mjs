@@ -63,7 +63,7 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
   const sync = await readFile('tools/sync_release_notes.mjs', 'utf8');
   assert.match(sync, /'tools\/release_notes\.mjs', tag/, 'Synced notes are exactly what release_notes.mjs prints.');
   assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
-  assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
+  assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\) && name === title\) \{\s*continue;/, 'A release whose notes and title match is not edited.');
   if (process.platform !== 'win32') {
     // Against a stand-in gh (a shell script, so not on Windows): generated and download-only notes follow the
     // changelog; notes written by hand are never replaced.
@@ -74,9 +74,11 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
     const bin = mkdtempSync(join(tmpdir(), 'pdf-next-gh-'));
     const generatedBody = execFileSync(process.execPath, ['tools/release_notes.mjs', '0.16.4'], { encoding: 'utf8' }).replace('- ', '- Old wording: ');
     const releases = [
-      { tag: 'v0.16.4', body: generatedBody },
-      { tag: 'v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
-      { tag: 'v0.16.0', body: 'pdf-next by machine-made.\n\n- Review box: Esc, × and Cancel close it.' },
+      { tag: 'v0.16.4', name: 'pdf-next v0.16.4', body: generatedBody },
+      { tag: 'v0.5.0', name: 'pdf-next v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
+      { tag: 'v0.16.0', name: 'pdf-next v0.16.0', body: 'pdf-next by machine-made.\n\n- Review box: Esc, × and Cancel close it.' },
+      { tag: 'v0.17.0', name: 'pdf-next v0.17.0', body: execFileSync(process.execPath, ['tools/release_notes.mjs', '0.17.0'], { encoding: 'utf8' }) },
+      { tag: 'v0.16.5', name: 'pdf-next v0.16.5', body: execFileSync(process.execPath, ['tools/release_notes.mjs', '0.16.5'], { encoding: 'utf8' }) },
     ].map((release) => JSON.stringify(release)).join('\n');
     writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in *latest*) echo v0.16.4 ;; *paginate*) cat <<'JSON'\n${releases}\nJSON\n;; *) exit 1 ;; esac\n`);
     chmodSync(join(bin, 'gh'), 0o755);
@@ -87,6 +89,8 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
       assert.match(out, /would update v0\.16\.4\n/, 'Generated release notes follow CHANGELOG.md.');
       assert.match(out, /would update v0\.5\.0\n/, 'Download-only notes get their CHANGELOG.md section.');
       assert.doesNotMatch(out, /v0\.16\.0/, 'Release notes written by hand are left alone.');
+      assert.match(out, /would update v0\.17\.0 \(title: pdf-next 0\.17\.0 · Margin\)\n/, 'A named minor gets its name in the release title.');
+      assert.doesNotMatch(out, /v0\.16\.5/, 'A release whose notes and title already match is not edited.');
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
@@ -3536,7 +3540,8 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
   assert.match(page, /<div id="outlineTree" role="tree"/);
   assert.match(page, /<div id="outlineGrip" role="separator"[^>]*tabindex="0"/, 'The sidebar edge is a separator the keyboard can reach.');
   assert.match(page, /<div id="linkPreview" role="tooltip" hidden><\/div>/, 'A link preview is a tooltip.');
-  assert.doesNotMatch(page, /id="toggleOutline"|id="outlineToggle"/, 'The sidebar has no toolbar button of its own.');
+  const viewMenu = page.slice(page.indexOf('id="viewMenu"'), page.indexOf('id="dockMenuButton"'));
+  assert.match(viewMenu, /<button id="outlineToggle" type="button" class="menu-row page-view-only"[^>]*aria-pressed="false"/, 'The sidebar opens from the View menu, not a toolbar button of its own.');
   assert.match(app, /import \{ createNavigator \} from '\.\/navigate\.mjs';/);
   for (const [label, shortcut] of [['Show the outline', 'Ctrl\\+Shift\\+O'], ['Hide the outline', 'Ctrl\\+Shift\\+O'], ['Back', 'Alt\\+←'], ['Forward', 'Alt\\+→']]) {
     assert.match(app, new RegExp(`label: '${label}', group: 'View', shortcut: '${shortcut}'`), `The palette offers ${label} with its shortcut.`);
@@ -3653,4 +3658,15 @@ console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
   assert.match(pages, /node tools\/screenshots\.mjs/, 'A release retakes the website screenshots.');
   assert.match(pages, /concurrency:\s*\n\s*group: apt-repository/, 'The website never pushes to gh-pages while apt does.');
   assert.match(release, /website:\s*\n\s*needs: \[publish, apt\][\s\S]*?uses: \.\/\.github\/workflows\/pages\.yml/, 'release.yml publishes the website after apt.');
+}
+
+// Release names: from 0.17 on, every minor version has a one-word name, used in its release titles.
+{
+  const names = JSON.parse(await readFile('tools/release-names.json', 'utf8'));
+  for (const [minor, name] of Object.entries(names)) {
+    assert.match(minor, /^\d+\.\d+$/, `release-names.json keys are minor versions (${minor}).`);
+    assert.match(name, /^[A-Z][a-z]+$/, `A release name is one capitalised word (${name}).`);
+  }
+  const current = JSON.parse(await readFile('package.json', 'utf8')).version.split('.').slice(0, 2).join('.');
+  assert.ok(names[current], `Version ${current} needs a name in tools/release-names.json.`);
 }

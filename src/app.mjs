@@ -6389,6 +6389,9 @@ async function checkForUpdates({ quiet = false } = {}) {
 ui.update.addEventListener('click', () => checkForUpdates());
 ui.wrap.addEventListener('click', toggleWrap);
 ui.raw.addEventListener('click', () => setRaw(!state.markdownRaw));
+el('outlineToggle').addEventListener('click', () => nav.toggleOutline());
+new MutationObserver(() => el('outlineToggle').setAttribute('aria-pressed', String(nav.outlineOpen)))
+  .observe(document.body, { attributes: true, attributeFilter: ['class'] });
 ui.pageView.addEventListener('change', () => setPageView(ui.pageView.value));
 ui.splitView?.addEventListener('change', () => void setSplitView(ui.splitView.value));
 // A figure that arrives after the cut changes its block's height.

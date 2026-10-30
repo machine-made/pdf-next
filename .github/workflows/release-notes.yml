@@ -10,7 +10,7 @@ name: Release notes
 on:
   push:
     branches: [main]
-    paths: [CHANGELOG.md, tools/release_notes.mjs, tools/sync_release_notes.mjs]
+    paths: [CHANGELOG.md, tools/release-names.json, tools/release_notes.mjs, tools/sync_release_notes.mjs]
   workflow_call:
   workflow_dispatch:
 

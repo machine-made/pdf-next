@@ -101,6 +101,7 @@ jobs:
             echo 'body<<PDF_NEXT_NOTES'
             node tools/release_notes.mjs "$GITHUB_REF_NAME"
             echo 'PDF_NEXT_NOTES'
+            echo "title=$(node tools/release_notes.mjs "$GITHUB_REF_NAME" --title)"
           } >> "$GITHUB_OUTPUT"
 
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
@@ -111,7 +112,7 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: pdf-next ${{ github.ref_name }}
+          releaseName: ${{ steps.notes.outputs.title }}
           releaseBody: ${{ steps.notes.outputs.body }}
           # Held as a draft until every platform's bundle has opened a
           # document. Nothing is announced, and nothing a package manager

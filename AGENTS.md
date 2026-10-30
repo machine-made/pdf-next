@@ -89,6 +89,14 @@ then flat bullets, one sentence each, starting with `Added`, `Fixed`,
 - Windows: fixed the installer asking twice for permission
 ```
 
+### Release names
+
+Every minor version has a one-word name (0.17 Margin, 0.18 Quiet) in
+`tools/release-names.json`. It goes into the release titles
+(`pdf-next 0.18.0 · Quiet`) and the website. A new minor adds its name in the
+version-bump pull request; use the maintainer's if he gave one, otherwise pick
+a word that says what the release is about. Patches keep their minor's name.
+
 ### Choosing the next version
 
 You choose the next version yourself; do not ask. Look at what changed since

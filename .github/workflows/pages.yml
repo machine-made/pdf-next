@@ -101,7 +101,8 @@ jobs:
           else
             cp -R site/. pages/
           fi
-          sed -i "s/{{version}}/$version/g" pages/index.html
+          release=$(node tools/release_notes.mjs "$version" --title)
+          sed -i "s/{{version}}/${release#pdf-next }/g" pages/index.html
           if grep -q '{{' pages/index.html; then
             echo "::error title=Website::index.html still has a {{placeholder}}"
             exit 1
