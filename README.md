@@ -58,7 +58,9 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **Present** with `F5`: full screen, no toolbar, one page at a time fitted to the screen, on
   black. `←` / `→`, `PageUp` / `PageDown` (what a presentation clicker sends), `Space`, `Home`
   and `End` move through the pages; `Esc` comes back to the view, zoom and page you had. A
-  Markdown file is shown as its A4 pages.
+  Markdown file is shown as its A4 pages. The outline steps aside while you present, `Alt+←`
+  after following a link goes back to the slide you came from, and switching to another tab
+  ends the presentation.
 
 ### Tabs and panes
 
