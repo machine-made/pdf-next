@@ -18,9 +18,10 @@ reviews:
 
   auto_review:
     enabled: true               # every PR; the central config is manual only (jac decision 0021)
+    auto_pause_after_reviewed_commits: 0   # and every push, without pausing
     drafts: false               # sessions open PRs ready; drafts wait
     base_branches: [".*"]
-    ignore_title_keywords: ["wip", "[skip review]"]
+    ignore_title_keywords: ["[wip]", "[skip review]"]
     # Bot dependency bumps: CI and cargo-deny check them; save the allowance
     ignore_usernames: ["dependabot[bot]", "renovate[bot]"]
 
@@ -58,7 +59,7 @@ reviews:
   path_instructions:
     - path: "**/*.rs"
       instructions: |
-        Rust, edition 2024. Flag: unwrap, expect or panic in library code
+        Rust, edition 2021. Flag: unwrap, expect or panic in library code
         (tests, benches and examples may use them); any `unsafe` (crates
         use forbid(unsafe_code); an FFI parity harness is the only
         exception and needs a SAFETY comment); lossy `as` casts in
@@ -71,7 +72,7 @@ reviews:
         loosened tolerance and goldens regenerated from the new code.
     - path: "**/Cargo.toml"
       instructions: |
-        Crate manifest. Flag: edition other than 2024; no rust-version;
+        Crate manifest. Flag: edition other than 2021; no rust-version;
         repository or homepage outside github.com/machine-made; a missing
         licence, or a port whose licence is not compatible with its
         original; wildcard or git dependencies in a published crate.
