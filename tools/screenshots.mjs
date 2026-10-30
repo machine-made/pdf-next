@@ -114,6 +114,7 @@ export function checkShot(name, image, info) {
   const scale = image.width / info.width;
   const rect = (r) => r && { x: r.x * scale, y: r.y * scale, width: r.width * scale, height: r.height * scale };
   const results = [[scale === 2 && info.width === 1440 && info.height === 900, `${name} is a 1440x900 window drawn at twice its size (${image.width}x${image.height} for ${info.width}x${info.height})`]];
+  results.push([info.barShown !== false, `${name} shows the toolbar`]);
   const below = { x: 0, y: info.bar * scale, width: image.width, height: image.height - info.bar * scale };
   if (name === 'paper' || name === 'night') {
     const page = info.page && stats(image, rect(info.page));
@@ -230,9 +231,13 @@ async function main() {
           await until('innerWidth === 1440 && innerHeight === 900', 'a 1440x900 window', 5_000).catch(() => {});
         };
         // As on an offline machine, so a build older than the latest release
-        // shows no update notice; the check runs 3 s after launch.
+        // shows no update notice; the check runs 3 s after launch. Focus mode
+        // off, or the toolbar fades in some pictures and not in others,
+        // depending on the keys and scrolls that came before.
         await run(`const real = window.fetch;
-          window.fetch = (url, ...rest) => String(url).startsWith('https://api.github.com/') ? Promise.reject(new TypeError('offline')) : real(url, ...rest);`);
+          window.fetch = (url, ...rest) => String(url).startsWith('https://api.github.com/') ? Promise.reject(new TypeError('offline')) : real(url, ...rest);
+          localStorage.setItem('pdf-next.focus-mode', '0');
+          document.body.classList.remove('bar-hidden');`);
         await until(shot.ready, 'the document');
         await size();
         if (!shot.open.includes('--night')) await run("document.getElementById('mode').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }))");
@@ -247,6 +252,7 @@ async function main() {
             const x = Math.max(0, r.left), y = Math.max(0, r.top), w = Math.min(innerWidth, r.right) - x, h = Math.min(innerHeight, r.bottom) - y;
             return w > 0 && h > 0 ? { x, y, width: w, height: h } : null; };
           return { width: innerWidth, height: innerHeight, bar: document.getElementById('bar').getBoundingClientRect().bottom,
+            barShown: getComputedStyle(document.getElementById('bar')).opacity === '1',
             page: box(document.querySelector('#viewer .page')), column: box(document.getElementById('markdown')),
             review: box(document.getElementById('reviewPane')), groups: [...document.querySelectorAll('#panes .dv-groupview')].map(box).filter(Boolean) };`);
         taken.push(name);
