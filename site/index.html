@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdf-next by machine-made</title>
+<meta name="description" content="pdf-next shows the PDF your build writes, or the Markdown you are editing, and redraws it every time the file changes: same page, same zoom, same spot.">
+<meta property="og:title" content="pdf-next by machine-made">
+<meta property="og:description" content="You write in one window. This is the other one: a PDF and Markdown viewer that redraws every time the file changes.">
+<meta property="og:image" content="https://machine-made.github.io/pdf-next/shots/paper.png">
+<link rel="icon" href="icon.png">
+<style>
+  @font-face { font-family: "mm Sans"; src: url("fonts/MachineMadeSans-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "mm Weft"; src: url("fonts/MachineMadeWeft-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7; --fg: #1c1d1f; --dim: #5d6168; --line: #e4e1da; --card: #ffffff;
+    --accent: #2f5bd3; --code: #f1efe9;
+    --sans: "mm Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --display: "mm Weft", "mm Sans", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131416; --fg: #e8e6e1; --dim: #a1a4aa; --line: #2a2c30; --card: #1b1c1f; --accent: #8ba9ff; --code: #1f2024; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--sans); }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.25rem; }
+  .narrow { max-width: 44rem; }
+
+  header.top { display: flex; align-items: center; justify-content: space-between; padding: 1.25rem 0; font-size: .95rem; }
+  header.top .brand { font-family: var(--display); font-weight: 650; letter-spacing: -.01em; color: var(--fg); text-decoration: none; }
+  header.top .brand span { color: var(--dim); font-weight: 400; }
+  header.top nav a { color: var(--dim); text-decoration: none; margin-left: 1.25rem; }
+  header.top nav a:hover { color: var(--fg); }
+
+  .hero { padding: 4.5rem 0 2.5rem; }
+  .hero h1 { font-family: var(--display); font-size: clamp(2.6rem, 7vw, 4.6rem); line-height: 1.02; letter-spacing: -.035em; font-weight: 700; margin: 0 0 1.25rem; }
+  .hero p.lead { font-size: clamp(1.1rem, 2.2vw, 1.35rem); color: var(--dim); max-width: 36rem; margin: 0 0 2rem; }
+  .cta { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+  .button { display: inline-block; padding: .7rem 1.2rem; border-radius: 8px; background: var(--fg); color: var(--bg); text-decoration: none; font-weight: 600; }
+  .button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .version { color: var(--dim); font-size: .9rem; }
+
+  figure.shot { margin: 2rem 0 0; }
+  figure.shot img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); box-shadow: 0 18px 50px -24px rgba(0,0,0,.35); background: var(--card); }
+  figure.shot figcaption { color: var(--dim); font-size: .9rem; margin-top: .6rem; }
+
+  section { padding: 4rem 0 0; }
+  h2 { font-family: var(--display); font-size: 1.9rem; letter-spacing: -.02em; line-height: 1.15; margin: 0 0 1.5rem; }
+  h3 { font-family: var(--display); font-size: 1.15rem; margin: 0 0 .35rem; letter-spacing: -.01em; }
+
+  .principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.75rem 2.5rem; }
+  .principles p { margin: 0; color: var(--dim); }
+
+  .feature { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr); gap: 2.5rem; align-items: center; padding: 2.5rem 0; border-top: 1px solid var(--line); }
+  .feature:first-of-type { border-top: 0; }
+  .feature p { color: var(--dim); margin: 0 0 .75rem; }
+  .feature figure.shot { margin: 0; }
+  @media (max-width: 52rem) { .feature { grid-template-columns: 1fr; gap: 1.25rem; } }
+
+  kbd, code { font-family: var(--mono); font-size: .86em; }
+  kbd { padding: .05em .35em; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--card); }
+  pre { background: var(--code); padding: 1rem 1.1rem; border-radius: 8px; overflow-x: auto; line-height: 1.5; margin: .5rem 0 1rem; }
+  pre code { font-size: .84rem; }
+
+  .install { display: grid; gap: 2rem; }
+  .install h3 { margin-top: .5rem; }
+  .install p { margin: 0 0 .5rem; color: var(--dim); }
+  details { margin: .25rem 0 1rem; }
+  summary { cursor: pointer; color: var(--dim); }
+
+  footer { margin: 5rem 0 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--dim); font-size: .9rem; }
+  footer p { margin: .25rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./">pdf-next <span>by machine-made</span></a>
+    <nav><a href="#install">Install</a><a href="https://github.com/machine-made/pdf-next/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/machine-made/pdf-next">Source</a></nav>
+  </header>
+
+  <div class="hero">
+    <h1>You write in one window.<br>This is the other one.</h1>
+    <p class="lead">pdf-next shows the PDF your build writes, or the Markdown you are editing, and redraws it every time the file changes: same page, same zoom, same spot. No ribbon, no account, nothing to download after you install it.</p>
+    <div class="cta">
+      <a class="button" href="#install">Install</a>
+      <a class="button ghost" href="https://github.com/machine-made/pdf-next/releases/latest">Download</a>
+      <span class="version">Version {{version}} · Windows, macOS, Linux · free and open source</span>
+    </div>
+    <figure class="shot">
+      <img src="shots/paper.png" width="1600" height="1000" alt="pdf-next showing a LaTeX paper about vortex shedding, with the Markdown notes beside it in a second pane.">
+    </figure>
+  </div>
+
+  <section class="narrow" id="why">
+    <h2>Why it exists</h2>
+    <div class="principles">
+      <div><h3>Stop pressing reload</h3><p>Save or rebuild and look. The view catches up within a second and keeps your place, so you never lose the paragraph you were reading.</p></div>
+      <div><h3>Never a broken page</h3><p>A build takes a moment to write a PDF. pdf-next waits until the file is whole, and your build can overwrite it at any time.</p></div>
+      <div><h3>Nothing in the way</h3><p>The window opens at the size of the page. The controls are small, and the page gets the rest.</p></div>
+      <div><h3>Yours, offline</h3><p>No account, no cloud, no plugins. Fonts, maths and rendering come in the installer, and your notes are a plain file next to your document.</p></div>
+      <div><h3>Fast, and checked</h3><p>Start-up and reload times are tested on Windows, macOS and Linux before every release. Memory is measured, not guessed.</p></div>
+      <div><h3>Keys or mouse</h3><p><kbd>Ctrl</kbd> <kbd>K</kbd> finds any command. The scroll wheel works on every menu.</p></div>
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>What it does</h2>
+
+    <div class="feature">
+      <div>
+        <h3>Live reload that keeps your place</h3>
+        <p>Point it at the PDF your build writes. Every rebuild redraws in place: same page, same zoom, same scroll, sharp on high-density screens. The build can delete and recreate the file; pdf-next waits for it to settle.</p>
+        <p>Dark, sepia and inverted page modes recolour the page itself.</p>
+      </div>
+      <figure class="shot"><img src="shots/night.png" width="1600" height="1000" alt="The same paper in the night page mode."></figure>
+    </div>
+
+    <div class="feature">
+      <div>
+        <h3>Markdown, typeset</h3>
+        <p>A <code>.md</code> opens as a reading column in Latin Modern, with equations, coloured code, figures with captions and pages if you want them. Changed paragraphs light up briefly after a save.</p>
+        <p>Fonts include the machine-made faces and GitHub's Monaspace.</p>
+      </div>
+      <figure class="shot"><img src="shots/markdown.png" width="1600" height="1000" alt="Markdown notes with an equation, a list and a code block."></figure>
+    </div>
+
+    <div class="feature">
+      <div>
+        <h3>Panes, like a terminal</h3>
+        <p><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd> splits right, <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd> splits down. Drag tabs between panes; every pane follows its own file.</p>
+      </div>
+      <figure class="shot"><img src="shots/panes.png" width="1600" height="1000" alt="Two panes: notes on the left, the compiled paper on the right."></figure>
+    </div>
+
+    <div class="feature">
+      <div>
+        <h3>Notes for the next draft</h3>
+        <p>Select a passage and say what it needs: shorter, clearer, checked, or why. Whoever edits the source works through the list. Each note is saved in <code>paper_review.json</code> beside the document, stays on its text while the file changes, and in Markdown shows word by word what changed once it is done.</p>
+      </div>
+      <figure class="shot"><img src="shots/review.png" width="1600" height="1000" alt="The Review panel listing marks on the paper."></figure>
+    </div>
+  </section>
+
+  <section class="narrow" id="install">
+    <h2>Install</h2>
+    <div class="install">
+      <div>
+        <h3>macOS</h3>
+        <pre><code>brew install --cask machine-made/tap/pdf-next</code></pre>
+        <p>Or the universal <code>.dmg</code> from <a href="https://github.com/machine-made/pdf-next/releases/latest">Releases</a>. The app is not notarised yet, so let the first copy through once:</p>
+        <pre><code>xattr -dr com.apple.quarantine /Applications/pdf-next.app</code></pre>
+      </div>
+      <div>
+        <h3>Windows</h3>
+        <pre><code>winget install RicardoFrantz.pdf-next</code></pre>
+        <p>Or the one-click <code>.exe</code> from <a href="https://github.com/machine-made/pdf-next/releases/latest">Releases</a>: no administrator prompt, no wizard. SmartScreen warns once (More info → Run anyway) until the builds are signed.</p>
+      </div>
+      <div id="apt">
+        <h3>Debian and Ubuntu</h3>
+        <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc \
+  | sudo tee /etc/apt/keyrings/pdf-next.asc &gt; /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://machine-made.github.io/pdf-next stable main" \
+  | sudo tee /etc/apt/sources.list.d/pdf-next.list &gt; /dev/null
+sudo apt update
+sudo apt install pdf-next</code></pre>
+        <p>Updates then arrive with <code>apt upgrade</code>. Only <code>amd64</code> is published.</p>
+        <details>
+          <summary>Remove</summary>
+          <pre><code>sudo apt remove pdf-next
+sudo rm /etc/apt/sources.list.d/pdf-next.list /etc/apt/keyrings/pdf-next.asc</code></pre>
+        </details>
+      </div>
+      <div>
+        <h3>Other Linux</h3>
+        <p>An <code>.AppImage</code> (<code>chmod +x</code> and run) and an <code>.rpm</code> are on <a href="https://github.com/machine-made/pdf-next/releases/latest">Releases</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>pdf-next is MIT licensed and built in the open at <a href="https://github.com/machine-made/pdf-next">machine-made/pdf-next</a>. PDF rendering by Mozilla PDF.js.</p>
+    <p>Packages are built and signed by <a href="https://github.com/machine-made/pdf-next/actions">GitHub Actions</a>. apt signing key <code>94AF 4860 CC16 FD9C 1C66 044B A419 FDEC 5985 1786</code>.</p>
+    <p>machine-made · Ricardo Frantz</p>
+  </footer>
+</div>
+</body>
+</html>

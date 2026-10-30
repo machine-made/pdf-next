@@ -116,4 +116,29 @@ ok(await page.textContent('#findCount') === 'No match', 'An absent word says No 
 await page.keyboard.press('Escape');
 await settle(100);
 ok(await page.$eval('#find', (f) => f.hidden), 'Esc closes find');
+
+// Night and Sepia: drawn into the canvas where canvas filters work (Chromium,
+// WebView2), and as a CSS filter where the canvas ignores them (WebKit).
+const ink = () => page.$eval('#viewer .page canvas', (c) => c.getContext('2d').getImageData(4, 4, 1, 1).data[0]);
+const wrapperFilter = () => page.$eval('#viewer .page .canvasWrapper', (w) => getComputedStyle(w).filter);
+ok(!await page.evaluate(() => document.body.classList.contains('css-page-colors')), 'Chromium draws page colours in the canvas');
+await page.click('#mode');
+await settle(1200);
+ok(await ink() < 64 && await wrapperFilter() === 'none', 'Night darkens the page canvas itself');
+await page.click('#mode', { modifiers: ['Shift'] });
+await page.addInitScript(() => Object.defineProperty(CanvasRenderingContext2D.prototype, 'filter', { get: () => 'none', set() {} }));
+await page.reload();
+await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+await settle(600);
+ok(await page.evaluate(() => document.body.classList.contains('css-page-colors')), 'A canvas that ignores filters is noticed at start');
+await page.click('#mode');
+await settle(1200);
+ok(await ink() > 200 && /page-night/.test(await wrapperFilter()), `Night is then a CSS filter over a plain canvas (${await wrapperFilter()})`);
+await page.click('#mode');
+await page.click('#mode');
+await settle(1200);
+ok(/page-sepia/.test(await wrapperFilter()), 'Sepia too');
+await page.click('#mode', { modifiers: ['Shift'] });
+await settle(600);
+ok(await wrapperFilter() === 'none', 'Clear takes the filter off');
 await finish();

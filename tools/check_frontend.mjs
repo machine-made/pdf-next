@@ -3226,9 +3226,11 @@ assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).eve
 // Panes: dockview is vendored and loads before the app; its tabs drag with
 // pointer events (HTML5 drops never arrive on Windows, where the window takes
 // file drops); every split, merge and move path is wired.
-await assert.doesNotReject(access('src/vendor/dockview/dockview-core.min.js'), 'dockview must be vendored.');
+await assert.doesNotReject(access('src/vendor/dockview/dockview-core.min.noStyle.js'), 'dockview must be vendored.');
+await assert.doesNotReject(access('src/vendor/dockview/dockview.css'), 'dockview styles must ship as a file: the app CSP blocks the <style> tag the styled build injects.');
+assert.match(indexHtml, /href="\.\/vendor\/dockview\/dockview\.css"/, 'index.html must link the dockview stylesheet.');
 await assert.doesNotReject(access('src/vendor/dockview/LICENSE.md'), 'dockview licence must be vendored.');
-assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.js"><\/script>\s*<script type="module" src="\.\/smoke\.mjs">/,
+assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.noStyle\.js"><\/script>\s*<script type="module" src="\.\/smoke\.mjs">/,
   'dockview loads before the modules.');
 {
   const panesSource = await readFile('src/panes.mjs', 'utf8');
@@ -3488,3 +3490,19 @@ assert.match(styles, /\.review-no \{[^}]*color: var\(--review-no-fg\);/, 'Review
 await access('tests/browser/run.mjs');
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
+
+// The website: install lines that match the README, and a version the publish step fills in.
+{
+  const site = await readFile('site/index.html', 'utf8');
+  const decoded = site.replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+  for (const line of [
+    'brew install --cask machine-made/tap/pdf-next',
+    'winget install RicardoFrantz.pdf-next',
+    'curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc',
+    'echo "deb [signed-by=/etc/apt/keyrings/pdf-next.asc] https://machine-made.github.io/pdf-next stable main"',
+  ]) {
+    assert.ok(readme.includes(line) && decoded.includes(line), `The README and the website both say: ${line}`);
+  }
+  assert.ok(site.includes('{{version}}'), 'The website names the version through {{version}}, filled in by pages.yml.');
+  for (const match of site.matchAll(/(?:src|href)="((?:shots|fonts)\/[^"]+|icon\.png)"/g)) await access(`site/${match[1]}`);
+}

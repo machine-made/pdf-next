@@ -58,6 +58,23 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
+/// PDF.js draws page colors through a canvas filter. WebKit (macOS, Linux)
+/// takes the filter and draws nothing different, so there the pages are
+/// recoloured by the same mapping as an SVG filter in CSS (#page-night,
+/// #page-sepia in index.html) and PDF.js draws them plain.
+const canvasFilters = (() => {
+  try {
+    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    context.filter = 'invert(1)';
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[0] < 128;
+  } catch {
+    return false;
+  }
+})();
+document.body.classList.toggle('css-page-colors', !canvasFilters);
+const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
 /// The Markdown copies shown in panes that are not live (see src/panes.mjs).
@@ -306,7 +323,7 @@ const paneViewers = createPaneViewers({
     ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
   }),
   EventBus,
-  pageColors: () => PAGE_COLORS[state.mode] || null,
+  pageColors: () => pageColorsFor(state.mode),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
   text: { collect: collectTextParts, wrap: wrapSpanParts },
   onPick: (path) => pickPane(path),
@@ -2764,7 +2781,7 @@ function applyZoomChoice(value) {
 /// and never calls _resetCanvas(). The old bitmap stays, so leaving sepia used
 /// to give a white page with brown text. Dropping each canvas is the fix.
 function applyPageColors() {
-  const pageColors = PAGE_COLORS[state.mode] || null;
+  const pageColors = pageColorsFor(state.mode);
   pdfViewer.pageColors = pageColors;
   const pages = pdfViewer._pages;
   if (!Array.isArray(pages) || !state.document) {
