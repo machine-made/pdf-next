@@ -82,6 +82,11 @@ function mockTauri({ files, initial, theme, store }) {
     if (!review) throw new Error('review not found');
     return review;
   };
+  // The launch update check would ask GitHub and, answered, cover the status
+  // line a test is reading; the tests run offline.
+  const fetchFromPage = window.fetch.bind(window);
+  window.fetch = (url, options) => (String(url).startsWith('https://api.github.com/')
+    ? Promise.reject(new TypeError('offline in tests')) : fetchFromPage(url, options));
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
