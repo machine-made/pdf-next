@@ -1070,7 +1070,8 @@ body.hug #image {
   box-shadow: none;
 }
 
-body.mode-invert #image {
+body.mode-invert #image,
+body.mode-invert .pane-image img {
   filter: invert(1) hue-rotate(180deg);
 }
 
@@ -2581,6 +2582,26 @@ body.panes #stage {
 
 .pane-snapshot #markdownRaw {
   display: none;
+}
+
+.pane-pdf,
+.pane-image {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.pane-image {
+  display: grid;
+  place-items: safe center;
+  padding: 16px;
+}
+
+.pane-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
 }
 
 .pane-cover {
