@@ -132,7 +132,9 @@ jobs:
   # turns it applied in the open window.
   e2e:
     name: e2e (real app, Linux)
-    runs-on: ubuntu-latest
+    # WebKitWebDriver (webkit2gtk-driver) is verified on Ubuntu 24.04;
+    # ubuntu-latest is moving to 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 

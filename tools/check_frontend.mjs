@@ -1,6 +1,7 @@
 // Source contracts for the things that are easy to break silently and
 // expensive to notice: the real worker, streaming, the canvas budget, the
 // one-second poll, and the mid-build gap behaviour.
+import { annotate } from './annotate.mjs';
 import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
@@ -21,6 +22,14 @@ import {
   nearestReviewSize,
   nextReviewSize,
 } from '../src/review-size.mjs';
+
+for (const event of ['uncaughtException', 'unhandledRejection']) {
+  process.on(event, (error) => {
+    annotate('frontend contracts', error?.stack || String(error));
+    console.error(error);
+    process.exit(1);
+  });
+}
 
 const app = await readFile('src/app.mjs', 'utf8');
 const main = await readFile('src-tauri/src/main.rs', 'utf8');
@@ -52,8 +61,8 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
   assert.match(sync, /'tools\/release_notes\.mjs', tag/, 'Synced notes are exactly what release_notes.mjs prints.');
   assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
   assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
-  {
-    // Against a stand-in gh: generated and download-only notes follow the
+  if (process.platform !== 'win32') {
+    // Against a stand-in gh (a shell script, so not on Windows): generated and download-only notes follow the
     // changelog; notes written by hand are never replaced.
     const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
