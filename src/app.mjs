@@ -2,6 +2,7 @@
 // showing the newest version of it.
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
+import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
 import { REQUEST_GROUPS, reviewRequests, requestsLabel, toggleRequest } from './review-requests.mjs';
 import { ACTION_LABELS, REVIEW_ACTIONS, contextAt, findAllSpans, madeOnOlderVersion, findNormalizedSpan, normalizeReviewText, resolveMarkdownReview, resolveReviewAnchor, selectionContext, reviewIdNum, reviewLabel, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor } from './review-label.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from './review-sync.mjs';
@@ -297,6 +298,22 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+
+// Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
+const paneViewers = createPaneViewers({
+  load: loadPdf,
+  makeViewer: (options) => new TidyViewer({
+    ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
+  }),
+  EventBus,
+  pageColors: () => PAGE_COLORS[state.mode] || null,
+  spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
+  text: { collect: collectTextParts, wrap: wrapSpanParts },
+  onPick: (path) => pickPane(path),
+  remember: (path, view) => {
+    if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
+  },
+});
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
@@ -1494,23 +1511,7 @@ async function showPdf(file, view, generation) {
   if (state.generation !== generation) {
     return;
   }
-  const task = getDocument({
-    url: sourceUrl(file),
-    // Reuse the one worker; without this every reload starts a new thread.
-    worker: pdfWorker,
-    // The doc protocol answers full GETs only (no Accept-Ranges), so range
-    // options would be inert. One streamed read per load is what happens.
-    disableRange: true,
-    // Absolute, because the worker fetches these itself and a relative path
-    // would resolve against the worker's own folder. A wrong folder is a
-    // quiet 404: CJK text loses its glyphs, and a scanned page (CCITT and
-    // JBIG2 both decode in jbig2.wasm) comes up white.
-    cMapUrl: vendorUrl('cmaps/'),
-    cMapPacked: true,
-    standardFontDataUrl: vendorUrl('standard_fonts/'),
-    wasmUrl: vendorUrl('wasm/'),
-    iccUrl: vendorUrl('iccs/'),
-  });
+  const task = loadPdf(sourceUrl(file));
   // Held for teardown: dropping this reference is what leaks the worker.
   state.task = task;
 
@@ -1554,6 +1555,26 @@ async function showPdf(file, view, generation) {
     scheduleWrap();
   }
   updatePageControls();
+}
+
+function loadPdf(url) {
+  return getDocument({
+    url,
+    // Reuse the one worker; without this every reload starts a new thread.
+    worker: pdfWorker,
+    // The doc protocol answers full GETs only (no Accept-Ranges), so range
+    // options would be inert. One streamed read per load is what happens.
+    disableRange: true,
+    // Absolute, because the worker fetches these itself and a relative path
+    // would resolve against the worker's own folder. A wrong folder is a
+    // quiet 404: CJK text loses its glyphs, and a scanned page (CCITT and
+    // JBIG2 both decode in jbig2.wasm) comes up white.
+    cMapUrl: vendorUrl('cmaps/'),
+    cMapPacked: true,
+    standardFontDataUrl: vendorUrl('standard_fonts/'),
+    wasmUrl: vendorUrl('wasm/'),
+    iccUrl: vendorUrl('iccs/'),
+  });
 }
 
 // ── Stepping through a folder ─────────────────────────────────────────────
@@ -2119,39 +2140,74 @@ async function restoreSession() {
 // ── Panes (tiles with tabs, src/panes.mjs) ─────────────────────────────
 
 /// Paths shown in a pane but not live: kept current when their file changes.
+/// A PDF viewer whose pane no longer shows its file is freed.
 function watchVisiblePanes() {
-  const paths = panes.active ? panes.visible().filter((path) => path !== state.file?.path) : [];
+  const paths = panes.active ? panes.visible().filter((path) => path !== panes.livePath) : [];
+  paneViewers.keep(paths);
+  for (const path of paths) if (!panes.snapshotOf(path)) void fillPane(path);
   invoke('watch_secondary', { paths }).catch(() => {});
 }
 
-/// Leave a still copy of the live view in its pane before the stage moves on.
+/// The reviews of a document that is not live, to mark its pane with.
+async function paneReviews(path) {
+  try {
+    return (await invoke('read_reviews', { document: path }))?.reviews ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/// Leave the live view in its pane before the stage moves on: a Markdown or
+/// image copy, or a PDF viewer of its own that starts from the pixels.
 function freezeLivePane() {
   const path = panes.livePath;
   if (!panes.active || !path || state.file?.path !== path) return;
-  panes.freeze(path, snapshotOfStage({
+  const still = snapshotOfStage({
     kind: state.file.kind,
     markdownStage: ui.markdownStage,
     viewerContainer: ui.container,
     imageStage: ui.imageStage,
-    onPick: () => void focusPane(path),
-  }));
+    onPick: () => pickPane(path),
+  });
+  panes.freeze(path, state.file.kind === 'pdf' && state.document
+    ? paneViewers.pdf(path, { url: sourceUrl(state.file), view: captureView(), reviews: state.reviews, still })
+    : still);
 }
 
-/// A pane that has never been live this session (a restored layout): Markdown
-/// is rendered for real, anything else shows its name until it is clicked.
+/// Bring a pane that is not live up to date with its file, or fill one that
+/// has nothing yet (a restored layout): Markdown is rendered with its review
+/// marks, a PDF gets a viewer, an image its picture.
 async function fillPane(path, revision = 0) {
   const tab = state.tabs.find((item) => item.path === path);
   if (!tab || !panes.has(path) || path === panes.livePath) return;
   let snapshot = panes.snapshotOf(path);
+  if (tab.kind === 'pdf') {
+    const url = sourceUrl({ path, revision });
+    const reviews = await paneReviews(path);
+    if (!panes.has(path) || path === panes.livePath) return;
+    if (paneViewers.reload(path, url)) {
+      paneViewers.setReviews(path, reviews);
+    } else {
+      panes.freeze(path, paneViewers.pdf(path, { url, view: state.views.get(path) ?? null, reviews }));
+    }
+    return;
+  }
+  if (tab.kind === 'image') {
+    const url = sourceUrl({ path, revision });
+    const image = snapshot?.querySelector('img');
+    if (image) image.src = url;
+    else panes.freeze(path, imagePane({ url, onPick: () => pickPane(path) }));
+    return;
+  }
   if (tab.kind === 'markdown') {
     try {
-      const doc = await invoke('read_markdown', { path });
+      const [doc, reviews] = await Promise.all([invoke('read_markdown', { path }), paneReviews(path)]);
       if (!panes.has(path) || path === panes.livePath) return;
       if (!snapshot?.querySelector('article#markdown')) {
         snapshot = snapshotOfStage({
           kind: 'markdown',
           markdownStage: ui.markdownStage,
-          onPick: () => void focusPane(path),
+          onPick: () => pickPane(path),
         });
         panes.freeze(path, snapshot);
       }
@@ -2163,6 +2219,7 @@ async function fillPane(path, revision = 0) {
       embedMarkdownImages(article, revision);
       colourCode(article);
       markFigures(article);
+      paintMarkdownCopy(article, reviews, { collect: collectTextParts, wrap: wrapSpanParts });
       if (scroller) scroller.scrollTop = top;
     } catch {
       // The file may have gone; the pane keeps what it had.
@@ -2188,6 +2245,19 @@ async function fillPane(path, revision = 0) {
   });
   wrap.append(card, cover);
   panes.freeze(path, wrap);
+}
+
+/// Make a pane live where its copy stands, so that a drag begun on the copy
+/// selects the same text in the live view.
+function pickPane(path) {
+  const scroller = panes.snapshotOf(path)?.querySelector(':scope > #markdownStage');
+  const tab = state.tabs.find((item) => item.path === path);
+  if (scroller && tab) {
+    const { anchorLine, anchorDoc, anchorOffset, ...view } = state.views.get(path) ??
+      { kind: tab.kind, scale: state.markdownScale, raw: state.markdownRaw };
+    state.views.set(path, { ...view, top: scroller.scrollTop, left: scroller.scrollLeft });
+  }
+  return focusPane(path);
 }
 
 async function focusPane(path) {
@@ -2724,6 +2794,7 @@ function setMode(mode, persist = true) {
     ? `Page mode: ${mode} (Shift+click to clear)`
     : 'Page mode: off';
   applyPageColors();
+  paneViewers.recolor();
   if (!persist) {
     // A command-line flag styles this window; it is not a new preference.
     return;
@@ -6740,6 +6811,7 @@ document.addEventListener('visibilitychange', async () => {
     // A hidden window does not need warm font and image caches; they rebuild
     // lazily on return. cleanup() refuses to run mid-render, which is fine —
     // that tick is simply skipped.
+    paneViewers.cleanup();
     try {
       await state.document?.cleanup();
     } catch {
