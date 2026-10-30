@@ -320,15 +320,24 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+/// PDF.js shows a page that takes over half a second while it is still being
+/// drawn. Night and Sepia recolour a page once it is drawn, so until then it
+/// would show white: in those modes a page shows when it is done.
+function holdUntilRecolored({ source }) {
+  if (source) source.minDurationToUpdateCanvas = PAGE_COLORS[state.mode] ? Infinity : 500;
+}
 // What the last rebuild changed (src/pdf-changes.mjs).
 const pdfChanges = createChangeMarks({ host: ui.stage, container: ui.container, eventBus, viewer: () => pdfViewer });
 
 // Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
 const paneViewers = createPaneViewers({
   load: loadPdf,
-  makeViewer: (options) => new TidyViewer({
-    ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
-  }),
+  makeViewer: (options) => {
+    options.eventBus.on('pagerender', holdUntilRecolored);
+    return new TidyViewer({
+      ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
+    });
+  },
   EventBus,
   createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
@@ -361,6 +370,7 @@ const nav = createNavigator({
   status: (message) => setStatus(message),
 });
 eventBus.on('pagerendered', (event) => recolorRendered(event, PAGE_COLORS[state.mode]));
+eventBus.on('pagerender', holdUntilRecolored);
 eventBus.on('pagerendered', ({ error }) => {
   if (error) {
     setStatus(`Could not render PDF: ${error.message || error}`, { error: true, sticky: true });
@@ -551,6 +561,11 @@ function restoreView(view) {
 
 /// Back to a place `captureView` took, in the file that is open now.
 function restorePlace(view) {
+  if (presentation) {
+    // A presentation keeps its fitted page; back and forward only turn pages.
+    if (view?.kind === 'pdf' && state.document && view.page >= 1) pdfViewer.currentPageNumber = Math.min(view.page, pdfViewer.pagesCount);
+    return;
+  }
   if (view?.kind === 'pdf') {
     restoreView(view);
     updatePageControls();
@@ -634,7 +649,8 @@ function rememberPlace() {
   window.clearTimeout(placeTimer);
   placeTimer = 0;
   const file = state.file;
-  if (!state.placesOn || !state.placeReady || !file || state.tabs[state.active]?.path !== file.path) {
+  // A presentation's fitted page is not where you were reading.
+  if (!state.placesOn || !state.placeReady || presentation || !file || state.tabs[state.active]?.path !== file.path) {
     return;
   }
   notePlace(file, placeView());
@@ -642,7 +658,7 @@ function rememberPlace() {
 
 /// Scrolling and zooming save a moment after they stop, not on every frame.
 function schedulePlace() {
-  if (!state.placesOn || !state.placeReady) {
+  if (!state.placesOn || !state.placeReady || presentation) {
     return;
   }
   window.clearTimeout(placeTimer);
@@ -1930,6 +1946,8 @@ async function openFile(
   if (state.generation !== generation) {
     return;
   }
+  // A presentation is of one file: another one ends it.
+  if (presentation && presentation.path !== file.path) void stopPresentation();
   const view = given || (preserveView ? captureView() : null);
   // Pages rendered for paper belong to the document that was open then — but
   // not while a dialog is holding them: a rebuild lands every second in the
@@ -2713,6 +2731,7 @@ async function closeTab(index) {
 
 /// Back to the small empty window you get on a cold start.
 async function closeAll() {
+  if (presentation) void stopPresentation();
   rememberPlace();
   state.placeReady = false;
   const generation = ++state.generation;
@@ -3172,6 +3191,7 @@ function pdfFits() {
 }
 
 function startPinch(event) {
+  if (presentation) return null;
   const kind = state.file?.kind;
   const at = { x: event.clientX, y: event.clientY };
   const over = (element) => element.contains(event.target);
@@ -7085,6 +7105,7 @@ async function startPresentation() {
   hideReviewChrome();
   presentation = {
     kind,
+    path: state.file.path,
     fullscreen: await isFullscreen().catch(() => false),
     wrap: state.wrap,
     page: pdfViewer.currentPageNumber,
@@ -7123,7 +7144,9 @@ async function stopPresentation() {
   if (!saved) return;
   presentation = null;
   document.body.classList.remove('presenting');
+  const here = () => state.file?.path === saved.path;
   const restore = () => {
+    if (!here()) return;
     if (saved.kind === 'pdf' && state.document) pdfViewer.currentPageNumber = saved.page;
     else if (saved.kind === 'markdown') ui.markdownStage.scrollTop = saved.scrollTop;
   };
@@ -7161,6 +7184,8 @@ window.addEventListener('resize', () => {
 // clicker (which sends PageUp and PageDown) step pages, and Esc gives the view back.
 window.addEventListener('keydown', (event) => {
   if (!presentation || event.ctrlKey || event.metaKey || event.altKey) return;
+  // The palette or Settings opened over the slides keeps its keys.
+  if (palette.isOpen || !ui.settingsPanel.hidden || isTextField(event.target)) return;
   const steps = {
     ArrowRight: 1, ArrowDown: 1, PageDown: 1, Enter: 1, n: 1, j: 1, ' ': event.shiftKey ? -1 : 1,
     ArrowLeft: -1, ArrowUp: -1, PageUp: -1, Backspace: -1, p: -1, k: -1, Home: -Infinity, End: Infinity,

@@ -496,8 +496,15 @@ body.presenting #reviewPane,
 body.presenting #find,
 body.presenting #reviewChip,
 body.presenting #reviewMenu,
-body.presenting #figureResizer {
+body.presenting #figureResizer,
+body.presenting #outline,
+body.presenting #linkPreview {
   display: none !important;
+}
+
+body.presenting.outline-open #stage > #viewerContainer,
+body.presenting.outline-open #stage > #markdownStage {
+  left: 0;
 }
 
 body.presenting #stage,

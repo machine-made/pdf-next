@@ -143,6 +143,19 @@ try {
   'Night recolours the page after it is drawn in this webview');
   await run(clear);
 
+  // Full screen and presentation go through the window API, which the
+  // capabilities must allow; the browser tests only see a stand-in.
+  const api = await run(`const win = window.__TAURI__?.window?.getCurrentWindow?.();
+    if (!win) return 'no window API';
+    return win.isFullscreen().then(() => 'ok', (error) => String(error));`);
+  ok(api === 'ok', `The window API answers isFullscreen in the real window (${api})`);
+  await keys(['']);
+  await new Promise((done) => setTimeout(done, 600));
+  const status = await run("return document.getElementById('status').textContent");
+  ok(!/did not work|not allowed/i.test(status), `F11 asks for full screen without an error (${JSON.stringify(status)})`);
+  await keys(['']);
+  await new Promise((done) => setTimeout(done, 600));
+
   await keys([CTRL, SHIFT, 'd']);
   ok(await until("return document.querySelectorAll('#panes .dv-groupview').length === 2", 'two panes'), 'Ctrl+Shift+D splits the real window');
   const layout = await run(`const g = [...document.querySelectorAll('#panes .dv-groupview')].map((x) => x.getBoundingClientRect());

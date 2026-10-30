@@ -97,7 +97,10 @@ export function wirePopover(button, panel, { onOpen = () => {} } = {}) {
   document.addEventListener('pointerdown', (event) => {
     if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) close(false);
   }, true);
-  window.addEventListener('resize', () => close(false));
+  // A window that follows its content resizes as a menu changes it: the menu stays, under its button.
+  window.addEventListener('resize', () => {
+    if (!panel.hidden) place();
+  });
   return {
     open,
     close,

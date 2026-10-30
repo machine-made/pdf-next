@@ -1007,7 +1007,7 @@ for (const kind of ['markdown', 'pdf']) {
     image: { removeAttribute() {} }, markdown: {}, markdownRaw: {},
   };
   const open = appFunction('openFile', 'async function openPath(', {
-    state, ui, printPending: false,
+    state, ui, printPending: false, presentation: null,
     flushCommentSave: async () => {}, captureView: () => null,
     clearPrintPages() {}, setTitle() {}, setStatus() {},
     document: { body: { classList: { add() {}, toggle() {}, remove() {} } } },
@@ -1032,6 +1032,7 @@ for (const pauseAt of ['save', 'close']) {
   const pause = () => new Promise((resolve) => { finish = resolve; started(); });
   const close = appFunction('closeAll', 'function cycleTab(', {
     state,
+    presentation: null,
     rememberPlace() {},
     panes: { active: false },
     noteSaveInFlight: false,
