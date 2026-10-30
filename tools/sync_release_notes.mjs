@@ -1,8 +1,8 @@
 // Sets the notes of every published release to what tools/release_notes.mjs
 // prints for its tag. A release whose version has no CHANGELOG.md section
 // keeps its notes, and one that already matches is not touched. Only notes
-// this tool wrote are rewritten (they end in its "## Download" list): the
-// releases written by hand before 0.16.4 keep theirs.
+// this tool wrote (they end in its "## Download" list) and the old
+// download-only template are rewritten: notes written by hand keep theirs.
 // Usage: node tools/sync_release_notes.mjs [--dry-run]   (needs gh; GH_TOKEN in CI)
 import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -13,7 +13,8 @@ const repo = process.env.GITHUB_REPOSITORY || 'machine-made/pdf-next';
 const dryRun = process.argv.includes('--dry-run');
 const gh = (args, input) => execFileSync('gh', args, { encoding: 'utf8', input, maxBuffer: 64 << 20 });
 const tidy = (text) => (text || '').replace(/\r\n/g, '\n').trimEnd();
-const generated = (body) => /\n## Download\n\n- \*\*Windows\*\*: /.test(tidy(body));
+const generated = (body) => /\n## Download\n\n- \*\*Windows\*\*: /.test(tidy(body)) ||
+  tidy(body).startsWith('Download the build for your system below.');
 
 const releases = gh(['api', '--paginate', `repos/${repo}/releases?per_page=100`,
   '--jq', '.[] | select(.draft | not) | {tag: .tag_name, body}'])

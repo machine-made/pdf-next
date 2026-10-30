@@ -53,7 +53,8 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
   assert.match(sync, /notes\.status !== 0\) \{\s*without\.push\(tag\);\s*continue;/, 'A release without a CHANGELOG.md section keeps its notes.');
   assert.match(sync, /tidy\(body\) === tidy\(notes\.stdout\)\) \{\s*continue;/, 'A release whose notes match is not edited.');
   {
-    // Against a stand-in gh: notes written by hand before 0.16.4 are never replaced.
+    // Against a stand-in gh: generated and download-only notes follow the
+    // changelog; notes written by hand are never replaced.
     const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
@@ -63,6 +64,7 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
     const releases = [
       { tag: 'v0.16.4', body: generatedBody },
       { tag: 'v0.5.0', body: 'Download the build for your system below.\n\n- **Windows** — `.exe` installer.' },
+      { tag: 'v0.16.0', body: 'pdf-next by machine-made.\n\n- Review box: Esc, × and Cancel close it.' },
     ].map((release) => JSON.stringify(release)).join('\n');
     writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in *latest*) echo v0.16.4 ;; *paginate*) cat <<'JSON'\n${releases}\nJSON\n;; *) exit 1 ;; esac\n`);
     chmodSync(join(bin, 'gh'), 0o755);
@@ -71,7 +73,8 @@ assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'Th
         encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
       });
       assert.match(out, /would update v0\.16\.4\n/, 'Generated release notes follow CHANGELOG.md.');
-      assert.doesNotMatch(out, /v0\.5\.0/, 'Release notes written by hand are left alone.');
+      assert.match(out, /would update v0\.5\.0\n/, 'Download-only notes get their CHANGELOG.md section.');
+      assert.doesNotMatch(out, /v0\.16\.0/, 'Release notes written by hand are left alone.');
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
