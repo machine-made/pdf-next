@@ -1,0 +1,32 @@
+version: 2
+updates:
+
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    open-pull-requests-limit: 5
+    schedule:
+      interval: monthly
+    groups:
+      cargo-src-tauri-updates:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    open-pull-requests-limit: 5
+    schedule:
+      interval: monthly
+    groups:
+      github-actions-updates:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    open-pull-requests-limit: 5
+    schedule:
+      interval: monthly
+    groups:
+      npm-updates:
+        patterns:
+          - "*"
