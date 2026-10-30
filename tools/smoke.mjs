@@ -437,8 +437,10 @@ console.log(`smoke: ${binary}\n`);
 // cold webview does not fail a run. Linux under Xvfb measured 1.3 s and 0.8 s;
 // the budgets leave room for slow runners and catch only a real regression.
 const firstDraw = /^(notes|math|images)\.md$|\.png$/i;
+// GitHub's Linux runners draw under Xvfb without a GPU: a first report took
+// 36 s there for 0.16.5 and 0.17.0 alike, against ~1.2 s on a desktop.
 const budgets = {
-  linux: { startup: 10_000, reload: 8_000 },
+  linux: process.env.CI ? { startup: 60_000, reload: 30_000 } : { startup: 10_000, reload: 8_000 },
   darwin: { startup: 15_000, reload: 8_000 },
   win32: { startup: 20_000, reload: 10_000 },
 }[process.platform] || { startup: 20_000, reload: 10_000 };
@@ -511,6 +513,7 @@ for (const [name, value] of [['startup', median(timings.startup)], ['reload', Ma
   const missing = !Number.isFinite(value);
   slow += over || missing ? 1 : 0;
   if (over || missing) annotate(`smoke ${name} time`, `${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])})`);
+  else if (process.env.GITHUB_ACTIONS) console.log(`::notice title=smoke ${name} time::${ms(value)} (budget ${ms(budgets[name])})`);
   console.log(`  ${over || missing ? 'FAIL' : 'TIME'}  ${name} ${missing ? 'not measured' : ms(value)} (budget ${ms(budgets[name])}; samples ${
     timings[name].map((sample) => Math.round(sample)).join(', ') || 'none'})`);
 }

@@ -84,7 +84,7 @@ try {
   ok(await until("return document.querySelector('#markdown')?.textContent.includes('vortex loops') === true", 'the Markdown text'), 'The Markdown file renders in the real window');
   console.log(`  first draw after ${Date.now() - started} ms`);
   ok(await run("return document.querySelector('#markdown h1')?.id") === 'md-notes', 'The Rust renderer named the heading');
-  ok(await run("return document.querySelectorAll('#tabs .tab').length") === 2, 'The PDF from the command line is a second tab');
+  ok(await until("return document.querySelectorAll('#tabs .tab').length === 2", 'the second tab'), 'The PDF from the command line is a second tab');
 
   writeFileSync(md, '# Notes\n\nThe wake of a sphere sheds vortex rings downstream.\n\nA second paragraph.\n');
   ok(await until("return document.querySelector('#markdown')?.textContent.includes('vortex rings downstream') === true", 'the rewritten text'), 'Rewriting the file on disk reloads the page');
