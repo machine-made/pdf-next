@@ -13,8 +13,8 @@ hand with a tag:
 - `release-notes.yml`: sets every published release's notes to its
   `CHANGELOG.md` section on `main` (`tools/release_notes.mjs`). It also runs
   whenever `CHANGELOG.md` changes on `main`, so fixing a section fixes the
-  release page. Releases without a section, and releases that already match,
-  are left alone. `node tools/sync_release_notes.mjs --dry-run` lists what it
+  release page. Releases without a section, releases that already match, and
+  releases whose notes were written by hand before 0.16.4 are left alone. `node tools/sync_release_notes.mjs --dry-run` lists what it
   would change.
 - `install-check.yml`, after apt: on clean runners it adds the apt repository
   as the README says and runs `apt install pdf-next` (waiting up to ten
