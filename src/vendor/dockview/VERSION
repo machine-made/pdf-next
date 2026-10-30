@@ -1,5 +1,10 @@
-dockview-core 8.8.0 (MIT, LICENSE.md), unmodified UMD build dist/dockview-core.min.js from npm.
+dockview-core 8.8.0 (MIT, LICENSE.md), from npm, unmodified:
+  dockview-core.min.noStyle.js  dist/dockview-core.min.noStyle.js (the build that does not inject styles)
+  dockview.css                  the stylesheet that dist/dockview-core.min.js injects as a <style> tag,
+                                taken out of that build as is. The app's CSP blocks injected <style>
+                                tags, so it ships as a file.
 Source: https://github.com/dockview/dockview
 Used for the pane layout: tiles with tabs, split by shortcut or by dragging a tab.
 SHA-256:
-  947018d0e9beb8aa11974d6794ff5f4751bb79f1707be10baa7420254bcdb2e5  dockview-core.min.js
+  52eb3a098cdaebc10b027d4878fd50d9f12b4285e371717802a4903535d340f7  dockview-core.min.noStyle.js
+  72a757b4d2d0d0f1e38b928b1343c85a7b09766bb2dc2c16c9e3c880f231545d  dockview.css

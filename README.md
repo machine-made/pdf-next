@@ -2,160 +2,200 @@
 
 *pdf-next by machine-made.*
 
-A small, fast PDF, image and markdown viewer that **reloads the moment the file changes** —
-built for the LaTeX and Typst compile loop, where you rebuild and want to see the result
-without touching anything.
+You write in one window and read in another. pdf-next is the other window.
+
+Point it at the PDF your LaTeX or Typst build writes, or at the Markdown file you are
+editing, and it redraws every time the file changes, on the same page, at the same zoom,
+in the same spot. You stop switching windows to press reload. Then it gets out of the way:
+no ribbon, no account, nothing to sign in to, and nothing downloaded after you install it.
 
 [![CI](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml/badge.svg)](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![GitHub](https://img.shields.io/badge/github-pdf--next-blue)](https://github.com/machine-made/pdf-next)
+[![Website](https://img.shields.io/badge/site-machine--made.github.io%2Fpdf--next-blue)](https://machine-made.github.io/pdf-next/)
 
-It is the desktop sibling of [vscode-pdf Next](https://github.com/machine-made/vscode-pdf-next)
-and shares its rendering approach: Mozilla PDF.js (`pdfjs-dist@6.3.289`) parsing in a
-real worker thread, dark reading modes that recolour pages instead of filtering them, and reload
-that survives a build deleting and recreating the file mid-compile.
+It opens PDFs, Markdown and images (`.png`, `.jpg`, `.webp`, `.avif`) on Windows, macOS and
+Linux. It is the desktop sibling of [vscode-pdf Next](https://github.com/machine-made/vscode-pdf-next)
+and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a worker thread.
 
-## What it does
+## A quick tour
 
-- **Sharp rendering on high-density displays.** Pages refresh when display density changes.
-  At high zoom, detail rendering skips off-screen drawing operations to reduce scrolling work.
+### It follows your file
 
-- **Watches your file, on by default.** Rebuild the PDF and the view updates within a second,
-  keeping your page, scroll position and zoom. The interval is in the toolbar — 1s, 2s, 3s, or
-  off. If the build deletes the file first, the last render stays on screen and a red dot
-  appears until the new file lands.
-- **Never shows a half-written file.** A build rewrites a PDF over hundreds of milliseconds and
-  the file's metadata changes the instant it starts, so a naive watcher reloads garbage. Before
-  reloading, pdf-next checks the file is complete: on Windows the writer normally holds an
-  exclusive lock, so simply opening it fails; on macOS and Linux nothing stops you reading a
-  partial file, so PDFs are also checked for their `%%EOF` trailer. If it is not ready, the
-  reload waits for the next tick.
-- **Leaves the PDF available to build tools.** The viewer keeps PDF bytes in memory and
-  closes the source file after reading. You can overwrite, replace, or delete it while
-  it is displayed. Release smoke tests check those operations in the running viewer.
-- **Fits the window to the document.** Open a paper and the window becomes the size of the page
-  itself, centred; open a wide figure and the window is wide. It only happens when you open a
-  file — rebuilds never move your window. With no file open, it stays a small drop target.
-- **Trims the window to the page** when you open a file. A PDF or figure comes up at 100% and
-  the window hugs it — no band of empty desk on a big screen. A figure larger than the screen,
-  such as a plot saved at 400 dpi, opens whole: it is scaled down until it fits. A PDF page
-  taller than the monitor clamps to the screen and scrolls. Rebuilds and tab switches leave the window where it is.
-  `Ctrl+Shift+F` keeps the window following the content after that.
-- **Dock to any half of the screen** — five toolbar buttons, or `Ctrl+Shift+←` / `→` / `↑` /
-  `↓`, fill the left, right, top or bottom half, so the document takes one half and your
-  editor keeps the other. Any dock switches to fit-width, because a half-screen window is for
-  reading in, and fitting a whole page into one just shrinks the text. The center button (or
-  `Ctrl+Shift+Enter`, or pressing the same edge again) undocks: the window hugs the page at
-  100%, centred. Your place in the document survives every move.
-- **Fit the window to the content** with `Ctrl+Shift+F` or the toolbar button — the other
-  direction from everything above. Set a figure to the size you want it and the window comes to
-  the picture: no padding, no border of background, the frame exactly on the edges. It stays on,
-  so zooming out brings the window in with it and zooming in pushes it back out, up to the size
-  of your screen. Choosing a fit preset from the zoom menu turns it off again, because fitting
-  the content to the window is the opposite instruction.
-- **Tabs, without the memory.** Open several files and they line up in a strip; `←` / `→`,
-  `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip move between them, `Ctrl+W` closes one. A tab is a path, not a
-  loaded document — only the files on screen are in memory, so six open papers cost what
-  one costs, and a background tab is read fresh from disk when you come back to it rather than
-  going stale. Switching costs a re-parse, against a worker that is already warm.
+- **Rebuild and look.** Watching is on by default. Save or rebuild and the view updates
+  within a second, keeping your page, scroll position and zoom. The toolbar sets how often it
+  looks (1 s, 2 s, 3 s, or off). If the build deletes the file first, the last page stays on
+  screen with a red dot until the new file lands.
+- **It never shows a half-written file.** A build takes hundreds of milliseconds to write a
+  PDF, and a naive viewer reloads the half it has. pdf-next waits until the file is whole: on
+  Windows the writer holds a lock, so opening it fails until it is done; on macOS and Linux it
+  also checks for the PDF's closing `%%EOF`. If the file is not ready, it tries again next tick.
+- **Your build can always write.** The page is kept in memory and the file is closed after
+  reading, so you can overwrite, replace or delete it while it is on screen.
+- **Sharp on any screen.** Pages redraw when you move the window to a display with a
+  different scale, and deep zoom only draws what you can see.
+
+### The window fits the page
+
+- **It opens at the size of what you opened.** A paper comes up at 100% in a window the size
+  of its page, centred; a wide figure gets a wide window. A figure bigger than the screen, such
+  as a plot saved at 400 dpi, is scaled down until it fits whole. A page taller than the
+  monitor fills the screen's height and scrolls. This only happens when you open a file:
+  rebuilds and tab switches never move your window.
+- **Dock it to half the screen** with the toolbar or `Ctrl+Shift+←` / `→` / `↑` / `↓`, so the
+  document takes one half and your editor the other. Docked, it fits the width, so the text
+  stays readable. The centre button, `Ctrl+Shift+Enter`, or the same edge again undocks.
+- **Or bring the window to the content** with `Ctrl+Shift+F`: set a figure to the size you
+  want and the window closes in on it, edge to edge. It stays on, so zooming moves the window
+  with you, up to the size of your screen. Picking a fit from the zoom menu turns it off.
+
+### Tabs and panes
+
+- **Tabs that cost nothing.** Open several files and they line up in a strip. Move with
+  `←` / `→`, `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip; `Ctrl+W` closes one.
+  Only the files on screen are in memory, so six papers cost what one does, and a tab you come
+  back to is read fresh from disk.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
   splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
-  drag a tab to another pane, to a pane's edge to split it again, or onto a pane's tab strip to
-  merge; drag the line between panes to resize. `Ctrl+Alt+←/→/↑/↓` moves between panes. Any file
-  kind works in any pane. The pane you click is the live one, with editing, find, zoom and the
-  Review panel. The others stay where you left them and follow their files: a PDF beside your
-  Markdown reloads by itself when the agent rebuilds it, keeping its page and scroll, and an
-  image or Markdown pane reloads too. Every pane shows the review marks of its document. Press
-  and drag in another pane to make it live and select text there in one go. The layout is saved
-  with the session; with one pane left, the plain tab strip comes back.
-- **Walk a folder of figures.** With a single file open, `←` / `→` (or the toolbar arrows) step
-  through every image next to it, in reading order — `fig2` before `fig10`, not after it. The
-  toolbar shows your position, and the window stays where it is instead of resizing on every
-  press; each figure fills it whole (Fit page), larger or smaller than 100%. A rotate button
-  next to the arrows turns the picture a quarter turn clockwise per press; the next file comes
-  up upright again.
-- **Delete the file you are looking at.** `Delete` (`⌘⌫` on macOS) asks first, then moves the
-  file to the Recycle Bin, the Trash, or your desktop's trash, where it can be restored. A
-  folder with no Recycle Bin — a network share, or WSL's `\\wsl.localhost` — asks whether to
-  delete the file permanently instead. In a folder of figures the next one opens; any other
-  file closes its tab.
-- **PDF, images and markdown.** `.pdf`, plus `.png`, `.jpg`, `.webp` and `.avif`, plus `.md`.
-  Images zoom too, with the same control and keys as a PDF.
-- **Markdown, rendered or raw.** A `.md` opens as a typeset reading column — GitHub-style
-  tables, task lists, footnotes and strikethrough included — parsed by
-  [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) in Rust and sanitized by
-  [ammonia](https://github.com/rust-ammonia/ammonia) before the HTML ever reaches the window,
-  so a hostile file cannot script anything. `Ctrl+U` with no selection (or the toolbar button) flips to the raw
-  text and back; zoom reflows the text rather than scaling a bitmap. Edit the file and the
-  view reloads within a second, keeping your scroll position — the same watch loop as PDFs.
-- **Equations, typeset.** `$…$`, `$$…$$` and a fenced block marked `math` are TeX, turned into
-  MathML by [math-core](https://github.com/tmke8/math-core) in the same Rust pass and set in
-  New Computer Modern Math — no JavaScript math engine, nothing fetched, and the MathML meets
-  the same sanitizer as the prose. Numbered environments, `\label` and `\eqref`, `\newcommand`
-  across a file, and `split` work. An equation that fails to convert, calls a macro in a loop,
-  or exceeds the rendering limits is shown as escaped TeX source; an unknown command is marked in
-  red and the rest of the equation still renders. A `\eqref` to an equation further down the file
-  shows `(??)`.
-- **Markdown typography:** Rendered text is set in Latin Modern Roman at 17 px on a 38 em measure, hyphenated with `text-wrap: pretty` for natural word breaks. Toolbar menus change the font (Latin Modern, the machine-made faces Weft, Sans and Heddle, Serif, Sans, Mono, and the five Monaspace faces Neon, Argon, Xenon, Radon and Krypton), the text size (14 px to 48 px) and the column width (a number of pixels, or 100%; 720 px by default); each choice is remembered. Zoom reflows the text rather than scaling it. The mouse wheel over any toolbar menu (zoom, page view, font, size, width, panes, reload interval) steps through its choices without opening it; over the zoom menu or its buttons it zooms.
-- **Coloured code:** Fenced code blocks tagged python, c, cpp, rust, fortran, julia, bash, shell, toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and their usual short tags, such as `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in all four colour modes (clear, night, invert, sepia); the raw Markdown view stays plain. An untagged or unknown block stays plain, and a block over 64 KiB, or code past 512 KiB in one file, is left uncoloured.
-- **Page view:** The page-view menu in the toolbar shows a PDF as Single page or Two pages (the cover alone, then pairs, as in a printed book), and Markdown as Continuous, Single page or Two pages. Markdown pages are A4 boxes with 25 mm margins that take whole blocks: a heading moves to the next page with the block after it, and a block taller than a page keeps a page of its own, grown to fit, because paragraphs, tables, code and equations are not split. Reviews, find and line links work the same in every view, and each page box prints on its own sheet. The choice is remembered per kind.
-- **Ask and the Review panel.** With the Review panel closed, selected text is for copying (`Ctrl+C` or the right-click menu). Open the panel and a selection becomes the review tool: create a request for the agent. Improve carries an instruction; Polish (wording only, same meaning), Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and Delete say what to do by themselves, with an optional note. A review keeps the original quote, PDF page and context, stable ID, action, status and resolution in `{stem}_review.json` (`paper.pdf` → `paper_review.json`). Delete means “remove this passage from the source”; saving a request never changes a PDF or source file. Improve carries its instruction in `comment`. The Review panel shows each request and tracks it through open, applied and resolved. An agent records a successful source edit and build as applied; you verify the recompiled PDF before resolving it. `Ctrl+Shift+R` toggles the panel. − and + in the panel head change the comment size. Esc, the × or Cancel closes the review box without saving, and so does a click outside it while it is still empty. Remove review takes effect at once and shows Undo for ten seconds; `Ctrl+Z` undoes the last removal too, and the review comes back with the same ID. When the file changes under a review, as it does while an agent works through the list, each open review is found again by its quote and the text around it, even after nearby edits; pdf-next then rewrites that review's lines and context in the sidecar, so the record follows the text. A quote that was itself reworded is marked, with a dashed line, between its old neighbours. Reattach pins a review to other text: select the text and click Reattach, or click Reattach and then select it (Esc cancels). Not available for images.
-- **Checking what the agent did.** A Markdown review keeps the source of its paragraph as it was (`before`). When the agent marks it applied, the Review panel shows a word-by-word before/after of that passage: removed words struck out, new ones highlighted, long unchanged stretches folded to …. A passage that is gone shows its old text as removed. Resolve closes the item; Reopen asks for a short note on what is still wrong, adds it to the comment and sends the item back to the agent. The Ask buttons (Why?, How?, More info, Example, Source?, Derive) mean “this text is unclear, rewrite it so it answers this”, so their result is read in the same before/after. When the agent needs you to decide something, it asks back: the item turns `question`, stands out with a ? on its highlight and in the panel, whose head counts the questions, and shows the question with a reply field. Send (or Enter) saves your answer in `reply` and puts the item back to open for the agent. The Status filter has Question.
-- **Copy the path or the name** from the two buttons after zoom: the full path as a person would type it, or just the file name.
-- **Reduce a PDF** with the toolbar button next to Print. A pure-Rust pass (no Ghostscript) writes `{stem}_reduced.pdf` beside the original when it can shrink the file; the original stays untouched and the smaller copy opens as a tab.
-- **Changed blocks light up on reload:** When a Markdown file rewrites, changed and new paragraphs, headings, list items, tables and equations fade from a highlight over a few seconds. The comparison is by content: adding a paragraph marks only that one. Scroll position is kept.
-- **Links go where you would expect.** A `#heading` or footnote scrolls; a web link, in a
-  markdown file or a PDF, opens in your browser; a relative link — `[notes](other.md)`, `[fig](fig1.png)`, the paper it
-  cites — opens as a new tab, if it is a kind pdf-next shows. Nothing ever navigates the
-  viewer itself.
-- **Local images in Markdown.** `![](fig.png)` shows an image file on your disk, by a relative
-  or absolute path, up to 64 MiB, and the view reloads when the image changes. Web, `data:`,
-  `file:` and network (UNC) sources are not loaded, and neither is a link that resolves to a
-  Windows network share. A network file system mounted as an ordinary folder looks local and is
-  read like one. A refused image shows its alt text in a marked box.
-- **Follows your system dark mode**, and can recolour PDF pages themselves. The mode button
-  cycles Clear → Night → Invert → Sepia, so plain white pages are always one press away;
-  Shift+click it to jump straight back to Clear from anywhere.
-- **Text search** with match counts, powered by PDF.js.
-- **Opens at a page, or at a figure.** `--page 12`, `--find "Figure 3"` and `--dest results`
-  say where to land, and the same thing can be written on the path the way a PDF link is —
-  `paper.pdf#page=7&search=wake`. For Markdown, `--line 42` or `#line=42` aim at the first block at or after that line; `--find` and `#search=` also work on Markdown. A file already open is aimed rather than opened twice, so a
-  running window jumps to the page you asked for; `--no-focus` hands a file over without
-  raising the window. The `opened` line prints the fragment that was understood (including `line=N` for Markdown), which is what
-  lets a script — or an agent — check rather than assume.
-- **Print with `Ctrl+P`**, to the system's own dialog — the real one, with your printer list,
-  page range, copies, duplex, paper size and scaling. pdf-next adds no print settings of its
-  own: it lays the document out for paper, then hands the window to macOS's print panel, the
-  GTK dialog, or WebView2's print preview, whichever the machine has. A PDF is re-rendered at
-  150 dpi on white, so what comes out is the page and not the screen — no toolbar, no dark
-  mode, no window chrome — and an A4 paper prints at true size on A4. Markdown reflows across
-  sheets as text, and an image gets a sheet to itself. A document whose pages are not all the
-  same size follows the first one, as it does in every other viewer. If the machine has nothing
-  to print to — no printer, or a stopped print service — it says so rather than opening nothing.
-- **The title says which build you are running** — `paper.pdf — pdf-next 0.16.0` — so a bug report
-  can name a version without hunting for an about box.
-- **Tells you when there is a newer version.** A few seconds after launch the app asks
-  GitHub for the latest release, once; if it is newer, the last toolbar button lights up and a
-  press fetches the installer for your system — `.exe`, `.dmg` or `.AppImage` — in your
-  browser, from the repo's own Releases page. Pressing the button checks again on demand.
-  Nothing polls: that one request at launch is the only network access the app makes on its
-  own, downloads only ever happen on a press, and GitHub is the only host it can reach.
-- **Figures in Markdown.** An image alone on its line is a figure: its alt text becomes the
-  caption, numbered Figure 1, 2, … down the file. Size and place one in the Markdown itself with the
-  attribute syntax Pandoc and Quarto use: `![Wake behind the cylinder](wake.png){width=60%}`,
-  `{width=8cm}` (also `mm`, `in`, `pt`, `px`), `{height=300}`, and `.left`, `.right` or `.center`
-  (inside a line of text, `.left` and `.right` float the image). Settings sets the defaults for
-  figures that give no size: natural size, the column width, 75% or 50% of it; no height limit,
-  the window or half of it; centred or left; captions numbered, plain or off. Click a figure to
-  select it, and drag its corner to resize it (the width is written as `{width=N%}`); double-click, or Ctrl+click, to open it full size in a tab of its own, with zoom and the folder walk.
-- **Settings** (the sliders button, or `Ctrl+,`) gathers the preferences in one place: the Markdown font, size and column width, how figures are sized, placed and captioned, editing the Markdown file in place, the interface font (System, machine-made Sans or machine-made Weft), the code font for code blocks, inline code and the raw view (System mono or a Monaspace face), how often to check for changes, and About, with the version and the update check.
-- **Command palette** with `Ctrl+K` (`⌘K` on macOS), or from the top of Settings: one searchable list of every action, setting and open file, with each command's shortcut beside it. Type a few letters of each word (`mono neon`, `split r`, `go paper`) and press Enter. It shows only what applies to the file and window you have: page commands for a PDF, fonts for Markdown, pane moves once the window is split, and selection edits while text is selected. The commands you used last come first.
-- **Edit Markdown in place.** In a rendered Markdown file, select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the selection, or of its paragraph when the selection crosses a link or formatting, in a small editor. pdf-next writes the `.md` file itself, only if it is still the version on screen, and every edit shows Undo; `Ctrl+Z` undoes it too. Applying a format to text that already has it removes it. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the same wishes are review requests (Make bold, Make italic).
-- **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first and last, `+`/`-` zoom,
-  `←`/`→` tabs (or folder, with one file open), `Delete` deletes a selection in rendered Markdown (undo with `Ctrl+Z`), otherwise moves the shown file to the trash after confirmation, `Ctrl+W` close, `Ctrl+F` find, `Ctrl+R` reload,
-  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw markdown (in rendered Markdown with a selection, underline it), `Ctrl+Shift+A` ask, Enter (with a selection, Review panel open) add a review, `Ctrl+Shift+N` add a review, `Esc` close the review box without saving, `Ctrl+B`/`Ctrl+I`/`Ctrl+E` bold, italic or edit a Markdown selection, `Ctrl+Z` undo a removed review or an edit, `Ctrl+Shift+R` Review panel,
-  `Ctrl+Shift+F` fit window to content,
-  `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
+  drag a tab to another pane, to a pane's edge to split it again, or onto a tab strip to merge;
+  drag the line between panes to resize; `Ctrl+Alt+←/→/↑/↓` moves between them. Any file works
+  in any pane. The pane you click is the live one, with editing, find, zoom and the Review
+  panel. The others stay where you left them and keep following their files: the PDF next to
+  your notes reloads by itself when it is rebuilt, and images and Markdown do too. Every pane
+  shows its document's review marks. Press and drag in another pane to make it live and select
+  there in one go. The layout is saved with the session; close down to one pane and the plain
+  tab strip comes back.
+
+### Figures
+
+- **Walk a folder of figures.** With one file open, `←` / `→` (or the toolbar arrows) step
+  through every image beside it in reading order, `fig2` before `fig10`. Each one fills the
+  window, which stays put. The rotate button turns a picture a quarter turn; the next one comes
+  up upright.
+- **Throw one away.** `Delete` (`⌘⌫` on macOS) asks first, then moves the file to the Recycle
+  Bin or Trash, where you can get it back. Where there is no trash, such as a network share or
+  `\\wsl.localhost`, it asks whether to delete for good. In a folder of figures the next one
+  opens.
+- Images zoom with the same control and keys as a PDF.
+
+### Markdown that reads like a paper
+
+- **Typeset, not previewed.** A `.md` opens as a reading column in Latin Modern Roman at 17 px
+  on a 38 em measure, hyphenated, with tables, task lists, footnotes and strikethrough. It is
+  parsed by [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) in Rust and
+  cleaned by [ammonia](https://github.com/rust-ammonia/ammonia) before it reaches the window,
+  so a hostile file cannot run anything. `Ctrl+U` with nothing selected (or the toolbar button)
+  shows the raw text and back. Zoom reflows the text instead of scaling it.
+- **Equations.** `$…$`, `$$…$$` and a fenced `math` block are TeX, turned into MathML by
+  [math-core](https://github.com/tmke8/math-core) in the same Rust pass and set in New Computer
+  Modern Math, with no JavaScript maths engine and nothing fetched. Numbered environments,
+  `\label` and `\eqref`, `\newcommand` across a file, and `split` work. An equation that fails
+  to convert, loops, or is too large shows as its TeX source; an unknown command is marked in
+  red and the rest still renders. An `\eqref` to an equation further down shows `(??)`.
+- **Your choice of type.** Toolbar menus set the font (Latin Modern; the machine-made faces
+  Weft, Sans and Heddle; Serif, Sans, Mono; and GitHub's five Monaspace faces Neon, Argon,
+  Xenon, Radon and Krypton), the size (14 to 48 px) and the column width (in pixels, or 100%;
+  720 px by default). Each choice is remembered. The mouse wheel over any toolbar menu (zoom,
+  page view, font, size, width, panes, reload interval) steps through it without opening it;
+  over the zoom menu or its buttons it zooms.
+- **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
+  toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and short tags like
+  `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in every colour mode. The
+  raw view stays plain, and so does a block over 64 KiB or code past 512 KiB in one file.
+- **Pages, if you want them.** The page-view menu shows a PDF as Single page or Two pages (the
+  cover alone, then pairs, like a printed book), and Markdown as Continuous, Single page or
+  Two pages. Markdown pages are A4 with 25 mm margins and never split a paragraph, table, code
+  block or equation; a heading moves to the next page with what follows it. Reviews, find and
+  line links work the same in every view, and each page prints on its own sheet.
+- **Figures with captions.** An image alone on its line is a figure: its alt text is the
+  caption, numbered down the file. Size and place it the way Pandoc and Quarto do:
+  `![Wake behind the cylinder](wake.png){width=60%}`, `{width=8cm}` (also `mm`, `in`, `pt`,
+  `px`), `{height=300}`, and `.left`, `.right` or `.center`. Settings picks the defaults for
+  figures that give no size. Click a figure and drag its corner to resize it (the width is
+  written back as `{width=N%}`); double-click it to open it full size in its own tab.
+- **Local images and links.** `![](fig.png)` shows an image from your disk by a relative or
+  absolute path, up to 64 MiB, and reloads when the image changes. Web, `data:`, `file:` and
+  network-share sources are not loaded; a refused image shows its alt text in a marked box. A
+  `#heading` or footnote scrolls; a web link opens in your browser; a link to another file
+  pdf-next can show opens it as a tab. Nothing ever navigates the viewer itself.
+- **See what changed.** When the file is rewritten, the paragraphs, headings, list items,
+  tables and equations that changed light up and fade over a few seconds, and your scroll
+  position stays.
+- **Edit in place.** Select text and press `Ctrl+B` (bold) or `Ctrl+I` (italic), or right-click
+  for Underline, Strikethrough, Code and Edit text… (`Ctrl+E`), which opens the source of the
+  selection, or of its paragraph when the selection crosses a link or formatting, in a small
+  editor. pdf-next writes the `.md` itself, only if it is still the version on screen, and
+  every edit can be undone with the Undo button or `Ctrl+Z`. A format that is already there is
+  taken off. On by default; Settings turns it off. A PDF's source is LaTeX, so for a PDF the
+  same wishes become review requests (Make bold, Make italic).
+
+### Notes for the next draft
+
+- **Mark what needs work.** With the Review panel open (`Ctrl+Shift+R`), select a passage and
+  say what it needs. Improve takes an instruction; Polish (wording only, same meaning),
+  Shorten, Expand, Check (verify a fact, number or equation), Make bold, Make italic and
+  Delete say it for you, with an optional note. The Ask buttons (Why?, How?, More info,
+  Example, Source?, Derive) mean "this is unclear, rewrite it so it answers this". With the
+  panel closed, a selection is just for copying.
+- **The notes live next to the document**, in `{stem}_review.json` (`paper.pdf` →
+  `paper_review.json`): the quote, its page or line and the text around it, a stable ID, the
+  request, its status and what was done about it. Saving a note never changes the PDF or its
+  source; Delete means "remove this passage from the source". Whoever edits the source (you,
+  a co-author, or an agent) works through the list and marks each item applied; you check the
+  new build and resolve it. A note follows its text as the file changes, even after nearby
+  edits; a quote that was itself reworded is marked with a dashed line between its old
+  neighbours. Reattach pins a note to other text. Remove review shows Undo for ten seconds,
+  and `Ctrl+Z` brings it back with the same ID. Esc, the × or Cancel closes the review box
+  without saving. − and + in the panel head change the text size. Not available for images.
+- **Check what changed.** A Markdown note remembers its paragraph as it was (`before`). Once
+  it is applied, the Review panel shows a word-by-word before and after: removed words struck
+  out, new ones highlighted, long unchanged stretches folded to …. Resolve closes it; Reopen
+  asks for a short note on what is still wrong and sends it back. When whoever is editing
+  needs you to decide something, the item turns into a question, marked with a ? on its
+  highlight and in the panel, with a field for your answer.
+
+### Everything else
+
+- **Dark mode that respects the page.** It follows your system, and the mode button can
+  recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
+  back to Clear.
+- **Find** with match counts (`Ctrl+F`), powered by PDF.js.
+- **Print** with `Ctrl+P`, through your system's own dialog, with your printers, page range,
+  copies, duplex and paper size. A PDF is redrawn at 150 dpi on white, so what comes out is
+  the page, not the screen, and A4 prints at true size on A4. Markdown reflows across sheets,
+  and an image gets a sheet of its own. With nothing to print to, it says so.
+- **Reduce a PDF** with the button next to Print. A pure-Rust pass (no Ghostscript) writes a
+  smaller `{stem}_reduced.pdf` beside the original when it can, and opens it as a tab.
+- **Copy the path or the name** with the two buttons after zoom.
+- **Opens where you ask.** `--page 12`, `--find "Figure 3"` and `--dest results` say where to
+  land, or write it on the path the way a PDF link does: `paper.pdf#page=7&search=wake`. For
+  Markdown, `--line 42` or `#line=42`; `--find` and `#search=` work there too. A file that is
+  already open is aimed at, not opened twice; `--no-focus` hands it over without raising the
+  window.
+- **The title names the build** (`paper.pdf — pdf-next 0.17.0`), so a bug report can say
+  which version without an About box.
+- **It tells you when there is a newer version.** A few seconds after launch it asks GitHub
+  once for the latest release; if there is one, the last toolbar button lights up and a press
+  opens the installer for your system from the Releases page in your browser. That one request
+  is the only network access the app makes on its own; nothing polls, and downloads only
+  happen when you press.
+- **Settings** (the sliders button, or `Ctrl+,`) has the Markdown font, size and width, how
+  figures are sized and captioned, editing in place, the interface font (System, machine-made
+  Sans or Weft), the code font (System mono or a Monaspace face), how often to check for
+  changes, and About.
+- **Command palette** with `Ctrl+K` (`⌘K` on macOS): every action, setting and open file in
+  one list, each with its shortcut. Type a few letters of each word (`mono neon`, `split r`,
+  `go paper`) and press Enter. It only shows what applies to what you have open, and the
+  commands you used last come first.
+- **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first
+  and last, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
+  `Ctrl+F` find, `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a
+  selection in rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
+  edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
+  after asking), `Ctrl+Z` undo an edit or a removed review, `Ctrl+Shift+R` Review panel,
+  `Ctrl+Shift+N` or Enter (with a selection and the panel open) add a review,
+  `Ctrl+Shift+A` ask, `Esc` close the review box, `Ctrl+Shift+F` fit the window to the
+  content, `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
+
 ## Install
 
 | System | Command |

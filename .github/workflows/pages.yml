@@ -1,0 +1,46 @@
+name: Website
+
+# The website is site/ on main, copied into the gh-pages branch that also holds
+# the apt repository. It shares apt's concurrency group so the two never push
+# to gh-pages at the same time. A version bump changes package.json, so the
+# page names each release as it lands.
+
+on:
+  push:
+    branches: [main]
+    paths: [site/**, package.json, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apt-repository
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: gh-pages
+          path: pages
+
+      - name: Copy the site into gh-pages
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          cp -R site/. pages/
+          sed -i "s/{{version}}/$version/g" pages/index.html
+          if grep -q '{{' pages/index.html; then
+            echo "::error title=Website::index.html still has a {{placeholder}}"
+            exit 1
+          fi
+          cd pages
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "Website for pdf-next $version" || { echo 'Nothing changed.'; exit 0; }
+          git push

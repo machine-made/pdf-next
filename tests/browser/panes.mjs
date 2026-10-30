@@ -28,6 +28,7 @@ ok((await page.textContent('#stage #markdown')).includes('Other file text'), 'Li
 ok((await copy('/d/a.md')).includes('Hello'), 'The other pane keeps a copy of a.md');
 const boxes = await page.$$eval('#panes .dv-groupview', (g) => g.map((x) => { const r = x.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width)]; }));
 ok(boxes[0][0] < boxes[1][0] && boxes[0][1] > 200 && boxes[1][1] > 200, `Groups sit left and right ${JSON.stringify(boxes)}`);
+ok(await page.$eval('#panes .dv-tabs-container', (t) => getComputedStyle(t).display === 'flex'), 'The dockview stylesheet applies under the app CSP: tabs sit in a row');
 ok(await page.$eval('#splitView', (s) => s.value) === 'right', 'The pane menu says split right');
 await shot('panes-right');
 await page.click('.pane-body[data-path="/d/a.md"] .pane-cover');

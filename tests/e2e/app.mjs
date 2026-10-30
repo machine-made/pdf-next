@@ -134,6 +134,21 @@ try {
     for (let i = 0; i < d.length; i += 4) if (d[i] < 128) dark += 1;
     return dark;`);
   ok(ink > 100, `The page has ink (${ink} dark pixels)`);
+
+  const clear = "document.getElementById('mode').dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }))";
+  await run(clear);
+  await run("document.getElementById('mode').click()");
+  ok(await until(`const c = document.querySelector('#viewer .page canvas');
+    return document.body.classList.contains('mode-night') && c?.getContext('2d').getImageData(4, 4, 1, 1).data[0] < 64`, 'a dark page'),
+  `Night darkens the page in this webview (${await run("return document.body.classList.contains('recolored-pages') ? 'recoloured after drawing, as its canvas ignores filters' : 'through the canvas filter'")})`);
+  await run(clear);
+
+  await keys([CTRL, SHIFT, 'd']);
+  ok(await until("return document.querySelectorAll('#panes .dv-groupview').length === 2", 'two panes'), 'Ctrl+Shift+D splits the real window');
+  const layout = await run(`const g = [...document.querySelectorAll('#panes .dv-groupview')].map((x) => x.getBoundingClientRect());
+    return { left: g.map((r) => Math.round(r.left)), width: g.map((r) => Math.round(r.width)), tabs: getComputedStyle(document.querySelector('#panes .dv-tabs-container')).display };`);
+  ok(layout.left[0] < layout.left[1] && layout.width.every((w) => w > 100) && layout.tabs === 'flex',
+    `The panes sit side by side with their tab strips, so the webview applied dockview's stylesheet (${JSON.stringify(layout)})`);
 } catch (error) {
   fail += 1;
   console.log('FAIL', error.message);

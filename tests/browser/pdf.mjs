@@ -116,4 +116,36 @@ ok(await page.textContent('#findCount') === 'No match', 'An absent word says No 
 await page.keyboard.press('Escape');
 await settle(100);
 ok(await page.$eval('#find', (f) => f.hidden), 'Esc closes find');
+
+// Night and Sepia: PDF.js draws them through a canvas filter where the canvas
+// applies filters (Chromium, WebView2); where it ignores them (WebKit), pdf-next
+// recolours each drawn canvas itself. Either way the pixels change.
+const pixel = () => page.$eval('#viewer .page canvas', (c) => [...c.getContext('2d').getImageData(4, 4, 1, 1).data].slice(0, 3));
+const ink = async () => (await pixel())[0];
+ok(!await page.evaluate(() => document.body.classList.contains('recolored-pages')), 'Chromium draws page colours through its canvas filter');
+await page.click('#mode');
+await settle(1200);
+ok(await ink() < 64, 'Night darkens the page canvas');
+await page.click('#mode', { modifiers: ['Shift'] });
+await page.addInitScript(() => Object.defineProperty(CanvasRenderingContext2D.prototype, 'filter', { get: () => 'none', set() {} }));
+await page.reload();
+await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+await settle(600);
+ok(await page.evaluate(() => document.body.classList.contains('recolored-pages')), 'A canvas that ignores filters is noticed at start');
+ok(await ink() === 255, 'Clear pages stay white');
+await page.click('#mode');
+await settle(1200);
+const night = await pixel();
+ok(night.every((v) => Math.abs(v - 27) <= 2), `Night paper is the night colour #1b1b1b (${night})`);
+await page.click('#zoomIn');
+await settle(1500);
+ok((await pixel()).every((v) => Math.abs(v - 27) <= 2), 'and stays so when the page is drawn again, recoloured once');
+await page.click('#mode');
+await page.click('#mode');
+await settle(1200);
+const sepia = await pixel();
+ok(Math.abs(sepia[0] - 244) <= 2 && Math.abs(sepia[2] - 216) <= 2, `Sepia paper is #f4ecd8 (${sepia})`);
+await page.click('#mode', { modifiers: ['Shift'] });
+await settle(1200);
+ok(await ink() === 255, 'Clear brings white paper back');
 await finish();

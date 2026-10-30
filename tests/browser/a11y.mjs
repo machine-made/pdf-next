@@ -13,7 +13,7 @@ const allow = [
 const axe = await readFile(axePath, 'utf8');
 const summary = [];
 const audit = async (page, ok, name) => {
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe); // evaluate, not a script tag: the page has the app CSP
   const result = await page.evaluate(() => window.axe.run(document, {
     runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
     resultTypes: ['violations'],

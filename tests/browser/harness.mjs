@@ -15,6 +15,12 @@ const fixtures = join(root, 'tests', 'fixtures');
 export const shots = process.env.PDF_NEXT_SHOTS || join(process.env.RUNNER_TEMP || tmpdir(), 'pdf-next-browser');
 export const axePath = join(root, 'node_modules', 'axe-core', 'axe.min.js');
 
+// The app's own CSP. Tauri adds a nonce to style-src, which makes the webview
+// ignore 'unsafe-inline' for <style> tags; the same nonce here keeps Chromium
+// as strict as the real window.
+const csp = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8')).app.security.csp
+  .replace("style-src 'self' 'unsafe-inline'", "style-src 'self' 'unsafe-inline' 'nonce-harness'");
+
 const types = {
   '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css',
   '.woff2': 'font/woff2', '.json': 'application/json', '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
@@ -28,7 +34,9 @@ function serve() {
       const file = url.startsWith('/d/') ? join(fixtures, url.slice(3)) : join(src, url);
       if (!file.startsWith(src) && !file.startsWith(fixtures)) throw new Error('outside');
       const body = await readFile(file);
-      res.writeHead(200, { 'content-type': types[extname(file)] || 'application/octet-stream' });
+      const headers = { 'content-type': types[extname(file)] || 'application/octet-stream' };
+      if (extname(file) === '.html') headers['content-security-policy'] = csp;
+      res.writeHead(200, headers);
       res.end(body);
     } catch {
       res.writeHead(404);
