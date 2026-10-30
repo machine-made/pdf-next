@@ -134,10 +134,15 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   `\label` and `\eqref`, `\newcommand` across a file, and `split` work. An equation that fails
   to convert, loops, or is too large shows as its TeX source; an unknown command is marked in
   red and the rest still renders. An `\eqref` to an equation further down shows `(??)`.
-- **Your choice of type.** The View menu sets the font (Latin Modern; the machine-made faces
-  Weft, Sans and Heddle; Serif, Sans, Mono; and GitHub's five Monaspace faces Neon, Argon,
-  Xenon, Radon and Krypton), the size (14 to 48 px) and the column width (in pixels, or 100%;
-  720 px by default). Each choice is remembered. The mouse wheel over any of these menus (zoom,
+- **Your choice of type.** The View menu sets the font, the size (14 to 48 px) and the column
+  width (in pixels, or 100%; 720 px by default). The fonts come in groups: Latin Modern, the TeX
+  look and the default; nine serifs for long reading (Literata, Merriweather, Source Serif 4,
+  Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral); seven sans faces
+  made to be easy to read (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist,
+  Manrope, Space Grotesk); your system's serif, sans and mono; GitHub's Monaspace Neon, Argon
+  and Xenon; and the machine-made Weft, Sans and Heddle. They all ship with the app, so nothing
+  is fetched, and Literata, Source Serif 4 and Newsreader change their optical size with the
+  text size. Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
   over the zoom menu or its buttons it zooms.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
@@ -804,7 +809,8 @@ file that records its source and checksum.
 | Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
 | [highlight.js](https://highlightjs.org) | 11.12.0 | Colours code blocks: Bash, C, C++, CMake, diff, Fortran, INI, JavaScript, JSON, Julia, LaTeX, Makefile, MATLAB, Python, Rust, shell, YAML. | BSD 3-Clause |
 | [machine-made type](https://github.com/machine-made/type) | 0.1.0 | Weft, Sans and Heddle: optional Markdown and interface fonts. | SIL OFL 1.1 |
-| [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon, Xenon, Radon and Krypton: optional Markdown and code fonts. | SIL OFL 1.1 |
+| [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon and Xenon: optional Markdown and code fonts. | SIL OFL 1.1 |
+| Reading fonts from [Google Fonts](https://fonts.google.com), packaged by [Fontsource](https://fontsource.org) | Fontsource 5.3.0 (Source Serif 4, Source Sans 3: 5.3.1) | Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope and Space Grotesk: optional Markdown fonts, latin and latin-ext subsets in `vendor/fonts` (`tools/update_fonts.sh`). | SIL OFL 1.1 |
 | [dockview](https://github.com/dockview/dockview) | 8.8.0 | The pane layout: tiles with tabs, split and moved by dragging. | MIT |
 | [diff-match-patch](https://github.com/google/diff-match-patch) | 1.0.5 | The word-by-word before/after of an applied review. | Apache-2.0 |
 
@@ -859,6 +865,8 @@ contributors, under the Apache License 2.0.
 The machine-made Weft, Sans and Heddle fonts come from [machine-made/type](https://github.com/machine-made/type) under the SIL Open Font License 1.1; their licences are in `src/vendor/machine-made-type/`.
 
 The Monaspace fonts are © 2023 GitHub, from [githubnext/monaspace](https://github.com/githubnext/monaspace) under the SIL Open Font License 1.1; the licence is in `src/vendor/monaspace/OFL.txt`.
+
+The reading fonts (Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope, Space Grotesk) are © their authors, from Google Fonts as packaged by Fontsource, under the SIL Open Font License 1.1; each family's licence and version are in `src/vendor/fonts/<family>/`.
 
 Markdown code colours come from highlight.js 11.12.0 (BSD 3-Clause, © Ivan Sagalaev and contributors); its licence is in `src/vendor/highlightjs/LICENSE`.
 

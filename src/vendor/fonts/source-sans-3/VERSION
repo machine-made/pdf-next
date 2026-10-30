@@ -1,0 +1,10 @@
+Source Sans 3 (variable WOFF2: wght 200-900; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v20.
+Source: npm @fontsource-variable/source-sans-3 5.3.1 (https://www.npmjs.com/package/@fontsource-variable/source-sans-3), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3  OFL.txt
+  6fe10a66ec416f77a26309b645471d032ad8175063bb605b886e9b7e57efaaa8  source-sans-3-latin-ext-wght-italic.woff2
+  a85a7459bdb3cdc1136751e151a506bae653fc29ada3ca86237477df6f1b59e6  source-sans-3-latin-ext-wght-normal.woff2
+  5fbc14d56cea35e60596c72ca969b349443c6a536f74e11748eed8b3a396e61d  source-sans-3-latin-wght-italic.woff2
+  19143dca075972bc84e3fd9eab7416dd40cc565dccb2435a044bdfabe060c7d5  source-sans-3-latin-wght-normal.woff2

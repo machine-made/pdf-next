@@ -2007,7 +2007,7 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
 }
 
 
-/* Monaspace (GitHub Next): five monospaced superfamilies with matching
+/* Monaspace (GitHub Next): three monospaced superfamilies with matching
    metrics. Optional Markdown body fonts, and the code font when chosen. */
 @font-face {
   font-family: "Monaspace Neon";
@@ -2036,24 +2036,6 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
   font-display: swap;
 }
 
-@font-face {
-  font-family: "Monaspace Radon";
-  src: url('./vendor/monaspace/MonaspaceRadon-Variable.woff2') format('woff2');
-  font-weight: 200 800;
-  font-stretch: 100% 125%;
-  font-style: oblique 0deg 11deg;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Monaspace Krypton";
-  src: url('./vendor/monaspace/MonaspaceKrypton-Variable.woff2') format('woff2');
-  font-weight: 200 800;
-  font-stretch: 100% 125%;
-  font-style: oblique 0deg 11deg;
-  font-display: swap;
-}
-
 :root {
   --code-font: ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
 }
@@ -2062,8 +2044,6 @@ body:not(.kind-pdf):not(.kind-markdown) .review-only {
 :root[data-code-font="monaspace-neon"] { --code-font: "Monaspace Neon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
 :root[data-code-font="monaspace-argon"] { --code-font: "Monaspace Argon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
 :root[data-code-font="monaspace-xenon"] { --code-font: "Monaspace Xenon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
-:root[data-code-font="monaspace-radon"] { --code-font: "Monaspace Radon", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
-:root[data-code-font="monaspace-krypton"] { --code-font: "Monaspace Krypton", ui-monospace, "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; }
 
 /* The interface font, chosen in Settings. */
 :root[data-ui-font="mm-sans"] {
@@ -2255,12 +2235,73 @@ body.mode-sepia #markdownStageSplit {
   --article-font: "Monaspace Xenon", var(--code-font);
 }
 
-#markdown[data-font="monaspace-radon"] {
-  --article-font: "Monaspace Radon", var(--code-font);
+/* Reading fonts (src/vendor/fonts, faces in fonts.css). Optical sizes follow
+   the text size where the font has them. */
+#markdown[data-font="literata"] {
+  --article-font: "Literata", Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
 }
 
-#markdown[data-font="monaspace-krypton"] {
-  --article-font: "Monaspace Krypton", var(--code-font);
+#markdown[data-font="merriweather"] {
+  --article-font: "Merriweather", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="source-serif-4"] {
+  --article-font: "Source Serif 4", Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+}
+
+#markdown[data-font="libre-baskerville"] {
+  --article-font: "Libre Baskerville", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="lora"] {
+  --article-font: "Lora", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="eb-garamond"] {
+  --article-font: "EB Garamond", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="crimson-pro"] {
+  --article-font: "Crimson Pro", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="newsreader"] {
+  --article-font: "Newsreader", Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+}
+
+#markdown[data-font="spectral"] {
+  --article-font: "Spectral", Georgia, "Times New Roman", serif;
+}
+
+#markdown[data-font="atkinson-hyperlegible-next"] {
+  --article-font: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="lexend"] {
+  --article-font: "Lexend", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="inter"] {
+  --article-font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="source-sans-3"] {
+  --article-font: "Source Sans 3", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="geist"] {
+  --article-font: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="manrope"] {
+  --article-font: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+#markdown[data-font="space-grotesk"] {
+  --article-font: "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
 }
 
 #markdown[data-size="14"] { font-size: 14px; }

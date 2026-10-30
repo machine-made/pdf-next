@@ -1,0 +1,14 @@
+Spectral (static WOFF2: weights 400, 700; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v15.
+Source: npm @fontsource/spectral 5.3.0 (https://www.npmjs.com/package/@fontsource/spectral), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  22ca006c8a0edb513ee188722d72e9f65cbb19f07abb71bd7a898bc926503609  OFL.txt
+  db397149a9f73fd6a41dd2fdf3314cf8a9daf0485134465cc268cac578766b71  spectral-latin-400-italic.woff2
+  cf8daee3b83c1e662196c6e34e444bc41344d54bfeb4fb5351e197de6ce94539  spectral-latin-400-normal.woff2
+  0c2722ef57c7ce87c9dc93a18107939e48fb1540ad14809b47957d1f4b2aa794  spectral-latin-700-italic.woff2
+  5276f202cce67e8caa9f697800e11cfc9d708da67d47f6f5507dcadcf1e11c11  spectral-latin-700-normal.woff2
+  f554218b51a0eadc0709d6027e684ad9b5b21ddc4f3dfd4ba171ba2b41b0c99f  spectral-latin-ext-400-italic.woff2
+  fc4b2566ccd9714a72c2137f822311cb0131296c83c8ee93848ae6f887969e85  spectral-latin-ext-400-normal.woff2
+  6e379ab0a9b0c30ee3250d867af4d81efff11a83f537b645652327e4742d12a7  spectral-latin-ext-700-italic.woff2
+  9b5a5be420405c68cf73fcdd06fa4c9978dcd8fb8b87b0e187e107cfb7a5da29  spectral-latin-ext-700-normal.woff2

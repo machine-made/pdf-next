@@ -1,0 +1,10 @@
+Lora (variable WOFF2: wght 400-700; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v37.
+Source: npm @fontsource-variable/lora 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/lora), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  948aed765160f7b974105606c21994715a171f89fca48e57bf1e0a23aca0bef1  OFL.txt
+  45f989df83f3a9f40007d2ecdea98bff248c8767a1a0bbe60e94fb37b605ecee  lora-latin-ext-wght-italic.woff2
+  2a2d9c22c9863086a23f5013fede1428585321812b25f2662542c39d02967c5e  lora-latin-ext-wght-normal.woff2
+  d824d807d4d832d12c87932d0b8ec1314dcfd502157a56dee6bb04cf8a3768ae  lora-latin-wght-italic.woff2
+  ddb8c66035104e233fc024669183aad3738b6daa16deee2ebb1241bd0f98ace1  lora-latin-wght-normal.woff2
