@@ -103,4 +103,29 @@ await page.selectOption('#reviewStatusFilter', 'all');
 await page.waitForTimeout(100);
 ok((await row('r1').locator('.review-reply-text').textContent()).includes('The second one'), 'The reply shows under the item');
 ok(!(await page.textContent('#reviewCount')).includes('question'), 'No question left in the head count');
+
+// Many applied items whose quotes are gone: the panel compares each passage once, not on every repaint.
+const words = (n, salt) => Array.from({ length: n }, (_, i) => `w${(i * salt) % 911}`).join(' ');
+await changeFile(`${words(500, 7)}.\n`);
+const many = Array.from({ length: 25 }, (_, i) => ({
+  id: `r${i + 1}`, file: 'a.md', kind: 'markdown', at: { line: 1 }, quote: 'gone from the text', action: 'polish',
+  status: 'applied', resolution: 'rewrote', before: `${words(500, 11 + i)}.`, anchor: { prefix: 'nothing here', suffix: 'nor here' },
+}));
+await page.evaluate((reviews) => {
+  Object.assign(window.__store, { reviews, nextId: 26, revision: window.__store.revision + 1 });
+  window.__emit('reviews-changed', { path: '/d/a.md' });
+}, many);
+await page.waitForTimeout(2000);
+const repaint = () => page.evaluate(async () => {
+  const filter = document.getElementById('reviewStatusFilter');
+  const started = performance.now();
+  for (const value of ['applied', 'all']) {
+    filter.value = value;
+    filter.dispatchEvent(new Event('change'));
+  }
+  return performance.now() - started;
+});
+await repaint();
+const took = await repaint();
+ok(await page.locator('.review-diff').count() === 25 && took < 300, `Repainting 25 applied before/afters reuses their diffs (${took.toFixed(0)} ms)`);
 await finish();

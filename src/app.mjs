@@ -4260,21 +4260,25 @@ function appliedPassageNow(review) {
   const text = passageText(raw, review.at);
   if (!text) return null;
   if (status === 'lines') return text;
-  const diffs = wordDiff(review.before, text);
+  const diffs = cachedDiff(review.before, text);
   const kept = diffs ? diffs.filter(([op]) => op === 0).reduce((sum, [, part]) => sum + part.trim().length, 0) : 0;
   return kept >= 0.3 * review.before.trim().length ? text : null;
 }
 
+/// The panel repaints often; each pair of texts is compared once.
+function cachedDiff(before, after) {
+  const key = `${before}\u0000${after}`;
+  if (!reviewDiffCache.has(key)) {
+    if (reviewDiffCache.size > 200) reviewDiffCache.clear();
+    reviewDiffCache.set(key, wordDiff(before, after));
+  }
+  return reviewDiffCache.get(key);
+}
+
 function reviewDiffFor(review) {
   const after = appliedPassageNow(review);
-  const key = `${review.id}\u0000${review.before}\u0000${after}`;
-  const cached = reviewDiffCache.get(key);
-  if (cached) return cached;
-  const diffs = after === null ? [[-1, review.before]] : wordDiff(review.before, after);
-  const view = diffs ? { ...diffView(diffs), gone: after === null } : null;
-  if (reviewDiffCache.size > 200) reviewDiffCache.clear();
-  reviewDiffCache.set(key, view);
-  return view;
+  const diffs = after === null ? [[-1, review.before]] : cachedDiff(review.before, after);
+  return diffs ? { ...diffView(diffs), gone: after === null } : null;
 }
 
 /// Before/after of an applied Markdown review, word by word.
