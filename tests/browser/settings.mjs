@@ -2,7 +2,7 @@
 // Theme and page modes: the OS theme, theme-changed, and the mode button.
 import { start } from './harness.mjs';
 
-const { page, ok, finish } = await start({ theme: 'dark' });
+const { page, ok, openMenu, finish } = await start({ theme: 'dark' });
 const choose = (id, value) => page.evaluate(([id, value]) => {
   const s = document.getElementById(id);
   s.value = value;
@@ -22,6 +22,7 @@ const plain = await mdBg();
 ok(await body('mode-auto') && await page.$eval('#mode', (b) => b.getAttribute('aria-pressed')) === 'false', 'No page mode at first');
 const seen = [];
 for (const expected of ['night', 'invert', 'sepia']) {
+  await openMenu();
   await page.click('#mode');
   await page.waitForTimeout(50);
   seen.push(await body(`mode-${expected}`) ? expected : '?');
@@ -30,13 +31,17 @@ ok(seen.join() === 'night,invert,sepia', `The mode button cycles night, invert, 
 ok(await page.$eval('#mode', (b) => b.getAttribute('aria-pressed')) === 'true', 'and shows as pressed');
 const sepia = await mdBg();
 ok(sepia === 'rgb(244, 236, 216)' && sepia !== plain, `Sepia colours the Markdown page (${sepia})`);
+await openMenu();
 await page.click('#mode');
 await page.waitForTimeout(50);
 ok(await body('mode-auto') && await mdBg() === plain, 'One more press is plain pages again');
+await openMenu();
 await page.click('#mode');
+await openMenu();
 await page.click('#mode', { modifiers: ['Shift'] });
 await page.waitForTimeout(50);
 ok(await body('mode-auto'), 'Shift+click clears the mode');
+await openMenu();
 await page.click('#mode');
 await page.waitForTimeout(50);
 ok(await mdBg() === 'rgb(27, 27, 27)', 'Night darkens the Markdown page');

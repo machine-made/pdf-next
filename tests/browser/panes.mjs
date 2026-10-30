@@ -1,7 +1,7 @@
 // Panes: split, live pane and copies, moving between them, session restore, drag.
 import { start } from './harness.mjs';
 
-const { page, ok, selectText, shot, finish } = await start();
+const { page, ok, selectText, shot, openMenu, finish } = await start();
 const livePath = () => page.evaluate(() => document.getElementById('stage').closest('.pane-body')?.dataset.path);
 const copy = (path) => page.evaluate((path) => document.querySelector(`.pane-body[data-path="${path}"] .pane-snapshot`)?.textContent || '', path);
 const groups = () => page.$$eval('#panes .dv-groupview', (g) => g.length);
@@ -47,9 +47,11 @@ await page.evaluate(() => window.__emit?.('file-changed', { path: '/d/a.md', kin
 await page.waitForTimeout(300);
 ok((await copy('/d/a.md')).includes('Changed by the agent'), 'A copy follows its file when it changes');
 ok((await page.evaluate(() => window.__calls.filter((c) => c[0] === 'watch_secondary').at(-1)?.[1]?.paths || [])).join() === '/d/a.md', 'The other pane is watched');
+await openMenu();
 await page.selectOption('#mdSize', '22');
 await page.waitForTimeout(100);
 ok(await page.evaluate(() => document.querySelector('.pane-snapshot article#markdown')?.dataset.size) === '22', 'Text size reaches the copies');
+await openMenu();
 await page.selectOption('#splitView', 'off');
 await page.waitForTimeout(400);
 ok(await page.$eval('#panes', (p) => p.hidden), 'One pane again');
@@ -89,6 +91,7 @@ ok((await page.textContent('#stage #markdown')).includes('Third file'), 'The thi
 await drag(await page.locator('#panes .dv-groupview.dv-active-group .dv-tab').first().boundingBox(), await page.locator('#panes .dv-groupview').first().boundingBox());
 ok(await groups() === 2, 'Dropping a tab in the middle of another pane moves it there');
 await shot('panes-moved');
+await openMenu();
 await page.selectOption('#splitView', 'off');
 await page.waitForTimeout(400);
 await pick('/d/hello.pdf');

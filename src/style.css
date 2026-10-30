@@ -397,6 +397,124 @@ body:not(.has-file) #poll {
   background: var(--accent);
 }
 
+#update:not(.available) {
+  display: none;
+}
+
+/* The View and Window menus. Fixed, so the toolbar's scrolling box does not
+   clip them; script puts them under their button. */
+.popover {
+  position: fixed;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 230px;
+  max-height: calc(100vh - var(--bar-height) - 16px);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--widget-border);
+  border-radius: 6px;
+  background: var(--widget);
+  box-shadow: 0 4px 16px var(--shadow);
+  white-space: nowrap;
+}
+
+.popover[hidden] {
+  display: none;
+}
+
+.popover .menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: var(--control-height);
+  padding: 0 4px 0 8px;
+}
+
+.popover button.menu-row {
+  width: 100%;
+}
+
+.popover label.menu-row > span {
+  flex: 1 1 auto;
+  color: var(--fg-dim);
+}
+
+.popover select {
+  width: 150px;
+}
+
+.popover kbd,
+.popover .menu-value {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 0.85em;
+}
+
+body.pages-on .md-width-row {
+  display: none;
+}
+
+/* Three by three, like the screen: top, left, centre, right, bottom. */
+.dock-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  grid-template-rows: repeat(3, 30px);
+  gap: 2px;
+  justify-content: center;
+  padding: 4px 0 6px;
+}
+
+.dock-grid button {
+  height: 30px;
+}
+
+#dockTop { grid-area: 1 / 2; }
+#dockLeft { grid-area: 2 / 1; }
+#dockCenter { grid-area: 2 / 2; }
+#dockRight { grid-area: 2 / 3; }
+#dockBottom { grid-area: 3 / 2; }
+
+/* Focus mode: the bar fades but keeps its place, so the page never moves. */
+#bar {
+  transition: opacity 160ms ease;
+}
+
+body.bar-hidden #bar {
+  opacity: 0;
+  transition-duration: 400ms;
+}
+
+/* Presentation: the page alone on black, one at a time. */
+body.presenting #bar,
+body.presenting #tabs,
+body.presenting #reviewPane,
+body.presenting #find,
+body.presenting #reviewChip,
+body.presenting #reviewMenu,
+body.presenting #figureResizer {
+  display: none !important;
+}
+
+body.presenting #stage,
+body.presenting #viewerContainer,
+body.presenting #markdownStage {
+  overflow: hidden;
+  background: #000000;
+}
+
+body.presenting #markdownStage {
+  padding: 8px 0;
+}
+
+body.presenting #viewerContainer:focus-visible {
+  outline: none;
+}
+
 /* ── Tabs ────────────────────────────────────────────────────────────── */
 /* One file is the normal case, and it should look exactly as it did before
    tabs existed — so the strip is not there at all until a second file opens. */

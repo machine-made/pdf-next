@@ -142,6 +142,15 @@ function mockTauri({ files, initial, theme, store }) {
         }
       },
     },
+    window: {
+      getCurrentWindow: () => ({
+        isFullscreen: async () => Boolean(window.__fullscreen),
+        setFullscreen: async (on) => {
+          window.__calls.push(['setFullscreen', { on }]);
+          window.__fullscreen = on;
+        },
+      }),
+    },
     event: {
       listen: async (name, fn) => {
         (window.__listeners ||= {})[name] = fn;
@@ -183,6 +192,12 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     getSelection().removeAllRanges();
     getSelection().addRange(range);
   }, [selector, text]);
+  // Open the View (or Window) menu, as a mouse click would, unless it is open.
+  const openMenu = (id = 'viewMenu') => page.evaluate((id) => {
+    if (document.getElementById(id).hidden) {
+      document.querySelector(`[aria-controls="${id}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    }
+  }, id);
   const shot = (name, options = {}) => {
     mkdirSync(shots, { recursive: true });
     return page.screenshot({ path: join(shots, `${name}.png`), ...options });
@@ -203,7 +218,7 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
     console.log(`${tally.pass} passed, ${tally.fail} failed`);
     process.exit(tally.fail || tally.errors.length ? 1 : 0);
   };
-  return { page, ok, errors, selectText, shot, close, finish };
+  return { page, ok, errors, selectText, openMenu, shot, close, finish };
 }
 
 /// Per-file line coverage of src/*.mjs from the V8 coverage each test wrote.
