@@ -3246,7 +3246,7 @@ assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.noSty
   assert.match(app, /function loadPdf\(url\) \{\s*return getDocument\(\{[\s\S]*?worker: pdfWorker,/, 'Pane viewers share the one worker.');
   assert.match(viewers, /dispose\(\) \{[\s\S]*?setDocument\(null\)[\s\S]*?abort\.abort\(\);[\s\S]*?task\?\.destroy\(\)/,
     'A pane viewer drops its pages, its listeners and its document.');
-  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
+  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*changes\?\.load\(pdf, path\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
   assert.match(viewers, /addEventListener\('pane-detached', \(\) => \{\s*if \(viewers\.get\(path\) === viewer\) drop\(path\);/,
     'A viewer goes with its copy.');
   assert.match(panesSource, /const detach = \(element\) => \{[\s\S]*?new Event\('pane-detached'\)/, 'Panes say when a copy leaves.');

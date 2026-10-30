@@ -1119,6 +1119,13 @@ body.mode-sepia .pdfViewer {
   --page-bg-color: #f4ecd8;
 }
 
+/* A canvas is drawn plain, then recoloured (src/page-colors.mjs): the page's
+   own colour shows until then, never a white sheet. */
+body.mode-night .pdfViewer .canvasWrapper canvas:not([data-recolored]),
+body.mode-sepia .pdfViewer .canvasWrapper canvas:not([data-recolored]) {
+  visibility: hidden;
+}
+
 body.mode-invert .pdfViewer .page .canvasWrapper {
   filter: invert(1) hue-rotate(180deg);
 }
@@ -2331,6 +2338,83 @@ body.pages-on #mdWidth {
 
 #markdown .changed.changed-fade {
   background: transparent;
+}
+
+/* The same on a rebuilt PDF page (src/pdf-changes.mjs), over the text. */
+.change-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.change-marks > i {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--changed-highlight);
+  transition: background 2.5s ease-out 0.5s;
+}
+
+.change-marks.fading > i {
+  background: transparent;
+}
+
+/* Where the rebuild changed the document, along the right edge. */
+.change-ticks {
+  position: absolute;
+  width: 8px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+body:not(.kind-pdf) #stage > .change-ticks {
+  display: none;
+}
+
+.change-tick {
+  position: absolute;
+  left: 0;
+  width: 8px;
+  height: 3px;
+  margin-top: -1px;
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.4;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.change-tick::before {
+  content: '';
+  position: absolute;
+  inset: -3px 0;
+}
+
+.change-ticks.fresh .change-tick {
+  opacity: 1;
+}
+
+.change-ticks.fresh.fading .change-tick {
+  opacity: 0.4;
+  transition: opacity 2.5s ease-out 0.5s;
+}
+
+.change-tick:hover {
+  opacity: 1;
+}
+
+/* Without motion a change is marked, still, for the same few seconds. */
+@media (prefers-reduced-motion: reduce) {
+  #markdown .changed.changed-fade,
+  .change-marks.fading > i {
+    background: var(--changed-highlight);
+  }
+
+  .change-ticks.fresh.fading .change-tick {
+    opacity: 1;
+  }
 }
 
 /* Reattach is waiting for a selection: the text cursor says so. */

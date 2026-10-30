@@ -1,6 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
-import { canvasFilters, recolorRendered } from './page-colors.mjs';
+import { recolorRendered } from './page-colors.mjs';
+import { createChangeMarks } from './pdf-changes.mjs';
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
 import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
@@ -59,8 +60,6 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
-document.body.classList.toggle('recolored-pages', !canvasFilters);
-const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
 /// The Markdown copies shown in panes that are not live (see src/panes.mjs).
@@ -301,6 +300,8 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+// What the last rebuild changed (src/pdf-changes.mjs).
+const pdfChanges = createChangeMarks({ host: ui.stage, container: ui.container, eventBus, viewer: () => pdfViewer });
 
 // Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
 const paneViewers = createPaneViewers({
@@ -309,7 +310,7 @@ const paneViewers = createPaneViewers({
     ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
   }),
   EventBus,
-  pageColors: () => pageColorsFor(state.mode),
+  createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
   text: { collect: collectTextParts, wrap: wrapSpanParts },
@@ -1529,7 +1530,7 @@ async function showPdf(file, view, generation) {
 
   pdfViewer.setDocument(pdfDocument);
   linkService.setDocument(pdfDocument, null);
-  applyPageColors();
+  pdfChanges.load(pdfDocument, file.path);
 
   // Never wait forever: if setDocument fails internally, pagesinit never fires
   // and this closure would be retained for the life of the process.
@@ -1830,6 +1831,9 @@ async function openFile(
   // markdown DOM kept behind another tab is memory doing nothing.
   if (file.kind !== 'image') {
     ui.image.removeAttribute('src');
+  }
+  if (file.kind !== 'pdf') {
+    pdfChanges.clear();
   }
   if (file.kind !== 'markdown' && file.kind !== 'json') {
     state.selectedFigure = null;
@@ -2762,21 +2766,18 @@ function applyZoomChoice(value) {
 
 // ── Page modes ────────────────────────────────────────────────────────────
 
-/// Page colors are drawn into the page canvas, not laid over it, so changing
-/// them only shows once the canvas is drawn again. Setting the colors and
-/// calling refresh() is not that: refresh() goes through PDFPageView.update(),
-/// which — with the page geometry unchanged — resets with keepCanvasWrapper
-/// and never calls _resetCanvas(). The old bitmap stays, so leaving sepia used
-/// to give a white page with brown text. Dropping each canvas is the fix.
+/// Page colours are drawn into the page canvas (src/page-colors.mjs), not
+/// laid over it, so changing them only shows once the canvas is drawn again.
+/// refresh() is not that: it goes through PDFPageView.update(), which — with
+/// the page geometry unchanged — resets with keepCanvasWrapper and never
+/// calls _resetCanvas(). The old bitmap stays, so leaving sepia used to give a
+/// white page with brown text. Dropping each canvas is the fix.
 function applyPageColors() {
-  const pageColors = pageColorsFor(state.mode);
-  pdfViewer.pageColors = pageColors;
   const pages = pdfViewer._pages;
   if (!Array.isArray(pages) || !state.document) {
     return;
   }
   for (const pageView of pages) {
-    pageView.pageColors = pageColors;
     try {
       // No keepCanvasWrapper: the canvas has to go or the old colors stay.
       pageView.reset();
@@ -2809,6 +2810,11 @@ function setMode(mode, persist = true) {
   } catch {
     // Storage is a convenience here, never a requirement.
   }
+}
+
+/// Go to the next (+1) or previous (-1) place the last rebuild changed.
+function stepChange(direction) {
+  if (!pdfChanges.step(direction)) setStatus('Nothing changed in the last rebuild');
 }
 
 function cycleMode(clear) {
@@ -6370,6 +6376,8 @@ const palette = createPalette({
     selectChoices(ui.pageView, { id: 'page-view', label: 'Page view', group: 'View', when: reviewable }),
     { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
     { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
+    { label: 'Next change', group: 'View', shortcut: '.', icon: '#i-next', when: () => kind() === 'pdf', run: () => stepChange(1) },
+    { label: 'Previous change', group: 'View', shortcut: ',', icon: '#i-prev', when: () => kind() === 'pdf', run: () => stepChange(-1) },
     { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
     { label: 'Previous file in folder', group: 'View', shortcut: '←', icon: '#i-prev', when: () => kind() === 'image', run: () => stepSibling(-1) },
     { label: 'Rotate a quarter turn clockwise', group: 'View', icon: '#i-rotate', when: () => kind() === 'image', run: () => setImageRotation(state.imageRotation + 90) },
@@ -6717,6 +6725,10 @@ window.addEventListener('keydown', (event) => {
       break;
     case 'g':
       pdfViewer.currentPageNumber = event.shiftKey ? pdfViewer.pagesCount : 1;
+      break;
+    case '.':
+    case ',':
+      stepChange(key === '.' ? 1 : -1);
       break;
     default:
       return;
