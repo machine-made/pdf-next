@@ -83,7 +83,21 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
     api.onDidLayoutChange(() => {
       if (!exiting) onLayout();
     });
+    api.onDidMaximizedGroupChange?.(() => {
+      if (!exiting) onLayout();
+    });
   }
+
+  // A double click on the empty part of a tab strip fills the window with
+  // that pane, or brings the others back.
+  host.addEventListener('dblclick', (event) => {
+    const strip = event.target.closest?.('.dv-void-container');
+    const group = strip && api?.groups.find((item) => item.element.contains(strip));
+    if (!group) return;
+    event.preventDefault();
+    if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
+    else group.activePanel?.api.maximize();
+  });
 
   /// Back to one pane: the stage returns to the window and the strip takes
   /// the tabs in their order in the last group.
@@ -219,7 +233,44 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
 
   /// Each group's showing tab: what is on screen.
   function visible() {
-    return api ? api.groups.map((group) => group.activePanel?.id).filter(Boolean) : [];
+    if (!api) return [];
+    const groups = api.hasMaximizedGroup() ? api.groups.filter((group) => group.api.isMaximized()) : api.groups;
+    return groups.map((group) => group.activePanel?.id).filter(Boolean);
+  }
+
+  /// The live pane fills the window, or the others come back.
+  function maximize() {
+    const live = livePath && panel(livePath);
+    if (!live) return false;
+    if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
+    else live.api.maximize();
+    return true;
+  }
+
+  function unmaximize() {
+    if (api?.hasMaximizedGroup()) api.exitMaximizedGroup();
+  }
+
+  /// Move the live pane's edge toward `direction` by `step` of the window: the
+  /// edge it shares with a neighbour there, or else its opposite edge.
+  function resize(direction, step = 0.05) {
+    const group = livePath && panel(livePath)?.group;
+    if (!group || api.hasMaximizedGroup()) return false;
+    const across = direction === 'left' || direction === 'right';
+    const box = group.element.getBoundingClientRect();
+    const whole = host.getBoundingClientRect();
+    const ahead = (direction === 'right' || direction === 'down') ? 1 : -1;
+    const toward = api.groups.some((other) => {
+      if (other === group) return false;
+      const near = other.element.getBoundingClientRect();
+      return across
+        ? (ahead > 0 ? near.left >= box.right - 2 : near.right <= box.left + 2) && near.bottom > box.top && near.top < box.bottom
+        : (ahead > 0 ? near.top >= box.bottom - 2 : near.bottom <= box.top + 2) && near.right > box.left && near.left < box.right;
+    });
+    const delta = (toward ? 1 : -1) * step * (across ? whole.width : whole.height);
+    const size = (across ? box.width : box.height) + delta;
+    group.api.setSize(across ? { width: Math.max(80, size) } : { height: Math.max(80, size) });
+    return true;
   }
 
   function layout() {
@@ -283,6 +334,12 @@ export function createPanes({ host, stage, library, onActivate, onClose, onExit,
     exit,
     neighbour,
     visible,
+    maximize,
+    unmaximize,
+    resize,
+    get maximized() {
+      return Boolean(api?.hasMaximizedGroup());
+    },
     layout,
     restore,
     has: (path) => Boolean(panel(path)),

@@ -1,6 +1,7 @@
 // pdf-next viewer. One file, one window, one job: show the document and keep
 // showing the newest version of it.
-import { canvasFilters, recolorRendered } from './page-colors.mjs';
+import { recolorRendered } from './page-colors.mjs';
+import { createChangeMarks } from './pdf-changes.mjs';
 import { bootIsFine, failures, mark } from './smoke.mjs';
 import { createPanes, snapshotOfStage } from './panes.mjs';
 import { createPaneViewers, imagePane, paintMarkdownCopy } from './pane-viewers.mjs';
@@ -63,8 +64,6 @@ const PAGE_COLORS = {
   night: { background: '#1b1b1b', foreground: '#d6d1c4' },
   sepia: { background: '#f4ecd8', foreground: '#5b4636' },
 };
-document.body.classList.toggle('recolored-pages', !canvasFilters);
-const pageColorsFor = (mode) => (canvasFilters ? PAGE_COLORS[mode] || null : null);
 
 const el = (id) => document.getElementById(id);
 /// The Markdown copies shown in panes that are not live (see src/panes.mjs).
@@ -321,6 +320,8 @@ const pdfViewer = new TidyViewer({
 });
 linkService.setViewer(pdfViewer);
 watchPdfRendering(pdfViewer);
+// What the last rebuild changed (src/pdf-changes.mjs).
+const pdfChanges = createChangeMarks({ host: ui.stage, container: ui.container, eventBus, viewer: () => pdfViewer });
 
 // Read-only viewers for the visible panes that are not live (src/pane-viewers.mjs).
 const paneViewers = createPaneViewers({
@@ -329,10 +330,10 @@ const paneViewers = createPaneViewers({
     ...options, maxCanvasPixels: MAX_CANVAS_PIXELS, enableOptimizedPartialRendering: true, textLayerMode: 1, annotationMode: 0,
   }),
   EventBus,
-  pageColors: () => pageColorsFor(state.mode),
+  createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
-  text: { collect: collectTextParts, wrap: wrapSpanParts },
+  text: { collect: collectTextParts, wrap: wrapSpanParts, find: (layer) => markPdfLayer(layer) },
   onPick: (path) => pickPane(path),
   remember: (path, view) => {
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
@@ -1671,7 +1672,7 @@ async function showPdf(file, view, generation, place = null) {
 
   pdfViewer.setDocument(pdfDocument);
   linkService.setDocument(pdfDocument, null);
-  applyPageColors();
+  pdfChanges.load(pdfDocument, file.path);
 
   // Never wait forever: if setDocument fails internally, pagesinit never fires
   // and this closure would be retained for the life of the process.
@@ -1984,6 +1985,9 @@ async function openFile(
   // markdown DOM kept behind another tab is memory doing nothing.
   if (file.kind !== 'image') {
     ui.image.removeAttribute('src');
+  }
+  if (file.kind !== 'pdf') {
+    pdfChanges.clear();
   }
   if (file.kind !== 'markdown' && file.kind !== 'json') {
     state.selectedFigure = null;
@@ -2309,6 +2313,7 @@ function watchVisiblePanes() {
   const paths = panes.active ? panes.visible().filter((path) => path !== panes.livePath) : [];
   paneViewers.keep(paths);
   for (const path of paths) if (!panes.snapshotOf(path)) void fillPane(path);
+  if (!ui.find.hidden) scheduleFindInPanes();
   invoke('watch_secondary', { paths }).catch(() => {});
 }
 
@@ -2336,6 +2341,8 @@ function freezeLivePane() {
   panes.freeze(path, state.file.kind === 'pdf' && state.document
     ? paneViewers.pdf(path, { url: sourceUrl(state.file), view: captureView(), reviews: state.reviews, still })
     : still);
+  const article = still?.querySelector('article#markdown');
+  if (article && state.file.kind === 'markdown') markMarkdownCopy(article);
 }
 
 /// Bring a pane that is not live up to date with its file, or fill one that
@@ -2384,6 +2391,7 @@ async function fillPane(path, revision = 0) {
       colourCode(article);
       markFigures(article);
       paintMarkdownCopy(article, reviews, { collect: collectTextParts, wrap: wrapSpanParts });
+      markMarkdownCopy(article);
       if (scroller) scroller.scrollTop = top;
     } catch {
       // The file may have gone; the pane keeps what it had.
@@ -2479,6 +2487,7 @@ async function splitPane(direction = 'right') {
     // The stage was in the window; the pane that had it is the live one now.
     panes.mount(activePath);
   } else {
+    panes.unmaximize();
     panes.split(next, direction);
   }
   state.paneDirection = direction;
@@ -2503,6 +2512,21 @@ function onPanesExit(order) {
   syncPaneControl();
 }
 
+/// The live pane fills the window, or the other panes come back.
+function maximizePane() {
+  if (!panes.active) {
+    setStatus('Only one pane is open');
+    return;
+  }
+  panes.maximize();
+  saveSession();
+}
+
+/// Move the live pane's edge toward `direction` by a twentieth of the window.
+function resizePane(direction) {
+  if (panes.resize(direction)) saveSession();
+}
+
 function syncPaneControl() {
   if (ui.splitView) ui.splitView.value = panes.active ? (state.paneDirection === 'bottom' ? 'bottom' : 'right') : 'off';
 }
@@ -2517,6 +2541,7 @@ async function setSplitView(mode) {
 }
 
 async function movePaneFocus(direction) {
+  panes.unmaximize();
   const path = panes.neighbour(direction);
   if (path) await focusPane(path);
 }
@@ -3195,21 +3220,18 @@ function startPinch(event) {
 
 // ── Page modes ────────────────────────────────────────────────────────────
 
-/// Page colors are drawn into the page canvas, not laid over it, so changing
-/// them only shows once the canvas is drawn again. Setting the colors and
-/// calling refresh() is not that: refresh() goes through PDFPageView.update(),
-/// which — with the page geometry unchanged — resets with keepCanvasWrapper
-/// and never calls _resetCanvas(). The old bitmap stays, so leaving sepia used
-/// to give a white page with brown text. Dropping each canvas is the fix.
+/// Page colours are drawn into the page canvas (src/page-colors.mjs), not
+/// laid over it, so changing them only shows once the canvas is drawn again.
+/// refresh() is not that: it goes through PDFPageView.update(), which — with
+/// the page geometry unchanged — resets with keepCanvasWrapper and never
+/// calls _resetCanvas(). The old bitmap stays, so leaving sepia used to give a
+/// white page with brown text. Dropping each canvas is the fix.
 function applyPageColors() {
-  const pageColors = pageColorsFor(state.mode);
-  pdfViewer.pageColors = pageColors;
   const pages = pdfViewer._pages;
   if (!Array.isArray(pages) || !state.document) {
     return;
   }
   for (const pageView of pages) {
-    pageView.pageColors = pageColors;
     try {
       // No keepCanvasWrapper: the canvas has to go or the old colors stay.
       pageView.reset();
@@ -3246,6 +3268,11 @@ function setMode(mode, persist = true) {
   }
 }
 
+/// Go to the next (+1) or previous (-1) place the last rebuild changed.
+function stepChange(direction) {
+  if (!pdfChanges.step(direction)) setStatus('Nothing changed in the last rebuild');
+}
+
 function cycleMode(clear) {
   if (clear) {
     setMode(null);
@@ -3267,6 +3294,7 @@ function openFind() {
   ui.find.hidden = false;
   ui.findInput.focus();
   ui.findInput.select();
+  scheduleFindInPanes();
 }
 
 /// Markdown find marks the page, so typing waits for a pause first.
@@ -3281,6 +3309,7 @@ function closeFind() {
   ui.find.hidden = true;
   ui.findCount.textContent = '';
   clearMarkdownFind();
+  findInPanes();
   eventBus.dispatch('findbarclose', { source: null });
   ui.container.focus();
 }
@@ -3349,6 +3378,42 @@ function clearMarkdownFind() {
     unwrapMarks(ui.markdown, 'mark.aim.find');
     state.mdFind = null;
   }
+}
+
+// The panes that are not live mark the query too, while find is open: their
+// Markdown copies and the text layers of their PDF viewers.
+let paneFindTimer = 0;
+
+function markFindIn(root, inline, make) {
+  unwrapMarks(root, inline ? 'mark.aim.find' : 'find-q');
+  const want = ui.find.hidden ? '' : normalizeReviewText(ui.findInput.value);
+  if (want.length < 2) return;
+  const { joined, parts } = collectTextParts(root, inline);
+  const spans = findAllSpans(joined, want, FIND_LIMIT);
+  for (let at = spans.length - 1; at >= 0; at -= 1) wrapSpanParts(root, parts, spans[at], make);
+}
+
+function markMarkdownCopy(article) {
+  markFindIn(article, true, () => {
+    const mark = document.createElement('mark');
+    mark.className = 'aim find';
+    return mark;
+  });
+}
+
+const markPdfLayer = (layer) => markFindIn(layer, false, () => document.createElement('find-q'));
+
+function findInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = 0;
+  if (!panes.active) return;
+  for (const article of paneArticles()) markMarkdownCopy(article);
+  paneViewers.refind();
+}
+
+function scheduleFindInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = panes.active ? window.setTimeout(findInPanes, 150) : 0;
 }
 
 function runFind(type = '', again = false, backwards = false) {
@@ -6715,6 +6780,7 @@ ui.findPrev.addEventListener('click', () => runFind('again', true, true));
 
 ui.findInput.addEventListener('input', () => {
   window.clearTimeout(findTimer);
+  scheduleFindInPanes();
   if (state.file?.kind === 'markdown') {
     findTimer = window.setTimeout(() => {
       findTimer = 0;
@@ -6833,6 +6899,8 @@ const palette = createPalette({
     { label: 'Forward', group: 'View', shortcut: 'Alt+→', icon: '#i-next', when: () => nav.canGo('forward'), run: () => nav.forward() },
     { label: 'Next page', group: 'View', shortcut: 'n', icon: '#i-next', when: () => kind() === 'pdf', run: () => ui.next.click() },
     { label: 'Previous page', group: 'View', shortcut: 'p', icon: '#i-prev', when: () => kind() === 'pdf', run: () => ui.prev.click() },
+    { label: 'Next change', group: 'View', shortcut: '.', icon: '#i-next', when: () => kind() === 'pdf', run: () => stepChange(1) },
+    { label: 'Previous change', group: 'View', shortcut: ',', icon: '#i-prev', when: () => kind() === 'pdf', run: () => stepChange(-1) },
     { label: 'Next file in folder', group: 'View', shortcut: '→', icon: '#i-next', when: () => kind() === 'image', run: () => stepSibling(1) },
     { label: 'Previous file in folder', group: 'View', shortcut: '←', icon: '#i-prev', when: () => kind() === 'image', run: () => stepSibling(-1) },
     { label: 'Rotate a quarter turn clockwise', group: 'View', icon: '#i-rotate', when: () => kind() === 'image', run: () => setImageRotation(state.imageRotation + 90) },
@@ -6867,6 +6935,12 @@ const palette = createPalette({
     ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
       label: `Move to the pane ${direction === 'up' ? 'above' : direction === 'down' ? 'below' : `on the ${direction}`}`,
       group: 'Panes', shortcut: `Ctrl+Alt+${arrow}`, when: () => panes.active, run: () => movePaneFocus(direction),
+    })),
+    { label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.active && !panes.maximized, run: maximizePane },
+    { label: 'Bring the other panes back', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.maximized, run: maximizePane },
+    ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
+      label: `Move the pane edge ${direction}`, group: 'Panes', shortcut: `Ctrl+Alt+Shift+${arrow}`,
+      when: () => panes.active && !panes.maximized, run: () => resizePane(direction),
     })),
     { label: 'Fit the window to the content', group: 'Window', shortcut: 'Ctrl+Shift+F', icon: '#i-wrap', run: toggleWrap },
     ...[['left', 'left half', '←'], ['right', 'right half', '→'], ['top', 'top half', '↑'], ['bottom', 'bottom half', '↓']].map(([edge, half, arrow]) => ({
@@ -7164,15 +7238,21 @@ window.addEventListener('keydown', (event) => {
     void splitPane(key === 'd' ? 'right' : 'bottom');
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && panes.active) {
+  if ((event.ctrlKey || event.metaKey) && event.altKey && panes.active) {
     const paneKeys = { arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down' };
     if (paneKeys[key]) {
       event.preventDefault();
-      void movePaneFocus(paneKeys[key]);
+      if (event.shiftKey) resizePane(paneKeys[key]);
+      else void movePaneFocus(paneKeys[key]);
       return;
     }
   }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === 'm') {
+    event.preventDefault();
+    maximizePane();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey) {
     const dockKeys = {
       arrowleft: 'left',
       arrowright: 'right',
@@ -7396,6 +7476,10 @@ window.addEventListener('keydown', (event) => {
     case 'g':
       nav.push();
       pdfViewer.currentPageNumber = event.shiftKey ? pdfViewer.pagesCount : 1;
+      break;
+    case '.':
+    case ',':
+      stepChange(key === '.' ? 1 : -1);
       break;
     default:
       return;

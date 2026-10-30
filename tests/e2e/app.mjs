@@ -139,8 +139,8 @@ try {
   await run(clear);
   await run("document.getElementById('mode').click()");
   ok(await until(`const c = document.querySelector('#viewer .page canvas');
-    return document.body.classList.contains('mode-night') && c?.getContext('2d').getImageData(4, 4, 1, 1).data[0] < 64`, 'a dark page'),
-  `Night darkens the page in this webview (${await run("return document.body.classList.contains('recolored-pages') ? 'recoloured after drawing, as its canvas ignores filters' : 'through the canvas filter'")})`);
+    return document.body.classList.contains('mode-night') && c?.dataset.recolored === 'true' && c.getContext('2d').getImageData(4, 4, 1, 1).data[0] < 64`, 'a dark page'),
+  'Night recolours the page after it is drawn in this webview');
   await run(clear);
 
   await keys([CTRL, SHIFT, 'd']);

@@ -2,7 +2,7 @@
 // forward through jumps, and previews of internal links. The sidebar sits on
 // the left of the stage, so with panes open it follows the live pane.
 
-import { canvasFilters, recolorCanvas } from './page-colors.mjs';
+import { recolorCanvas } from './page-colors.mjs';
 
 const WIDTH_KEY = 'pdf-next.outline-width';
 const TAB_KEY = 'pdf-next.outline-tab';
@@ -580,9 +580,8 @@ export function createNavigator({
       canvasContext: canvas.getContext('2d', { alpha: false }),
       viewport,
       transform,
-      pageColors: canvasFilters ? palette : null,
     }).promise;
-    if (!canvasFilters && palette) recolorCanvas(canvas, palette);
+    if (palette) recolorCanvas(canvas, palette);
     if (!viewer.getPageView(page.pageNumber - 1)?.renderingState) page.cleanup();
   }
 

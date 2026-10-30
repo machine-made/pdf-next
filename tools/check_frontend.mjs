@@ -3270,7 +3270,7 @@ assert.match(page, /<script src="\.\/vendor\/dockview\/dockview-core\.min\.noSty
   assert.match(app, /function loadPdf\(url\) \{\s*return getDocument\(\{[\s\S]*?worker: pdfWorker,/, 'Pane viewers share the one worker.');
   assert.match(viewers, /dispose\(\) \{[\s\S]*?setDocument\(null\)[\s\S]*?abort\.abort\(\);[\s\S]*?task\?\.destroy\(\)/,
     'A pane viewer drops its pages, its listeners and its document.');
-  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
+  assert.match(viewers, /viewer\.setDocument\(pdf\);\s*changes\?\.load\(pdf, path\);\s*void previous\?\.destroy\(\);/, 'A pane reload destroys the document it replaces.');
   assert.match(viewers, /addEventListener\('pane-detached', \(\) => \{\s*if \(viewers\.get\(path\) === viewer\) drop\(path\);/,
     'A viewer goes with its copy.');
   assert.match(panesSource, /const detach = \(element\) => \{[\s\S]*?new Event\('pane-detached'\)/, 'Panes say when a copy leaves.');
@@ -3604,6 +3604,24 @@ assert.match(styles, /\.review-row \{[^}]*--fg-dim: var\(--review-dim\);/,
   'Dim text on a review row uses the colour that reads on every tint.');
 assert.match(styles, /\.review-no \{[^}]*color: var\(--review-no-fg\);/, 'Review numbers keep their contrast in both themes.');
 await access('tests/browser/run.mjs');
+
+// 0.18: what a rebuild changed, colours that survive Night, panes that fill the window.
+{
+  const colours = await readFile('src/page-colors.mjs', 'utf8');
+  const changes = await readFile('src/pdf-changes.mjs', 'utf8');
+  const panesSource = await readFile('src/panes.mjs', 'utf8');
+  assert.doesNotMatch(app, /pageColors/, 'Every webview draws plain pages; pdf-next recolours them itself.');
+  assert.doesNotMatch(colours, /\.filter\s*=/, 'Recolouring uses blend modes WebKit draws, never ctx.filter.');
+  assert.match(colours, /globalCompositeOperation = 'color';\s*context\.drawImage\(copy\.canvas, 0, 0\);/, 'Colours keep their hue in Night and Sepia.');
+  assert.match(styles, /body\.mode-night \.pdfViewer \.canvasWrapper canvas:not\(\[data-recolored\]\)/, 'A page is never shown white before it is recoloured.');
+  assert.match(changes, /export const CHANGE_BUDGET = \{ pages: [\d_]+, ms: [\d_]+ \}/, 'Background comparison has a page and time budget.');
+  assert.match(app, /case '\.':\s*case ',':\s*stepChange\(key === '\.' \? 1 : -1\);/, '. and , go to the next and previous change.');
+  assert.match(app, /label: 'Next change', group: 'View', shortcut: '\.'/, 'Next change is in the palette.');
+  assert.match(app, /label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl\+Shift\+M'/, 'Maximising a pane is in the palette.');
+  assert.match(panesSource, /live\.api\.maximize\(\)/, 'Maximising uses dockview\'s own maximised group.');
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*#markdown \.changed\.changed-fade,\s*\.change-marks\.fading > i \{/, 'Without motion a change is marked without fading.');
+  assert.match(readme, /`\.`\/`,` next and previous change/);
+}
 
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
 

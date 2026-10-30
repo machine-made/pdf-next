@@ -114,4 +114,77 @@ await page.click('.pane-snapshot-pdf .pane-cover');
 await page.waitForTimeout(1200);
 ok(await pdfShown(), 'Clicking the PDF copy makes the PDF live again');
 await shot('panes-pdf');
+
+// Fill the window with the live pane and back, by key, palette and a double
+// click on the tab strip; move its edge from the keyboard.
+const shown = () => page.$$eval('#panes .dv-groupview', (g) => g.filter((x) => x.getBoundingClientRect().width > 0 && x.offsetParent !== null).length);
+const liveGroup = () => page.evaluate(() => {
+  const box = document.getElementById('stage').closest('.dv-groupview').getBoundingClientRect();
+  const all = document.getElementById('panes').getBoundingClientRect();
+  return { left: Math.round(box.left), width: Math.round(box.width), height: Math.round(box.height), hostWidth: Math.round(all.width), hostLeft: Math.round(all.left) };
+});
+ok(await shown() === 2, 'Two panes are on screen');
+await page.keyboard.press('Control+Shift+M');
+await page.waitForTimeout(400);
+let box = await liveGroup();
+ok(await shown() === 1 && box.width >= box.hostWidth - 2, `Ctrl+Shift+M fills the window with the live pane ${JSON.stringify(box)}`);
+ok(await pdfShown(), 'and it is still the live PDF');
+await page.keyboard.press('Control+Shift+M');
+await page.waitForTimeout(400);
+ok(await shown() === 2, 'Ctrl+Shift+M again brings the other pane back');
+await page.dblclick('#panes .dv-groupview.dv-active-group .dv-void-container');
+await page.waitForTimeout(400);
+ok(await shown() === 1, 'A double click on the empty tab strip fills the window too');
+await page.keyboard.press('Control+k');
+await page.keyboard.type('other panes back');
+await page.waitForTimeout(150);
+await page.keyboard.press('Enter');
+await page.waitForTimeout(400);
+ok(await shown() === 2, 'and the palette brings the others back');
+box = await liveGroup();
+const onRight = box.left > box.hostLeft + 4;
+await page.keyboard.press('Control+Alt+Shift+ArrowRight');
+await page.waitForTimeout(300);
+const moved = await liveGroup();
+const step = Math.round(box.hostWidth * 0.05);
+const expected = onRight ? box.width - step : box.width + step;
+ok(Math.abs(moved.width - expected) <= 3, `Ctrl+Alt+Shift+Right moves the shared edge right by 5% (${box.width} -> ${moved.width}, expected ${expected})`);
+await page.keyboard.press('Control+Alt+Shift+ArrowLeft');
+await page.waitForTimeout(300);
+ok(Math.abs((await liveGroup()).width - box.width) <= 3, 'and Ctrl+Alt+Shift+Left moves it back');
+ok(await page.$eval('#panes', (p) => !p.hidden) && await pdfShown(), 'Resizing keeps the panes and the live view');
+
+// Find marks the query in the panes that are not live too.
+const other = await page.evaluate(() => [...document.querySelectorAll('.pane-body')].find((b) => !b.querySelector('#stage') && b.querySelector('article#markdown'))?.dataset.path);
+const otherText = (await copy(other)).trim();
+const word = otherText.split(/\s+/).find((w) => w.length > 3)?.replace(/[^\w]/g, '') || 'file';
+await page.keyboard.press('Control+f');
+await page.keyboard.type(word);
+await page.waitForTimeout(500);
+const marked = (path) => page.evaluate((path) => document.querySelectorAll(`.pane-body[data-path="${path}"] .pane-snapshot mark.aim.find, .pane-body[data-path="${path}"] .pane-snapshot find-q`).length, path);
+ok(await marked(other) > 0, `Find marks "${word}" in the Markdown pane that is not live (${await marked(other)})`);
+await page.fill('#findInput', 'zzqq');
+await page.waitForTimeout(500);
+ok(await marked(other) === 0, 'and follows the query as it changes');
+await page.keyboard.press('Escape');
+await page.click(`.pane-body[data-path="${other}"] .pane-cover`);
+await page.waitForTimeout(1500);
+await page.keyboard.press('Control+f');
+await page.keyboard.type('smoke');
+const pdfPane = '/d/hello.pdf';
+ok(await page.waitForFunction((path) => document.querySelector(`.pane-body[data-path="${path}"] .pane-pdf .textLayer find-q`), pdfPane, { timeout: 5000 }).then(() => true, () => false),
+  'Find marks the text layer of a PDF pane that is not live');
+ok(await page.$eval(`.pane-body[data-path="${pdfPane}"] .pane-pdf .textLayer find-q`, (q) => q.textContent.toLowerCase()) === 'smoke', 'The mark covers the match');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+ok(await marked(pdfPane) === 0, 'Closing find clears the panes');
+
+// Night recolours the PDF pane that is not live the same way.
+await openMenu();
+await page.click('#mode');
+await page.waitForTimeout(1500);
+const paper = await page.$eval(`.pane-body[data-path="${pdfPane}"] .pane-pdf canvas`, (c) => [...c.getContext('2d').getImageData(4, 4, 1, 1).data].slice(0, 3));
+ok(paper.every((v) => Math.abs(v - 27) <= 2), `Night paper in a PDF pane that is not live (${paper})`);
+await openMenu();
+await page.click('#mode', { modifiers: ['Shift'] });
 await finish();
