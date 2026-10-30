@@ -71,6 +71,26 @@ for (const theme of ['light', 'dark']) {
   await page.waitForSelector('#empty');
   await page.waitForTimeout(300);
   await audit(page, ok, 'empty window');
+  const now = Date.now();
+  await page.evaluate((now) => {
+    const view = null;
+    localStorage.setItem('pdf-next.places', JSON.stringify([
+      { path: '/d/three-pages.pdf', name: 'three-pages.pdf', kind: 'pdf', opened: now - 60_000, view },
+      { path: '/d/a.md', name: 'a.md', kind: 'markdown', opened: now - 3_600_000 * 30, view },
+      { path: '/d/gone/figure.png', name: 'figure.png', kind: 'image', opened: now - 86_400_000 * 40, view },
+    ]));
+    sessionStorage.setItem('missing', JSON.stringify(['/d/gone/figure.png']));
+  }, now);
+  await page.reload();
+  await page.waitForSelector('#recentList .recent-item.missing');
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+    await audit(page, ok, `${theme}: empty window with recent files`);
+  }
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await page.focus('#viewerContainer');
+  await page.keyboard.press('ArrowDown');
+  ok(await page.evaluate(() => document.activeElement.classList.contains('recent-item')), 'The keyboard reaches the recent files');
   await page.click('#settingsToggle');
   await page.waitForSelector('#settingsPanel:not([hidden])');
   await audit(page, ok, 'Settings');

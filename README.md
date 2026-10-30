@@ -54,6 +54,15 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   `←` / `→`, `Ctrl+Tab`, `Ctrl+1`…`9` or the mouse wheel over the strip; `Ctrl+W` closes one.
   Only the files on screen are in memory, so six papers cost what one does, and a tab you come
   back to is read fresh from disk.
+- **It remembers your place.** Close a file and open it again, later the same day or after a
+  restart, and it comes back on the page, at the spot and the zoom where you left it. Markdown
+  comes back to the paragraph you were reading, a picture to its zoom. `--page`, `--line` and
+  `--find` still say where to land. The last 300 files are remembered, on this computer only.
+- **Start where you left off.** With nothing open the window is a small drop target with the
+  last eight files you opened under it, each with its folder and when you opened it. Click one or
+  press Enter; the arrows move through the list, and `Delete` takes a file off it (never off the
+  disk). A file that is no longer there is dimmed, and leaves the list when you pick it. Open
+  recent… in the command palette lists the same files.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
   splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a tab strip to merge;
@@ -94,7 +103,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   Bin or Trash, where you can get it back. Where there is no trash, such as a network share or
   `\\wsl.localhost`, it asks whether to delete for good. In a folder of figures the next one
   opens.
-- Images zoom with the same control and keys as a PDF.
+- Images zoom with the same control, keys, wheel and pinch as a PDF.
 
 ### Markdown that reads like a paper
 
@@ -174,6 +183,11 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 
 ### Everything else
 
+- **Zoom where you point.** `Ctrl`+wheel (`⌘`+wheel on macOS) or a pinch on the trackpad zooms
+  around the point under the cursor. The page follows your fingers at once and is drawn again,
+  sharp, the moment you stop; passing Fit width or Fit page, it settles there for a moment. In
+  Markdown the wheel steps the text size and the paragraph under the cursor stays put. `+`, `-`
+  and the zoom menu zoom around the middle of the view.
 - **Dark mode that respects the page.** It follows your system, and the mode button can
   recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
   back to Clear.
@@ -206,10 +220,10 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   `go paper`) and press Enter. It only shows what applies to what you have open, and the
   commands you used last come first.
 - **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first
-  and last, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
-  `Ctrl+F` find, `Ctrl+Shift+O` outline, `Alt+←`/`Alt+→` back and forward, `Ctrl+R` reload,
-  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a selection in rendered Markdown,
-  underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
+  and last, `+`/`-` or `Ctrl`+wheel zoom, `←`/`→` tabs (or the folder, with one file open),
+  `Ctrl+W` close, `Ctrl+F` find, `Ctrl+Shift+O` outline, `Alt+←`/`Alt+→` back and forward,
+  `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a selection in
+  rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
   edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
   after asking), `Ctrl+Z` undo an edit or a removed review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+N` or Enter (with a selection and the panel open) add a review,

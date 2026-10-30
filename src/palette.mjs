@@ -378,7 +378,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     }
   }
 
-  function open() {
+  function open(query = '') {
     if (opened) return;
     build();
     previous = document.activeElement;
@@ -386,7 +386,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     savedRange = selection?.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0).cloneRange() : null;
     onOpen();
     candidates = collect();
-    input.value = '';
+    input.value = query;
     opened = true;
     root.hidden = false;
     render();
@@ -423,6 +423,7 @@ export function createPalette({ platform = () => '', onOpen = () => {}, onError 
     add(...items) {
       entries.push(...items);
     },
+    /// Open with `query` already typed, to show one family of commands.
     open,
     close,
     toggle() {

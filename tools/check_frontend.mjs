@@ -17,6 +17,8 @@ import { createHash } from 'node:crypto';
 import { fuzzyScore, isTextField, matchCommand, rankCommands, selectChoices, shortcutKeys } from '../src/palette.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import { columnAt, linkDestination, locateDestination } from '../src/navigate.mjs';
+import { PLACES_KEY, PLACES_MAX, folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from '../src/places.mjs';
+import { ZOOM_MAX, ZOOM_MIN, clampScale, snapScale, wheelFactor } from '../src/zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -948,7 +950,7 @@ for (const kind of ['markdown', 'pdf']) {
   let chosen = null;
   appFunction('applyZoomChoice', 'function ', {
     state: { file: { kind: 'image' } },
-    setImageScale(value) { chosen = value; },
+    zoomImageTo(value) { chosen = value; },
   })('page-fit');
   assert.equal(chosen, 'page-fit', 'Fit page in the zoom box keeps fitting when the window changes.');
 }
@@ -1026,6 +1028,7 @@ for (const pauseAt of ['save', 'close']) {
   const pause = () => new Promise((resolve) => { finish = resolve; started(); });
   const close = appFunction('closeAll', 'function cycleTab(', {
     state,
+    rememberPlace() {},
     panes: { active: false },
     noteSaveInFlight: false,
     flushCommentSave: pauseAt === 'save' ? pause : async () => {},
@@ -1481,7 +1484,7 @@ assert.match(
 );
 assert.match(
   app,
-  /await showImage\(file, !view && !keepWindow, view, generation\)/,
+  /await showImage\(file, !view && !keepWindow, view, generation, place\)/,
   'Images must refit only on a fresh open — not on reload, not on a tab switch, and not when stepping through a folder.',
 );
 assert.match(
@@ -3532,6 +3535,49 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\n\s+#linkPreview \{\n\s+animation: none;/, 'The preview does not fade in under reduced motion.');
   assert.match(readme, /### Find your way/);
   assert.match(readme, /`Ctrl\+Shift\+O` outline, `Alt\+←`\/`Alt\+→` back and forward/);
+}
+// Places: one store, newest first, capped, and a view update never reorders it.
+{
+  const map = new Map();
+  const store = { getItem: (key) => map.get(key) ?? null, setItem: (key, value) => map.set(key, value) };
+  const file = (n) => ({ path: `/p/${n}.pdf`, name: `${n}.pdf`, kind: 'pdf' });
+  for (let n = 0; n < PLACES_MAX + 20; n += 1) notePlace(file(n), null, { opened: true, now: n, store });
+  assert.equal(readPlaces(store).length, PLACES_MAX, `At most ${PLACES_MAX} files are kept.`);
+  assert.equal(recentPlaces(8, store)[0].path, `/p/${PLACES_MAX + 19}.pdf`, 'The file opened last comes first.');
+  assert.equal(placeOf('/p/0.pdf', store), null, 'The oldest files are dropped first.');
+  notePlace(file(100), { kind: 'pdf', page: 3 }, { now: 1e6, store });
+  assert.deepEqual(placeOf('/p/100.pdf', store), { kind: 'pdf', page: 3 }, 'A view is kept per file.');
+  assert.equal(readPlaces(store).findIndex((e) => e.path === '/p/100.pdf'), PLACES_MAX + 19 - 100, 'Saving a view does not move the file up the list.');
+  assert.equal(readPlaces(store).find((e) => e.path === '/p/100.pdf').opened, 100, 'nor change when it was opened.');
+  notePlace(file(100), null, { opened: true, now: 2e6, store });
+  assert.deepEqual([recentPlaces(1, store)[0].path, placeOf('/p/100.pdf', store)?.page], ['/p/100.pdf', 3], 'Opening it again moves it up and keeps its place.');
+  forgetPlace('/p/100.pdf', store);
+  assert.equal(placeOf('/p/100.pdf', store), null, 'A forgotten file is gone.');
+  map.set(PLACES_KEY, '{broken');
+  assert.deepEqual(readPlaces(store), [], 'A damaged store reads as empty.');
+  const full = { getItem: () => null, setItem() { throw new Error('quota'); } };
+  notePlace(file(1), null, { store: full });
+  assert.deepEqual([folderOf('/a/b/c.pdf'), folderOf('C:\\x\\y.md'), folderOf('/c.pdf')], ['/a/b', 'C:\\x', '/']);
+  const now = Date.UTC(2026, 9, 30, 12);
+  assert.deepEqual([0, 5, 180, 60 * 30, 60 * 24 * 3].map((minutes) => openedLabel(now - minutes * 60_000, now)),
+    ['just now', '5 min ago', '3 h ago', 'yesterday', '3 days ago']);
+}
+
+// Ctrl+wheel and pinch: a notch is a 25% step, a pinch follows the fingers,
+// and a fit within 3% is a detent.
+{
+  assert.equal(wheelFactor({ deltaY: -100 }), 1.25);
+  assert.equal(wheelFactor({ deltaY: 120 }), 0.8);
+  assert.equal(wheelFactor({ deltaY: -3, deltaMode: 1 }), 1.25, 'Lines count as pixels.');
+  assert.ok(Math.abs(wheelFactor({ deltaY: -4 }) - Math.exp(0.04)) < 1e-12, 'A pinch delta is followed exactly.');
+  assert.deepEqual([clampScale(10), clampScale(0.01), clampScale(0.05, 0.1)], [ZOOM_MAX, ZOOM_MIN, 0.1],
+    'The zoom stays in range, or where it started when that was outside it.');
+  assert.deepEqual(snapScale(1.47, { 'page-width': 1.5, 'page-fit': 1.2 }), { scale: 1.5, preset: 'page-width' });
+  assert.deepEqual(snapScale(1.4, { 'page-width': 1.5 }), { scale: 1.4, preset: null }, 'Further away it does not snap.');
+  assert.match(app, /pinchZoom\(window, \{ start: startPinch \}\)/, 'A pinch anywhere is caught, so the webview never zooms its own page.');
+  assert.match(app, /label: 'Open recent…', group: 'File'[^\n]*palette\.open\('Open recent: '\)/, 'The palette opens the recent files.');
+  assert.match(page, /<section id="recent"[^>]*hidden>/, 'The recent list starts hidden.');
+  assert.match(readme, /remembers your place/i);
 }
 assert.doesNotMatch(app, /chip\.tabIndex = -1/, 'Tab reaches the review card buttons.');
 assert.match(app, /comment\.setAttribute\('aria-label', 'Review comment'\)/, 'A review comment box has a name.');
