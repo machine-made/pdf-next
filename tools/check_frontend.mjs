@@ -16,6 +16,7 @@ import { BEFORE_LIMIT, diffView, passageSource, passageText, wordDiff } from '..
 import { createHash } from 'node:crypto';
 import { fuzzyScore, isTextField, matchCommand, rankCommands, selectChoices, shortcutKeys } from '../src/palette.mjs';
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
+import { columnAt, linkDestination, locateDestination } from '../src/navigate.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -1005,6 +1006,7 @@ for (const kind of ['markdown', 'pdf']) {
     clearPrintPages() {}, setTitle() {}, setStatus() {},
     document: { body: { classList: { add() {}, toggle() {}, remove() {} } } },
     showPdf: async () => {}, loadReviews: async () => {}, syncPageViewMenu() {},
+    nav: { refresh() {} },
   });
   await open({ path: 'a.pdf', name: 'a.pdf', kind: 'pdf' }, { preserveView: true });
   assert.equal(state.pendingNote, note, 'Reloading the same document must preserve the selected quote.');
@@ -2688,7 +2690,7 @@ for (const [kind, signature, panels, paints] of [
 {
   const selectors = [];
   await appFunction('applyTarget', '/// Replace each element', {
-    state: { file: { kind: 'markdown' } }, ui: { markdown: {} },
+    state: { file: { kind: 'markdown' } }, ui: { markdown: {} }, nav: { push() {} },
     setRaw() {}, unwrapMarks: (root, selector) => selectors.push(selector),
   })({ line: null, search: null, page: null });
   assert.deepEqual(selectors, ['mark.aim:not(.find)']);
@@ -3481,6 +3483,55 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
   assert.match(styles, /@media print \{\s*#palette \{\s*display: none !important;/);
   assert.match(readme, /\*\*Command palette\*\*/);
   assert.match(readme, /`Ctrl\+K` command palette/);
+}
+// Finding your way (src/navigate.mjs): the sidebar, back and forward, link previews.
+{
+  const navigate = await readFile('src/navigate.mjs', 'utf8');
+  assert.equal(linkDestination('#section.2'), 'section.2', 'A named destination comes back as its name.');
+  assert.deepEqual(linkDestination(`#${escape(JSON.stringify([{ num: 5, gen: 0 }, { name: 'XYZ' }, 72, 700, null]))}`),
+    [{ num: 5, gen: 0 }, { name: 'XYZ' }, 72, 700, null], 'An explicit destination comes back as its array.');
+  assert.equal(linkDestination('#page=3'), null, 'A hash with parameters is not a destination.');
+  assert.equal(linkDestination('#'), null);
+  const doc = {
+    numPages: 4,
+    getDestination: async (name) => (name === 'eq' ? [{ num: 9, gen: 0 }, { name: 'XYZ' }, 100, 500, null] : null),
+    getPageIndex: async () => 1,
+    cachedPageNumber: () => null,
+  };
+  assert.deepEqual(await locateDestination(doc, 'eq'), { page: 2, explicit: [{ num: 9, gen: 0 }, { name: 'XYZ' }, 100, 500, null], top: 500, left: 100 });
+  assert.deepEqual((await locateDestination(doc, [3, { name: 'FitH' }, 400]))?.page, 4, 'A page index destination lands on that page.');
+  assert.equal(await locateDestination(doc, 'missing'), null, 'A destination that does not exist goes nowhere.');
+  const line = (x, y, width, str = 'text') => ({ str, transform: [10, 0, 0, 10, x, y], width });
+  const twoColumns = { items: [line(50, 490, 200), line(50, 478, 200), line(300, 490, 200), line(300, 478, 200)] };
+  assert.deepEqual(columnAt(twoColumns, 500, 320), [300, 500], 'A preview of the right column takes that column.');
+  assert.deepEqual(columnAt(twoColumns, 500, 60), [50, 250], 'And of the left column the left one.');
+  assert.deepEqual(columnAt(twoColumns, 500, null), [50, 500], 'Without a left edge it takes the whole measure.');
+  const numbered = { items: [line(80, 490, 200), line(80, 478, 300), line(450, 490, 20, '(1)')] };
+  assert.deepEqual(columnAt(numbered, 500, 100), [80, 470], 'An equation number alone at the right is part of the column.');
+  assert.equal(columnAt({ items: [] }, 500, 100), null);
+
+  assert.match(page, /<aside id="outline" hidden aria-label="Outline and pages">/, 'The sidebar is off until asked for.');
+  assert.match(page, /<div id="outlineTree" role="tree"/);
+  assert.match(page, /<div id="outlineGrip" role="separator"[^>]*tabindex="0"/, 'The sidebar edge is a separator the keyboard can reach.');
+  assert.match(page, /<div id="linkPreview" role="tooltip" hidden><\/div>/, 'A link preview is a tooltip.');
+  assert.doesNotMatch(page, /id="toggleOutline"|id="outlineToggle"/, 'The sidebar has no toolbar button of its own.');
+  assert.match(app, /import \{ createNavigator \} from '\.\/navigate\.mjs';/);
+  for (const [label, shortcut] of [['Show the outline', 'Ctrl\\+Shift\\+O'], ['Hide the outline', 'Ctrl\\+Shift\\+O'], ['Back', 'Alt\\+←'], ['Forward', 'Alt\\+→']]) {
+    assert.match(app, new RegExp(`label: '${label}', group: 'View', shortcut: '${shortcut}'`), `The palette offers ${label} with its shortcut.`);
+  }
+  for (const jump of [/case 'g':\n\s+nav\.push\(\);\n\s+ui\.markdownStage/, /case 'g':\n\s+nav\.push\(\);\n\s+pdfViewer\.currentPageNumber/,
+    /if \(again \|\| !findPushed\) \{\n\s+nav\.push\(\);/, /async function applyTarget\(target\) \{[^}]*\}\n\s+nav\.push\(\);/]) {
+    assert.match(app, jump, `A jump remembers where it started: ${jump}`);
+  }
+  assert.match(navigate, /linkService\.goToDestination = async/, 'Links in a PDF go through the navigator, which remembers the place.');
+  assert.doesNotMatch(navigate, /scrollIntoView\(\{ block: 'nearest'/, 'The sidebar scrolls itself, never the panes behind it.');
+  assert.match(navigate, /const THUMB_CACHE = \d+;/, 'The page pictures are bounded.');
+  assert.match(styles, /#outline \{[^}]*background: var\(--chrome\);/, 'The sidebar uses the theme tokens.');
+  assert.match(styles, /body\.outline-open #stage > #viewerContainer,\nbody\.outline-open #stage > #markdownStage \{\n\s+left: var\(--outline-width/,
+    'The sidebar pushes the page instead of covering it.');
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\n\s+#linkPreview \{\n\s+animation: none;/, 'The preview does not fade in under reduced motion.');
+  assert.match(readme, /### Find your way/);
+  assert.match(readme, /`Ctrl\+Shift\+O` outline, `Alt\+←`\/`Alt\+→` back and forward/);
 }
 assert.doesNotMatch(app, /chip\.tabIndex = -1/, 'Tab reaches the review card buttons.');
 assert.match(app, /comment\.setAttribute\('aria-label', 'Review comment'\)/, 'A review comment box has a name.');

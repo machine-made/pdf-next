@@ -65,6 +65,25 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   there in one go. The layout is saved with the session; close down to one pane and the plain
   tab strip comes back.
 
+### Find your way
+
+- **An outline when you want one.** `Ctrl+Shift+O` opens a sidebar on the left with the PDF's
+  own outline, or the headings of a Markdown file, and pushes the page over rather than covering
+  it. The section you are reading is marked as you scroll; click one, or move with the arrow keys
+  and press Enter, to go there, and Esc hands the keyboard back to the page. Drag its edge to
+  make it wider; the width is remembered. It stays open and scrolled through rebuilds, and with
+  panes it shows the live one.
+- **Pages at a glance.** The Pages tab shows small pictures of a PDF's pages, drawn only as they
+  come into view and let go when the sidebar closes.
+- **Back where you were.** Following a link, an outline entry, a find result, `g`/`G` or a page
+  number remembers the place you left, page, scroll and zoom. `Alt+←` and `Alt+→`, or the back
+  and forward buttons on the mouse, step through those places; ordinary scrolling does not count.
+  Each tab has its own trail.
+- **See where a link goes before you go.** Rest the pointer on a link to an equation, figure,
+  section or reference for a moment and a small card shows what it points at: the spot on the
+  target page in a PDF, the heading, footnote or equation itself in Markdown. Click to follow it
+  as before; move away or press Esc and it is gone.
+
 ### Figures
 
 - **Walk a folder of figures.** With one file open, `←` / `→` (or the toolbar arrows) step
@@ -188,8 +207,9 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   commands you used last come first.
 - **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first
   and last, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
-  `Ctrl+F` find, `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a
-  selection in rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
+  `Ctrl+F` find, `Ctrl+Shift+O` outline, `Alt+←`/`Alt+→` back and forward, `Ctrl+R` reload,
+  `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a selection in rendered Markdown,
+  underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
   edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
   after asking), `Ctrl+Z` undo an edit or a removed review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+N` or Enter (with a selection and the panel open) add a review,
@@ -637,6 +657,10 @@ read-only viewer and document on the same worker, so two PDFs side by side cost 
 open PDFs cost. That viewer is torn down as soon as its pane shows another file, the tab closes
 or the window goes back to one pane, and a reload destroys the document it replaces.
 
+The Pages sidebar draws its pictures at 112 px wide, only for the pages near the view, one at
+a time, and keeps at most 48 of them (under 14 MB of A4 pages on a 2x screen); closing the
+sidebar or opening another file frees them all. Link previews keep the last six.
+
 ## Building
 
 Needs [Rust](https://rustup.rs) and, on Windows, the MSVC build tools:
@@ -677,7 +701,8 @@ somewhere else. It also prints how long the first page took to draw and how long
 took to reload, and fails when either is over its budget for the platform.
 
 `tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend, one
-file per area: PDF viewing, Markdown rendering and find, tabs, panes, the command palette, the
+file per area: PDF viewing, Markdown rendering and find, the outline, back and forward and link
+previews, tabs, panes, the command palette, the
 review card, panel and flow, direct edits, Settings, errors on the status line, and axe-core
 accessibility checks (contrast, labels, keyboard reach) on the main views. Run `bun install` and
 `bunx playwright install chromium` once first. `--coverage` also prints the line coverage of
@@ -693,7 +718,9 @@ CI prints Rust line coverage with `cargo llvm-cov --summary-only`; coverage is r
 enforced.
 
 The fixtures are built by `python3 tests/make_fixtures.py`, which writes the same bytes on
-every machine, so a change to them is a change someone made.
+every machine, so a change to them is a change someone made. The one exception is
+`navigate.pdf`, a short paper with an outline and links, made by pdflatex from `navigate.tex`
+beside it (the file says how).
 
 All three run on Windows, macOS and Linux for every push, and a release stays a draft until
 each platform's bundle has opened a document.
