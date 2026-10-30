@@ -1,7 +1,7 @@
 // PDF viewing: page navigation, zoom presets and the wheel, page view, find.
 import { start } from './harness.mjs';
 
-const { page, ok, finish } = await start({ initial: '/d/three-pages.pdf' });
+const { page, ok, openMenu, finish } = await start({ initial: '/d/three-pages.pdf' });
 await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
 await page.waitForTimeout(300);
 const pageNo = () => page.$eval('#page', (i) => Number(i.value));
@@ -80,12 +80,14 @@ ok(await zoomText() === '125%', '= zooms in like +');
 
 ok(await page.$eval('#pageView option[value="continuous"]', (o) => o.hidden), 'Continuous is not offered for a PDF');
 await page.selectOption('#zoom', '0.5');
+await openMenu();
 await page.selectOption('#pageView', 'two');
 await settle(500);
 ok(await page.$$eval('#viewer .spread', (s) => s.length) === 2, 'Two pages lays the pages out in spreads (1 | 2 3)');
 const spread = await page.$$eval('#viewer .spread', (s) => s.map((x) => x.querySelectorAll('.page').length).join(','));
 ok(spread === '1,2', `The cover stands alone (${spread})`);
 ok(await page.evaluate(() => localStorage.getItem('pdf-next.page-view.pdf')) === 'two', 'Two pages is remembered for PDFs');
+await openMenu();
 await page.selectOption('#pageView', 'single');
 await settle(500);
 ok(await page.$$eval('#viewer .spread', (s) => s.length) === 0, 'Single page drops the spreads');
@@ -123,9 +125,11 @@ ok(await page.$eval('#find', (f) => f.hidden), 'Esc closes find');
 const pixel = () => page.$eval('#viewer .page canvas', (c) => [...c.getContext('2d').getImageData(4, 4, 1, 1).data].slice(0, 3));
 const ink = async () => (await pixel())[0];
 ok(!await page.evaluate(() => document.body.classList.contains('recolored-pages')), 'Chromium draws page colours through its canvas filter');
+await openMenu();
 await page.click('#mode');
 await settle(1200);
 ok(await ink() < 64, 'Night darkens the page canvas');
+await openMenu();
 await page.click('#mode', { modifiers: ['Shift'] });
 await page.addInitScript(() => Object.defineProperty(CanvasRenderingContext2D.prototype, 'filter', { get: () => 'none', set() {} }));
 await page.reload();
@@ -133,6 +137,7 @@ await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
 await settle(600);
 ok(await page.evaluate(() => document.body.classList.contains('recolored-pages')), 'A canvas that ignores filters is noticed at start');
 ok(await ink() === 255, 'Clear pages stay white');
+await openMenu();
 await page.click('#mode');
 await settle(1200);
 const night = await pixel();
@@ -140,11 +145,14 @@ ok(night.every((v) => Math.abs(v - 27) <= 2), `Night paper is the night colour #
 await page.click('#zoomIn');
 await settle(1500);
 ok((await pixel()).every((v) => Math.abs(v - 27) <= 2), 'and stays so when the page is drawn again, recoloured once');
+await openMenu();
 await page.click('#mode');
+await openMenu();
 await page.click('#mode');
 await settle(1200);
 const sepia = await pixel();
 ok(Math.abs(sepia[0] - 244) <= 2 && Math.abs(sepia[2] - 216) <= 2, `Sepia paper is #f4ecd8 (${sepia})`);
+await openMenu();
 await page.click('#mode', { modifiers: ['Shift'] });
 await settle(1200);
 ok(await ink() === 255, 'Clear brings white paper back');

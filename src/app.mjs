@@ -13,6 +13,7 @@ import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, pare
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
 import { createNavigator } from './navigate.mjs';
+import { createFocusMode, isFullscreen, setFullscreen, wirePopover } from './quiet.mjs';
 import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
 import { folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from './places.mjs';
 import { clampScale, pinchZoom, snapScale } from './zoom.mjs';
@@ -29,7 +30,7 @@ import * as pdfjsLib from './vendor/pdfjs/build/pdf.min.mjs';
 globalThis.pdfjsLib = pdfjsLib;
 
 const { getDocument, GlobalWorkerOptions, PDFWorker } = pdfjsLib;
-const { EventBus, PDFFindController, PDFLinkService, PDFViewer, SpreadMode } = await import(
+const { EventBus, PDFFindController, PDFLinkService, PDFViewer, ScrollMode, SpreadMode } = await import(
   './vendor/pdfjs/web/pdf_viewer.mjs'
 );
 
@@ -82,14 +83,20 @@ const ui = {
   copyPath: el('copyPath'),
   copyName: el('copyName'),
   mode: el('mode'),
+  modeName: el('modeName'),
   wrap: el('wrap'),
+  viewMenuButton: el('viewMenuButton'),
+  viewMenu: el('viewMenu'),
+  dockMenuButton: el('dockMenuButton'),
+  dockMenu: el('dockMenu'),
+  fullScreen: el('fullScreen'),
+  present: el('present'),
   raw: el('raw'),
   mdFont: el('mdFont'),
   mdSize: el('mdSize'),
   mdWidth: el('mdWidth'),
   pageView: el('pageView'),
   splitView: el('splitView'),
-  ask: el('ask'),
   notes: el('notes'),
   reduce: el('reduce'),
   dockButtons: {
@@ -131,7 +138,6 @@ const ui = {
   printPages: el('printPages'),
   printRules: el('printRules'),
   status: el('status'),
-  note: el('note'),
   noteBox: el('noteBox'),
   noteRef: el('noteRef'),
   noteQuote: el('noteQuote'),
@@ -173,6 +179,7 @@ const ui = {
   setWidth: el('setWidth'),
   setPoll: el('setPoll'),
   setDirectEdits: el('setDirectEdits'),
+  setFocusMode: el('setFocusMode'),
   setUiFont: el('setUiFont'),
   setCodeFont: el('setCodeFont'),
   aboutVersion: el('aboutVersion'),
@@ -183,6 +190,9 @@ const ui = {
   emptyKey: el('emptyKey'),
   figureSelects: document.querySelectorAll('#settingsPanel select[data-figure]'),
 };
+
+/// What a presentation took over (view, zoom, page, full screen), to give back on Esc; null otherwise.
+let presentation = null;
 
 const state = {
   file: null,
@@ -1100,7 +1110,8 @@ function setPageView(value, { persist = true, apply = true } = {}) {
 /// document is set, so this runs after every load.
 function applyPdfSpread() {
   if (state.document) {
-    pdfViewer.spreadMode = state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE;
+    pdfViewer.spreadMode = state.pageViews.pdf === 'two' && !presentation ? SpreadMode.EVEN : SpreadMode.NONE;
+    if (presentation) pdfViewer.scrollMode = ScrollMode.PAGE;
   }
 }
 
@@ -1606,7 +1617,7 @@ function setWrap(on) {
     ? 'Window follows the content — click to stop (Ctrl+Shift+F)'
     : 'Fit the window to the content (Ctrl+Shift+F)';
   ui.wrap.title = label;
-  ui.wrap.setAttribute('aria-label', label);
+  ui.dockMenuButton.classList.toggle('on', on || Boolean(state.docked));
 }
 
 async function toggleWrap() {
@@ -3220,6 +3231,7 @@ function setMode(mode, persist = true) {
   ui.mode.title = mode
     ? `Page mode: ${mode} (Shift+click to clear)`
     : 'Page mode: off';
+  ui.modeName.textContent = mode ? mode[0].toUpperCase() + mode.slice(1) : 'Clear';
   applyPageColors();
   paneViewers.recolor();
   nav.recolor();
@@ -3630,6 +3642,7 @@ function setDocked(edge) {
     button.classList.toggle('on', edge === name);
     button.setAttribute('aria-pressed', String(edge === name));
   }
+  ui.dockMenuButton.classList.toggle('on', Boolean(edge) || state.wrap);
 }
 
 
@@ -6038,6 +6051,7 @@ function syncSettings() {
     select.value = ui[theirs].value;
   }
   ui.setDirectEdits.checked = directEditsEnabled();
+  ui.setFocusMode.checked = focusModeEnabled();
   for (const select of ui.figureSelects) select.value = figureSetting(select.dataset.figure);
   ui.aboutVersion.textContent = state.version ? `Version ${state.version}` : '';
 }
@@ -6333,8 +6347,6 @@ for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
     if (state.selectedFigure) positionFigureResizer();
   });
 }
-ui.ask.addEventListener('click', () => void askSelection());
-ui.note.addEventListener('click', () => void openNoteBox());
 ui.notes.addEventListener('click', () => toggleReviewPanel());
 ui.reviewSizeDown.addEventListener('click', () => stepReviewSize(-1));
 ui.reviewSizeUp.addEventListener('click', () => stepReviewSize(1));
@@ -6861,12 +6873,18 @@ const palette = createPalette({
       label: `Fill the ${half} of the screen`, group: 'Window', shortcut: `Ctrl+Shift+${arrow}`, icon: `#i-dock-${edge}`, run: () => dockTo(edge),
     })),
     { label: 'Center and fit the window to the page', group: 'Window', shortcut: 'Ctrl+Shift+Enter', icon: '#i-dock-center', run: () => dockTo('center') },
+    { label: 'Full screen', group: 'Window', shortcut: 'F11', icon: '#i-fullscreen', run: () => toggleFullScreen() },
+    { label: 'Present', group: 'View', shortcut: 'F5', icon: '#i-present', when: reviewable, run: startPresentation },
     { label: 'Open settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => ui.settingsPanel.hidden, run: () => toggleSettings(true) },
     { label: 'Close settings', group: 'Settings', shortcut: 'Ctrl+,', icon: '#i-settings', when: () => !ui.settingsPanel.hidden, run: () => toggleSettings(false) },
     selectChoices(ui.setUiFont, { id: 'ui-font', label: 'Interface font', group: 'Settings' }),
     selectChoices(ui.setCodeFont, { id: 'code-font', label: 'Code font', group: 'Settings' }),
     selectChoices(ui.poll, { id: 'poll', label: 'Check for changes', group: 'Settings' }),
     ...Array.from(ui.figureSelects, (select) => selectChoices(select, { id: `figure-${select.dataset.figure}`, label: figureLabels[select.dataset.figure], group: 'Settings' })),
+    () => [true, false].map((on) => ({
+      id: `focus-mode:${on}`, label: `Hide the toolbar while reading: ${on ? 'on' : 'off'}`, group: 'Settings',
+      current: focusModeEnabled() === on, run: () => setFocusModeEnabled(on),
+    })),
     () => [true, false].map((on) => ({
       id: `direct-edits:${on}`, label: `Edit the Markdown file in place: ${on ? 'on' : 'off'}`, group: 'Settings',
       current: directEditsEnabled() === on, run: () => directEdits(on),
@@ -6885,6 +6903,197 @@ const palette = createPalette({
     palette.open();
   });
 }
+
+// ── Quiet toolbar, focus mode, full screen, presentation ─────────────────
+
+const viewMenu = wirePopover(ui.viewMenuButton, ui.viewMenu);
+const dockMenu = wirePopover(ui.dockMenuButton, ui.dockMenu);
+
+function focusModeEnabled() {
+  try {
+    return localStorage.getItem('pdf-next.focus-mode') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function setFocusModeEnabled(on) {
+  try {
+    localStorage.setItem('pdf-next.focus-mode', on ? '1' : '0');
+  } catch {
+    // Preference only.
+  }
+  ui.setFocusMode.checked = on;
+  focusMode.check();
+}
+
+const focusMode = createFocusMode({
+  bar: ui.bar,
+  enabled: focusModeEnabled,
+  blocked: () => !state.file || state.reviewOpen || palette.isOpen || viewMenu.isOpen || dockMenu.isOpen ||
+    [ui.settingsPanel, ui.find, ui.noteBox, ui.editBox, ui.reviewMenu].some((box) => !box.hidden),
+});
+ui.setFocusMode.addEventListener('change', () => setFocusModeEnabled(ui.setFocusMode.checked));
+
+function showFullScreen(on) {
+  ui.fullScreen.classList.toggle('on', on);
+  ui.fullScreen.setAttribute('aria-pressed', String(on));
+}
+
+async function toggleFullScreen(on) {
+  try {
+    const next = on ?? !(await isFullscreen());
+    // Wrap sizes the window to the page; full screen is the opposite instruction.
+    if (next && state.wrap) setWrap(false);
+    holdResize();
+    await setFullscreen(next);
+    showFullScreen(next);
+  } catch (error) {
+    setStatus(`Full screen did not work: ${error?.message || error}`, { error: true });
+  }
+}
+
+/// Markdown pages fill the screen in presentation: one A4 box, scaled to fit.
+const A4_PX = { width: (210 * 96) / 25.4, height: (297 * 96) / 25.4 };
+
+const presentedSheets = () => Array.from(ui.markdown.querySelectorAll(':scope > .md-page'));
+
+function presentedSheet() {
+  const stage = ui.markdownStage.getBoundingClientRect();
+  const middle = stage.top + stage.height / 2;
+  const sheets = presentedSheets();
+  let best = 0;
+  sheets.forEach((sheet, index) => {
+    const box = sheet.getBoundingClientRect();
+    const old = sheets[best].getBoundingClientRect();
+    if (Math.abs(box.top + box.height / 2 - middle) < Math.abs(old.top + old.height / 2 - middle)) best = index;
+  });
+  return best;
+}
+
+function showSheet(index) {
+  const sheet = presentedSheets()[index];
+  if (!sheet) return;
+  const stage = ui.markdownStage;
+  const box = sheet.getBoundingClientRect();
+  const top = stage.getBoundingClientRect().top;
+  stage.scrollTop += box.top - top - Math.max(0, (stage.clientHeight - box.height) / 2);
+}
+
+function fitPresentation() {
+  if (presentation?.kind !== 'markdown') return;
+  const index = presentedSheet();
+  const stage = ui.markdownStage;
+  setMarkdownScale(Math.min((stage.clientHeight - 16) / A4_PX.height, (stage.clientWidth - 16) / A4_PX.width));
+  paginateMarkdown({ keepPosition: false });
+  showSheet(index);
+}
+
+async function startPresentation() {
+  const kind = state.file?.kind;
+  if (presentation) return;
+  if (!(kind === 'pdf' && state.document) && kind !== 'markdown') {
+    setStatus('Open a PDF or Markdown file to present');
+    return;
+  }
+  if (panes.active) {
+    setStatus('Go back to one pane to present');
+    return;
+  }
+  if (palette.isOpen) palette.close();
+  viewMenu.close(false);
+  dockMenu.close(false);
+  toggleSettings(false);
+  if (!ui.find.hidden) closeFind();
+  hideReviewChrome();
+  presentation = {
+    kind,
+    fullscreen: await isFullscreen().catch(() => false),
+    wrap: state.wrap,
+    page: pdfViewer.currentPageNumber,
+    scale: kind === 'pdf' ? pdfViewer.currentScaleValue : state.markdownScale,
+    scrollMode: pdfViewer.scrollMode,
+    view: state.pageViews.md,
+    raw: state.markdownRaw,
+    scrollTop: ui.markdownStage.scrollTop,
+  };
+  document.body.classList.add('presenting');
+  if (state.wrap) setWrap(false);
+  if (kind === 'pdf') {
+    applyPdfSpread();
+    pdfViewer.currentScaleValue = 'page-fit';
+    pdfViewer.currentPageNumber = presentation.page;
+  } else {
+    if (state.markdownRaw) setRaw(false, { persist: false });
+    setPageView('single', { persist: false, apply: false });
+    paginateMarkdown();
+    fitPresentation();
+  }
+  holdResize();
+  await setFullscreen(true).catch(() => {});
+}
+
+function stepPresentation(delta) {
+  if (presentation.kind === 'pdf') {
+    pdfViewer.currentPageNumber = Math.min(Math.max(1, pdfViewer.currentPageNumber + delta), pdfViewer.pagesCount);
+  } else {
+    showSheet(Math.min(Math.max(0, presentedSheet() + delta), presentedSheets().length - 1));
+  }
+}
+
+async function stopPresentation() {
+  const saved = presentation;
+  if (!saved) return;
+  presentation = null;
+  document.body.classList.remove('presenting');
+  const restore = () => {
+    if (saved.kind === 'pdf' && state.document) pdfViewer.currentPageNumber = saved.page;
+    else if (saved.kind === 'markdown') ui.markdownStage.scrollTop = saved.scrollTop;
+  };
+  if (saved.kind === 'pdf' && state.document) {
+    pdfViewer.scrollMode = saved.scrollMode;
+    applyPdfSpread();
+    pdfViewer.currentScaleValue = String(saved.scale);
+  } else if (saved.kind === 'markdown') {
+    setMarkdownScale(saved.scale);
+    setPageView(saved.view, { persist: false, apply: false });
+    paginateMarkdown({ keepPosition: false });
+    if (saved.raw) setRaw(true, { persist: false });
+  }
+  restore();
+  if (!saved.fullscreen) {
+    holdResize();
+    await setFullscreen(false).catch(() => {});
+  }
+  if (saved.wrap) {
+    setWrap(true);
+    scheduleWrap();
+  }
+  // Leaving full screen reshapes the window a moment later; land on the page again then.
+  window.setTimeout(restore, 200);
+}
+
+ui.fullScreen.addEventListener('click', () => void toggleFullScreen());
+ui.present.addEventListener('click', () => void startPresentation());
+window.addEventListener('resize', () => {
+  if (presentation) fitPresentation();
+  void isFullscreen().then(showFullScreen, () => {});
+});
+
+// Ahead of every other key handler: while presenting, the reading keys and a
+// clicker (which sends PageUp and PageDown) step pages, and Esc gives the view back.
+window.addEventListener('keydown', (event) => {
+  if (!presentation || event.ctrlKey || event.metaKey || event.altKey) return;
+  const steps = {
+    ArrowRight: 1, ArrowDown: 1, PageDown: 1, Enter: 1, n: 1, j: 1, ' ': event.shiftKey ? -1 : 1,
+    ArrowLeft: -1, ArrowUp: -1, PageUp: -1, Backspace: -1, p: -1, k: -1, Home: -Infinity, End: Infinity,
+  };
+  if (event.key === 'Escape' || event.key === 'F5') void stopPresentation();
+  else if (event.key in steps) stepPresentation(steps[event.key]);
+  else return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 
 window.addEventListener('keydown', (event) => {
   const typing =
@@ -6905,6 +7114,11 @@ window.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' && !isTextField(event.target)) {
     event.preventDefault();
     palette.toggle();
+    return;
+  }
+  if ((event.key === 'F11' || event.key === 'F5') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    void (event.key === 'F11' ? toggleFullScreen() : startPresentation());
     return;
   }
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === ',') {

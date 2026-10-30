@@ -126,9 +126,15 @@ await audit(page, ok, 'Markdown outline with the Review panel');
 await page.keyboard.press('Control+Shift+O');
 await page.click('#notes');
 await page.evaluate(() => document.activeElement?.blur());
-const toolbar = ['open', 'zoomOut', 'zoom', 'zoomIn', 'findToggle', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'notes', 'print', 'settingsToggle'];
+const toolbar = ['open', 'zoomOut', 'zoom', 'zoomIn', 'findToggle', 'viewMenuButton', 'dockMenuButton', 'notes', 'settingsToggle'];
 const missed = await tabTo(page, toolbar);
 ok(missed.length === 0, `Tab reaches the toolbar controls${missed.length ? ` (missed ${missed.join(', ')})` : ''}`);
+for (const menu of ['viewMenu', 'dockMenu']) {
+  await page.click(`[aria-controls="${menu}"]`);
+  await page.waitForSelector(`#${menu}:not([hidden])`);
+  await audit(page, ok, `${menu === 'viewMenu' ? 'View' : 'Window'} menu`);
+  await page.keyboard.press('Escape');
+}
 await selectText('#markdown', 'Second paragraph');
 await page.keyboard.press('Control+Shift+N');
 await page.waitForSelector('#noteBox:not([hidden])');

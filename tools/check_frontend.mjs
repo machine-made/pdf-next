@@ -1685,8 +1685,8 @@ const capabilities = JSON.parse(
 );
 assert.deepEqual(
   capabilities.permissions,
-  ['core:event:allow-listen', 'core:event:allow-unlisten'],
-  'The webview needs events and nothing else; every other permission is reachable by injected script.',
+  ['core:event:allow-listen', 'core:event:allow-unlisten', 'core:window:allow-is-fullscreen', 'core:window:allow-set-fullscreen'],
+  'The webview needs events and full screen (F11, F5) and nothing else; every other permission is reachable by injected script.',
 );
 
 // The command line is a contract for programs, not just people: it answers
@@ -2273,11 +2273,30 @@ assert.match(page, /id="reviewChip"/, 'A chip after a short hold adds a review.'
 assert.match(page, /id="copyPath"/, 'The toolbar copies the full path after zoom.');
 assert.match(page, /id="copyName"/, 'The toolbar copies the file name after zoom.');
 assert.match(page, /id="reduce"/, 'PDF toolbar can write a smaller name_reduced.pdf.');
-assert.match(
-  page,
-  /id="ask"[\s\S]*?#i-ask[\s\S]*?id="note"[\s\S]*?#i-add-review[\s\S]*?id="notes"[\s\S]*?#i-review/,
-  'Copy selection, add review, and review panel each have their own icon.',
-);
+// The quiet toolbar: about ten controls; the rest live in the View and Window
+// menus, which keep the controls' ids, or in the palette and shortcuts.
+{
+  const bar = page.slice(page.indexOf('<header id="bar">'), page.indexOf('</header>'));
+  const outside = bar.replace(/<div id="(viewMenu|dockMenu)" class="popover"[\s\S]*?\n {8}<\/div>\n/g, '');
+  const controls = outside.match(/<(button|select|input)\b/g) || [];
+  assert.ok(controls.length <= 16, `The toolbar keeps to a few controls (${controls.length}, counting each file kind's own).`);
+  for (const id of ['pageView', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'mode', 'poll', 'copyPath', 'copyName', 'print', 'reduce']) {
+    assert.match(bar, new RegExp(`<div id="viewMenu"[\\s\\S]*id="${id}"[\\s\\S]*id="dockMenuButton"`), `${id} is in the View menu.`);
+  }
+  for (const id of ['dockTop', 'dockLeft', 'dockCenter', 'dockRight', 'dockBottom', 'wrap', 'fullScreen', 'present']) {
+    assert.match(bar, new RegExp(`<div id="dockMenu"[\\s\\S]*id="${id}"`), `${id} is in the Window menu.`);
+  }
+  assert.doesNotMatch(bar, /id="(ask|note)"/, 'Ask and Add review live on their shortcuts, the card and the right-click menu.');
+  assert.match(bar, /id="notes"[^>]*>\s*<svg class="icon"><use href="#i-review"/, 'The Review panel keeps its toolbar button.');
+  assert.match(bar, /id="viewMenuButton"[^>]*aria-haspopup="dialog" aria-expanded="false" aria-controls="viewMenu"/);
+  assert.match(styles, /#update:not\(\.available\) \{\s*display: none/, 'The update button only shows when there is an update.');
+  const capabilities = JSON.parse(await readFile('src-tauri/capabilities/default.json', 'utf8')).permissions;
+  for (const permission of ['core:window:allow-set-fullscreen', 'core:window:allow-is-fullscreen']) {
+    assert.ok(capabilities.includes(permission), `The window may ${permission.split('allow-')[1].replace('-', ' ')}.`);
+  }
+  assert.match(app, /event\.key === 'F11' \|\| event\.key === 'F5'/, 'F11 is full screen and F5 presents.');
+  assert.match(page, /id="setFocusMode" type="checkbox" checked/, 'Settings has the focus mode switch, on by default.');
+}
 assert.match(
   app,
   /invoke\('reduce_pdf'/,

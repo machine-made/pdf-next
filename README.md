@@ -22,7 +22,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 ### It follows your file
 
 - **Rebuild and look.** Watching is on by default. Save or rebuild and the view updates
-  within a second, keeping your page, scroll position and zoom. The toolbar sets how often it
+  within a second, keeping your page, scroll position and zoom. The View menu sets how often it
   looks (1 s, 2 s, 3 s, or off). If the build deletes the file first, the last page stays on
   screen with a red dot until the new file lands.
 - **It never shows a half-written file.** A build takes hundreds of milliseconds to write a
@@ -41,12 +41,18 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   as a plot saved at 400 dpi, is scaled down until it fits whole. A page taller than the
   monitor fills the screen's height and scrolls. This only happens when you open a file:
   rebuilds and tab switches never move your window.
-- **Dock it to half the screen** with the toolbar or `Ctrl+Shift+←` / `→` / `↑` / `↓`, so the
-  document takes one half and your editor the other. Docked, it fits the width, so the text
-  stays readable. The centre button, `Ctrl+Shift+Enter`, or the same edge again undocks.
+- **Dock it to half the screen** with the Window menu (a small picker laid out like the
+  screen) or `Ctrl+Shift+←` / `→` / `↑` / `↓`, so the document takes one half and your editor
+  the other. Docked, it fits the width, so the text stays readable. The centre of the picker,
+  `Ctrl+Shift+Enter`, or the same edge again undocks.
 - **Or bring the window to the content** with `Ctrl+Shift+F`: set a figure to the size you
   want and the window closes in on it, edge to edge. It stays on, so zooming moves the window
   with you, up to the size of your screen. Picking a fit from the zoom menu turns it off.
+- **Full screen** with `F11`, or from the Window menu. `F11` again comes back.
+- **Present** with `F5`: full screen, no toolbar, one page at a time fitted to the screen, on
+  black. `←` / `→`, `PageUp` / `PageDown` (what a presentation clicker sends), `Space`, `Home`
+  and `End` move through the pages; `Esc` comes back to the view, zoom and page you had. A
+  Markdown file is shown as its A4 pages.
 
 ### Tabs and panes
 
@@ -64,7 +70,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   disk). A file that is no longer there is dimmed, and leaves the list when you pick it. Open
   recent… in the command palette lists the same files.
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
-  splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
+  splits it down, and the Panes menu in the View menu does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a tab strip to merge;
   drag the line between panes to resize; `Ctrl+Alt+←/→/↑/↓` moves between them. Any file works
   in any pane. The pane you click is the live one, with editing, find, zoom and the Review
@@ -111,18 +117,18 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   on a 38 em measure, hyphenated, with tables, task lists, footnotes and strikethrough. It is
   parsed by [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) in Rust and
   cleaned by [ammonia](https://github.com/rust-ammonia/ammonia) before it reaches the window,
-  so a hostile file cannot run anything. `Ctrl+U` with nothing selected (or the toolbar button)
-  shows the raw text and back. Zoom reflows the text instead of scaling it.
+  so a hostile file cannot run anything. `Ctrl+U` with nothing selected (or Raw Markdown in the
+  View menu) shows the raw text and back. Zoom reflows the text instead of scaling it.
 - **Equations.** `$…$`, `$$…$$` and a fenced `math` block are TeX, turned into MathML by
   [math-core](https://github.com/tmke8/math-core) in the same Rust pass and set in New Computer
   Modern Math, with no JavaScript maths engine and nothing fetched. Numbered environments,
   `\label` and `\eqref`, `\newcommand` across a file, and `split` work. An equation that fails
   to convert, loops, or is too large shows as its TeX source; an unknown command is marked in
   red and the rest still renders. An `\eqref` to an equation further down shows `(??)`.
-- **Your choice of type.** Toolbar menus set the font (Latin Modern; the machine-made faces
+- **Your choice of type.** The View menu sets the font (Latin Modern; the machine-made faces
   Weft, Sans and Heddle; Serif, Sans, Mono; and GitHub's five Monaspace faces Neon, Argon,
   Xenon, Radon and Krypton), the size (14 to 48 px) and the column width (in pixels, or 100%;
-  720 px by default). Each choice is remembered. The mouse wheel over any toolbar menu (zoom,
+  720 px by default). Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
   over the zoom menu or its buttons it zooms.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
@@ -188,17 +194,27 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   sharp, the moment you stop; passing Fit width or Fit page, it settles there for a moment. In
   Markdown the wheel steps the text size and the paragraph under the cursor stays put. `+`, `-`
   and the zoom menu zoom around the middle of the view.
-- **Dark mode that respects the page.** It follows your system, and the mode button can
-  recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
+- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, the page, zoom,
+  find, the View menu, the Window menu, the Review panel and Settings. The View menu holds the
+  page view, raw Markdown, the Markdown font, size and width, panes, the page mode, how often
+  to check for changes, copying the path or name, print and Reduce PDF; only what applies to
+  the open file shows. Arrows move through a menu, `Esc` closes it. Everything is also in the
+  command palette.
+- **Focus mode.** Once you start reading, the toolbar fades after a couple of seconds, in place,
+  so the page does not move. Bring the pointer to the top of the window, press `Alt`, or tab
+  into it and it comes back; it stays while the Review panel, Settings, find, the palette or a
+  menu is open. Settings ("Hide the toolbar while reading") or the palette turns it off.
+- **Dark mode that respects the page.** It follows your system, and Page mode in the View menu
+  can recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
   back to Clear.
 - **Find** with match counts (`Ctrl+F`), powered by PDF.js.
 - **Print** with `Ctrl+P`, through your system's own dialog, with your printers, page range,
   copies, duplex and paper size. A PDF is redrawn at 150 dpi on white, so what comes out is
   the page, not the screen, and A4 prints at true size on A4. Markdown reflows across sheets,
   and an image gets a sheet of its own. With nothing to print to, it says so.
-- **Reduce a PDF** with the button next to Print. A pure-Rust pass (no Ghostscript) writes a
+- **Reduce a PDF** from the View menu, under Print. A pure-Rust pass (no Ghostscript) writes a
   smaller `{stem}_reduced.pdf` beside the original when it can, and opens it as a tab.
-- **Copy the path or the name** with the two buttons after zoom.
+- **Copy the path or the name** from the View menu.
 - **Opens where you ask.** `--page 12`, `--find "Figure 3"` and `--dest results` say where to
   land, or write it on the path the way a PDF link does: `paper.pdf#page=7&search=wake`. For
   Markdown, `--line 42` or `#line=42`; `--find` and `#search=` work there too. A file that is
@@ -207,14 +223,14 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **The title names the build** (`paper.pdf — pdf-next 0.17.0`), so a bug report can say
   which version without an About box.
 - **It tells you when there is a newer version.** A few seconds after launch it asks GitHub
-  once for the latest release; if there is one, the last toolbar button lights up and a press
-  opens the installer for your system from the Releases page in your browser. That one request
-  is the only network access the app makes on its own; nothing polls, and downloads only
-  happen when you press.
+  once for the latest release; if there is one, a button appears at the end of the toolbar,
+  and a press opens the installer for your system from the Releases page in your browser.
+  That one request is the only network access the app makes on its own; nothing polls, and
+  downloads only happen when you press.
 - **Settings** (the sliders button, or `Ctrl+,`) has the Markdown font, size and width, how
   figures are sized and captioned, editing in place, the interface font (System, machine-made
   Sans or Weft), the code font (System mono or a Monaspace face), how often to check for
-  changes, and About.
+  changes, focus mode, and About.
 - **Command palette** with `Ctrl+K` (`⌘K` on macOS): every action, setting and open file in
   one list, each with its shortcut. Type a few letters of each word (`mono neon`, `split r`,
   `go paper`) and press Enter. It only shows what applies to what you have open, and the
@@ -227,8 +243,9 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
   after asking), `Ctrl+Z` undo an edit or a removed review, `Ctrl+Shift+R` Review panel,
   `Ctrl+Shift+N` or Enter (with a selection and the panel open) add a review,
-  `Ctrl+Shift+A` ask, `Esc` close the review box, `Ctrl+Shift+F` fit the window to the
-  content, `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen half, `Ctrl+Shift+Enter` undock.
+  `Ctrl+Shift+A` copy the selection as a review quote, `Esc` close the review box,
+  `Ctrl+Shift+F` fit the window to the content, `Ctrl+Shift+←`/`→`/`↑`/`↓` dock to a screen
+  half, `Ctrl+Shift+Enter` undock, `F11` full screen, `F5` present, `Alt` show the toolbar.
 
 ## Install
 
