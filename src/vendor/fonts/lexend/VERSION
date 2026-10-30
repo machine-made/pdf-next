@@ -1,0 +1,8 @@
+Lexend (variable WOFF2: wght 100-900; normal; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v26.
+Source: npm @fontsource-variable/lexend 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/lexend), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  cdfed8f91b0660b004befb744757918b7c7d40dc2201b6c6d0a86b2fab9408f8  OFL.txt
+  b5d815d42066da25e5894bdfe47a415e1f79ef436486e3f843b475806d2e613c  lexend-latin-ext-wght-normal.woff2
+  b7e7538f59bff1812841d7627f8e49e70fe86438f9f7b397a028c0d05301c874  lexend-latin-wght-normal.woff2

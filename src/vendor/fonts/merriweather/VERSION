@@ -1,0 +1,10 @@
+Merriweather (variable WOFF2: wght 300-900; normal and italic; latin and latin-ext subsets),
+SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v33.
+Source: npm @fontsource-variable/merriweather 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/merriweather), files/
+Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
+SHA-256:
+  aa677c3f7682d9c4f7aa48fae3f3b9d0f8d70ac6ab47b9bc20a9cc2879e15af0  OFL.txt
+  f11472cb2bef38bdb05eb91911e9672e8e45dd80756cb87a7f316ac9ec910e1f  merriweather-latin-ext-wght-italic.woff2
+  8ca0880997847953a13964d6769b6712c57aa2dc2f881f4e6e805719791daed8  merriweather-latin-ext-wght-normal.woff2
+  caa1da88ecea68d5d4b79881792675c76e691f5141ae3fef85bd472920436053  merriweather-latin-wght-italic.woff2
+  4fbe8dd9c23b1fd62a988bb8a69b8e692d810f773d9ef6ebca2ba2760c7b11ee  merriweather-latin-wght-normal.woff2

@@ -3,7 +3,7 @@
 // one-second poll, and the mid-build gap behaviour.
 import { annotate } from './annotate.mjs';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
 import './check_pdf_stream_limits.mjs';
@@ -2043,9 +2043,8 @@ for (const file of [
   'monaspace/MonaspaceNeon-Variable.woff2',
   'monaspace/MonaspaceArgon-Variable.woff2',
   'monaspace/MonaspaceXenon-Variable.woff2',
-  'monaspace/MonaspaceRadon-Variable.woff2',
-  'monaspace/MonaspaceKrypton-Variable.woff2',
   'monaspace/OFL.txt',
+  'fonts/fonts.css',
 ]) {
   await assert.doesNotReject(access(`src/vendor/${file}`), `${file} must be vendored.`);
 }
@@ -3200,7 +3199,7 @@ for (const [value, family] of [['weft', 'machine-made Weft'], ['mm-sans', 'machi
 }
 assert.match(page, /<option value="mm-sans">mm Sans<\/option>/, 'Settings offers the interface fonts.');
 // Monaspace: each face is declared, offered for the body text and for code.
-for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
+for (const face of ['Neon', 'Argon', 'Xenon']) {
   const value = `monaspace-${face.toLowerCase()}`;
   assert.match(styles, new RegExp(`@font-face \\{\\s*font-family: "Monaspace ${face}";`), `Monaspace ${face} has a font face.`);
   assert.match(styles, new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "Monaspace ${face}"`));
@@ -3211,11 +3210,68 @@ for (const face of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) {
 assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).every((line) => line.includes('--code-font:')),
   'Every monospace stack goes through --code-font.');
 
-// The Markdown font menu is clustered: TeX, System, Monaspace, then machine-made.
+// The Markdown font menu is clustered: TeX, Serif, Sans, System, Monaspace, then machine-made.
 {
   const menu = page.slice(page.indexOf('<select id="mdFont"'), page.indexOf('</select>', page.indexOf('<select id="mdFont"')));
   const groups = [...menu.matchAll(/<optgroup label="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(groups, ['TeX', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+  assert.deepEqual(groups, ['TeX', 'Serif', 'Sans', 'System', 'Monaspace (GitHub)', 'machine-made'], 'Font menu groups are in order.');
+  const group = (label) => {
+    const at = menu.indexOf(`<optgroup label="${label}">`);
+    return [...menu.slice(at, menu.indexOf('</optgroup>', at)).matchAll(/<option value="([^"]+)">([^<]+)<\/option>/g)].map((m) => [m[1], m[2]]);
+  };
+  const reading = [...group('Serif'), ...group('Sans')];
+  assert.deepEqual(reading.map(([, name]) => name), ['Literata', 'Merriweather', 'Source Serif 4', 'Libre Baskerville', 'Lora', 'EB Garamond',
+    'Crimson Pro', 'Newsreader', 'Spectral', 'Atkinson Hyperlegible Next', 'Lexend', 'Inter', 'Source Sans 3', 'Geist', 'Manrope', 'Space Grotesk'],
+  'The reading fonts are offered as nine serifs and seven sans faces.');
+  assert.deepEqual(group('System').map(([value]) => value), ['serif', 'sans', 'mono'], 'System fonts: Serif, Sans, Mono.');
+  // Each reading font is vendored with its licence and a VERSION (pinned in
+  // tools/update_fonts.sh, every file hashed), declared in fonts.css with its
+  // unicode-range subsets, and set by a data-font rule with fallbacks.
+  assert.match(page, /<link rel="stylesheet" href="\.\/vendor\/fonts\/fonts\.css" \/>/, 'The reading fonts stylesheet is linked.');
+  const faces = await readFile('src/vendor/fonts/fonts.css', 'utf8');
+  const updater = await readFile('tools/update_fonts.sh', 'utf8');
+  for (const [value, family] of reading) {
+    const dir = `src/vendor/fonts/${value}`;
+    assert.match(await readFile(`${dir}/OFL.txt`, 'utf8'), /SIL Open Font License, Version 1\.1/, `${family} ships its OFL licence.`);
+    const list = await readFile(`${dir}/VERSION`, 'utf8');
+    const pinned = new RegExp(`^(@fontsource(?:-variable)?/${value})@(\\d+\\.\\d+\\.\\d+)\\|${family}\\|`, 'm').exec(updater);
+    assert.ok(pinned, `tools/update_fonts.sh pins ${family}.`);
+    assert.ok(list.startsWith(`${family} (`) && list.includes(`Source: npm ${pinned[1]} ${pinned[2]} `), `${family} VERSION names its package and version.`);
+    const hashes = [...list.matchAll(/^  ([0-9a-f]{64})  (\S+)$/gm)];
+    const woff2 = (await readdir(dir)).filter((name) => name.endsWith('.woff2'));
+    assert.deepEqual(hashes.map((m) => m[2]).sort(), ['OFL.txt', ...woff2].sort(), `${family} VERSION hashes every file.`);
+    assert.ok(woff2.length && woff2.every((name) => /-latin(-ext)?-/.test(name)), `${family} ships the latin and latin-ext subsets only.`);
+    for (const [, hash, file] of hashes) {
+      assert.equal(createHash('sha256').update(await readFile(`${dir}/${file}`)).digest('hex'), hash, `${dir}/${file} must match its VERSION hash.`);
+    }
+    const rules = faces.split('@font-face').filter((rule) => rule.includes(`font-family: "${family}";`));
+    assert.equal(rules.length, woff2.length, `${family} has one @font-face per file.`);
+    for (const rule of rules) {
+      const file = /src: url\('\.\/([^']+)'\) format\('woff2'\);/.exec(rule)?.[1];
+      assert.ok(file?.startsWith(`${value}/`) && woff2.includes(file.slice(value.length + 1)), `${family} @font-face points at a vendored file (${file}).`);
+      assert.match(rule, /unicode-range: U\+/, `${family} @font-face keeps its unicode-range.`);
+    }
+    const rule = new RegExp(`#markdown\\[data-font="${value}"\\] \\{\\s*--article-font: "${family}", [^;]*(serif|sans-serif);([^}]*)\\}`).exec(styles);
+    assert.ok(rule, `${family} has a data-font rule with fallbacks.`);
+    assert.equal(/font-optical-sizing: auto;/.test(rule[2]), woff2.some((name) => name.includes('-opsz-')), `${family}: optical sizing follows its opsz axis.`);
+  }
+  assert.deepEqual((await readdir('src/vendor/fonts')).filter((name) => name !== 'fonts.css').sort(), reading.map(([value]) => value).sort(),
+    'src/vendor/fonts holds exactly the offered reading fonts.');
+}
+// Monaspace Krypton and Radon were removed in 0.18: no file, rule, menu or
+// mention is left (the OFL text lists them among its reserved names and stays).
+{
+  const walk = async (dir) => (await Promise.all((await readdir(dir, { withFileTypes: true })).map((entry) => (entry.isDirectory()
+    ? walk(`${dir}/${entry.name}`) : [`${dir}/${entry.name}`])))).flat();
+  const skip = ['src/vendor/monaspace/OFL.txt', 'tools/check_frontend.mjs', 'tests/browser/fonts.mjs'];
+  const texts = [...await walk('src'), ...await walk('tools'), ...await walk('tests'), 'README.md', 'site/index.html']
+    .filter((file) => !skip.includes(file) && !file.startsWith('src/vendor/pdfjs/') && /\.(mjs|js|css|html|md|sh|txt)$|VERSION$/.test(file));
+  for (const file of texts) {
+    assert.doesNotMatch(await readFile(file, 'utf8'), /krypton|radon/i, `${file} must not mention Monaspace Krypton or Radon.`);
+  }
+  for (const face of ['Krypton', 'Radon']) {
+    await assert.rejects(access(`src/vendor/monaspace/Monaspace${face}-Variable.woff2`), `Monaspace ${face} is no longer shipped.`);
+  }
 }
 
 // Review card buttons: the JS list and the Rust list are the same words, and a

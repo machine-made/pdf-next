@@ -6081,7 +6081,7 @@ function applyUiFont(value, { persist = true } = {}) {
   }
 }
 
-const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon', 'monaspace-radon', 'monaspace-krypton'];
+const CODE_FONTS = ['system', 'monaspace-neon', 'monaspace-argon', 'monaspace-xenon'];
 
 /// The font for code blocks, inline code and the raw Markdown view.
 function applyCodeFont(value, { persist = true } = {}) {

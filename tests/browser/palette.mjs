@@ -117,8 +117,8 @@ await page.click('#settingsToggle'); await page.waitForTimeout(50);
 await shot('settings', { clip: { x: 1100, y: 30, width: 400, height: 260 } });
 await page.click('#paletteOpen'); await page.waitForTimeout(50);
 ok(await open() && await page.evaluate(() => document.getElementById('settingsPanel').hidden), 'The Settings entry opens the palette');
-await page.keyboard.type('code font radon'); await page.keyboard.press('Enter');
-ok(await page.evaluate(() => localStorage.getItem('pdf-next.code-font')) === 'monaspace-radon', 'Code font from the palette');
+await page.keyboard.type('code font xenon'); await page.keyboard.press('Enter');
+ok(await page.evaluate(() => localStorage.getItem('pdf-next.code-font')) === 'monaspace-xenon', 'Code font from the palette');
 await run('interface font weft');
 ok(await page.evaluate(() => document.documentElement.dataset.uiFont) === 'weft', 'Interface font from the palette');
 
