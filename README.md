@@ -403,7 +403,9 @@ and each has a short form:
   `r4 ? Which reference do you mean?`. The item gets status `question` and the text in
   `question`; it leaves the list, and the header counts it as waiting on the reader. When the
   reader answers in the app, the answer is saved in `reply` and the item is `open` again, with
-  `you asked "…", reader replied: "…"` in its line.
+  `you asked "…", reader replied: "…"` in its line. pdf-next before 0.17 does not know
+  `question`: it cannot read a store while an item waits on the reader, and its inbox reads
+  `r4 ? …` as a done note. Use `ask` only when the app and the CLI are 0.17 or later.
 - **Read one whole item** from the store itself. `{stem}_review.json` holds one item per line,
   so `grep '"id":"r12"' notes_review.json` prints all of it, and every item has every key
   (`comment` and `resolution` are `""` when empty).

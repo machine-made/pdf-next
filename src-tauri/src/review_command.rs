@@ -369,7 +369,9 @@ fn run_relocate(args: &[OsString]) -> Result<String, CliError> {
             _ => return Err(usage(format!("unknown or repeated option `{name}`"))),
         }
     }
-    apply_inbox(&document, &allowed)?;
+    if !dry_run {
+        apply_inbox(&document, &allowed)?;
+    }
     let (report, store) = crate::relocate_reviews(&document, expected_revision, &allowed, dry_run)
         .map_err(runtime)?;
     let mut out = String::new();
@@ -689,6 +691,33 @@ mod tests {
         assert_eq!(
             run(&arguments(&["done", document, "r2", "said", "where"])).unwrap(),
             "r2 applied; 0 open"
+        );
+    }
+
+    #[test]
+    fn a_relocate_dry_run_writes_nothing_not_even_the_inbox() {
+        let directory = tempfile::tempdir().unwrap();
+        let markdown = directory.path().join("notes.md");
+        fs::write(&markdown, "# Title\n\nThe wake grows downstream.\n").unwrap();
+        let document = markdown.to_str().unwrap();
+        run(&arguments(&[
+            "add",
+            document,
+            "--line",
+            "3",
+            "--quote",
+            "the wake grows",
+        ]))
+        .unwrap();
+        let sidecar = directory.path().join("notes_review.json");
+        let before = fs::read(&sidecar).unwrap();
+        fs::write(directory.path().join("notes_review.done"), "r1 said why\n").unwrap();
+        let out = run(&arguments(&["relocate", document, "--dry-run"])).unwrap();
+        assert!(out.ends_with("0 moved, revision 1"), "{out}");
+        assert_eq!(
+            fs::read(&sidecar).unwrap(),
+            before,
+            "a dry run leaves the store as it was"
         );
     }
 
