@@ -16,7 +16,7 @@
 - Changed Night and Sepia to keep the colours of figures and plots, so a blue line stays blue, and to look the same on Windows, macOS and Linux
 - Added `Ctrl+Shift+M` (or a double click on an empty tab strip) to give the whole window to one pane, and `Ctrl+Alt+Shift+arrows` to move a pane's edge from the keyboard
 - Added find matches in every pane on screen, not only the live one
-- Added nine serif reading fonts (Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral) and seven easy-to-read sans fonts (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope, Space Grotesk), grouped in the font menu
+- Added nine serif reading fonts (Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral) and seven easy-to-read sans fonts (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope, Space Grotesk), grouped in the font menu; five of them adjust their letter shapes to the text size
 - Removed the Monaspace Krypton and Radon fonts; a saved choice of either goes back to the default
 - Removed the Ask and Add review toolbar buttons; their shortcuts, the review card and the right-click menu still do both
 - Changed the update button to appear only when a newer version is found

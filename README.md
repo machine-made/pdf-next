@@ -143,8 +143,8 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   made to be easy to read (Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist,
   Manrope, Space Grotesk); your system's serif, sans and mono; GitHub's Monaspace Neon, Argon
   and Xenon; and the machine-made Weft, Sans and Heddle. They all ship with the app, so nothing
-  is fetched, and Literata, Source Serif 4 and Newsreader change their optical size with the
-  text size. Each choice is remembered. The mouse wheel over any of these menus (zoom,
+  is fetched, and Literata, Merriweather, Source Serif 4, Newsreader and Inter change their
+  letter shapes with the text size (optical size). Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
   over the zoom menu or its buttons it zooms.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,

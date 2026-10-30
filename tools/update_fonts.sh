@@ -11,17 +11,17 @@ set -eu
 # package@version|family|axis of a variable package, or weights of a static one
 FONTS='
 @fontsource-variable/literata@5.3.0|Literata|opsz
-@fontsource-variable/merriweather@5.3.0|Merriweather|wght
+@fontsource-variable/merriweather@5.3.0|Merriweather|opsz
 @fontsource-variable/source-serif-4@5.3.1|Source Serif 4|opsz
 @fontsource-variable/libre-baskerville@5.3.0|Libre Baskerville|wght
 @fontsource-variable/lora@5.3.0|Lora|wght
 @fontsource-variable/eb-garamond@5.3.0|EB Garamond|wght
 @fontsource-variable/crimson-pro@5.3.0|Crimson Pro|wght
 @fontsource-variable/newsreader@5.3.0|Newsreader|opsz
-@fontsource/spectral@5.3.0|Spectral|400 700
+@fontsource/spectral@5.3.0|Spectral|300 400 500 600 700
 @fontsource-variable/atkinson-hyperlegible-next@5.3.0|Atkinson Hyperlegible Next|wght
 @fontsource-variable/lexend@5.3.0|Lexend|wght
-@fontsource-variable/inter@5.3.0|Inter|wght
+@fontsource-variable/inter@5.3.0|Inter|opsz
 @fontsource-variable/source-sans-3@5.3.1|Source Sans 3|wght
 @fontsource-variable/geist@5.3.0|Geist|wght
 @fontsource-variable/manrope@5.3.0|Manrope|wght

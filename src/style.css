@@ -2251,6 +2251,7 @@ body.mode-sepia #markdownStageSplit {
 
 #markdown[data-font="merriweather"] {
   --article-font: "Merriweather", Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
 }
 
 #markdown[data-font="source-serif-4"] {
@@ -2293,6 +2294,7 @@ body.mode-sepia #markdownStageSplit {
 
 #markdown[data-font="inter"] {
   --article-font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  font-optical-sizing: auto;
 }
 
 #markdown[data-font="source-sans-3"] {

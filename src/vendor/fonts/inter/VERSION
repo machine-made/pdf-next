@@ -1,10 +1,10 @@
-Inter (variable WOFF2: wght 100-900; normal and italic; latin and latin-ext subsets),
+Inter (variable WOFF2: wght 100-900, opsz 14-32; normal and italic; latin and latin-ext subsets),
 SIL Open Font License 1.1 (OFL.txt). Unmodified Fontsource subsets of Google Fonts v20.
 Source: npm @fontsource-variable/inter 5.3.0 (https://www.npmjs.com/package/@fontsource-variable/inter), files/
 Used for the Markdown body text when chosen. Update with: tools/update_fonts.sh
 SHA-256:
   3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345  OFL.txt
-  71254244ccb1ec21e14db3480fef6f6826d1136dc4aca1c7d3ca7ce31294fcce  inter-latin-ext-wght-italic.woff2
-  34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956  inter-latin-ext-wght-normal.woff2
-  7291b5970da2237441273c03b424a504b70b18f09791473fab99687dcc314720  inter-latin-wght-italic.woff2
-  3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62  inter-latin-wght-normal.woff2
+  cd92c8740f77f482bcd39e831fa7b1445589e9203cc9edb39fd49435d8976257  inter-latin-ext-opsz-italic.woff2
+  5e6d4fe9d9f4bff8b2a2469d25ab19576bb85331e22c6ed51398e16f95d56a9c  inter-latin-ext-opsz-normal.woff2
+  c58f9d530baa7e96355f444502eca739d5eefa0f328f3d635b73648373214629  inter-latin-opsz-italic.woff2
+  2c295d99e26dcf357d4d01bcf270fd6924b600c9a13dd8c363ef114f4c6976fa  inter-latin-opsz-normal.woff2
