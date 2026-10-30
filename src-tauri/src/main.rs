@@ -3743,8 +3743,11 @@ fn drop_redundant_end(review: &mut Review) {
     }
 }
 
+/// Largest sidecar read, so the largest one written.
+const STORE_LIMIT: usize = 4_000_000;
+
 fn parse_store(text: &str) -> Result<ReviewFile, String> {
-    if text.len() > 4_000_000 {
+    if text.len() > STORE_LIMIT {
         return Err("review sidecar is too large (max 4 MB)".into());
     }
     let trimmed = text.trim_start_matches('\u{feff}').trim();
@@ -4099,6 +4102,11 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
     };
     store.stamped = Some(store.revision);
     let json = store_json(store)?;
+    if json.len() > STORE_LIMIT {
+        return Err(
+            "the review store would be too large (max 4 MB): resolve or remove some reviews".into(),
+        );
+    }
     if let Some(previous) = prior_valid.as_deref() {
         write_atomic_bytes(&sidecar.with_extension("json.bak"), previous)?;
     }
@@ -4526,8 +4534,7 @@ fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
         let Some(Some((id, asks, text))) = inbox_line(line) else {
             continue;
         };
-        let limit = if asks { 2_000 } else { 4_000 };
-        let text: String = text.chars().take(limit).collect();
+        let text = cut_bytes(text, if asks { 2_000 } else { 4_000 }).to_string();
         last.retain(|(seen, _, _)| seen != id);
         last.push((id.to_string(), asks, text));
     }
@@ -4561,6 +4568,16 @@ fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
         changed = true;
     }
     changed
+}
+
+/// At most `limit` bytes of `text`, cut on a character boundary: the store
+/// limits are bytes.
+fn cut_bytes(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Put a question to the reader: the item waits until the app saves a reply.
@@ -5323,14 +5340,15 @@ fn patch_review_from(
         .as_object()
         .cloned()
         .ok_or_else(|| "could not serialize review".to_string())?;
-    for (key, value) in changes {
-        let actual = current.get(key).cloned().unwrap_or(serde_json::Value::Null);
-        if expected
-            .get(key)
-            .is_some_and(|expected_value| !same_json(expected_value, &actual))
-        {
+    // Every expected field is checked, patched or not: a reply names the
+    // question it answers.
+    for (key, expected_value) in expected {
+        let actual = current.get(key).unwrap_or(&serde_json::Value::Null);
+        if key != "$revision" && !same_json(expected_value, actual) {
             return Err(format!("review conflict: {key} changed on disk"));
         }
+    }
+    for (key, value) in changes {
         current.insert(key.clone(), value.clone());
     }
     let mut patched: Review = serde_json::from_value(serde_json::Value::Object(current))
@@ -10155,6 +10173,94 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         assert_eq!(
             store.reviews.iter().find(|r| r.id == "r2").unwrap().status,
             "resolved"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_long_non_ascii_inbox_line_is_cut_to_the_byte_limit_not_left_to_wedge_the_store() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let document = md.to_str().unwrap();
+        let note = "é".repeat(3_000);
+        let question = "ü".repeat(1_500);
+        std::fs::write(
+            dir.join("demo_review.done"),
+            format!("r1 {note}\nr3 ? {question}\n"),
+        )
+        .unwrap();
+        assert!(super::apply_done_inbox(&doc).unwrap());
+        let store = list_reviews(document, &allowed).unwrap();
+        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
+        let r3 = store.reviews.iter().find(|r| r.id == "r3").unwrap();
+        assert_eq!(
+            (r1.status.as_str(), r1.resolution.len()),
+            ("applied", 4_000)
+        );
+        assert_eq!((r3.status.as_str(), r3.question.len()), ("question", 2_000));
+        assert!(super::review_brief(&doc, None).is_ok());
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_store_too_large_to_read_back_is_never_written() {
+        let dir = scratch("review_store_limit");
+        let sidecar = dir.join("paper_review.json");
+        let mut store = empty_store();
+        let mut review = markdown_review();
+        review.quote = "q".repeat(20_000);
+        review.before = "b".repeat(20_000);
+        for number in 1..=110 {
+            store.reviews.push(Review {
+                id: format!("r{number}"),
+                ..review.clone()
+            });
+        }
+        let error = save_store(&sidecar, &mut store).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+        assert!(!sidecar.exists(), "nothing was written");
+        store.reviews.truncate(50);
+        save_store(&sidecar, &mut store).unwrap();
+        let written = std::fs::read(&sidecar).unwrap();
+        store.reviews.extend((51..=110).map(|number| Review {
+            id: format!("r{number}"),
+            ..review.clone()
+        }));
+        assert!(save_store(&sidecar, &mut store).is_err());
+        assert_eq!(
+            std::fs::read(&sidecar).unwrap(),
+            written,
+            "the store on disk stays readable"
+        );
+        parse_store(&String::from_utf8(written).unwrap()).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_reply_checks_the_question_it_answers_and_not_the_whole_store() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let document = md.to_str().unwrap();
+        super::ask_review_question(&doc, "r1", "Ideal in which sense?").unwrap();
+        mark_review_done(&doc, "r3", "moved it", None).unwrap();
+        let reply = |question: &str| {
+            super::patch_review_from(
+                document,
+                "r1",
+                &serde_json::json!({ "reply": "No viscosity." }),
+                &serde_json::json!({ "reply": null, "status": "question", "question": question }),
+                &allowed,
+                true,
+                super::PatchFrom::App,
+            )
+        };
+        let stale = reply("Which sense?").unwrap_err();
+        assert!(stale.contains("question changed"), "{stale}");
+        assert_eq!(
+            reply("Ideal in which sense?").unwrap().reviews[0].status,
+            "open"
         );
         drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
