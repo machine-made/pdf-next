@@ -293,7 +293,11 @@ export function createPaneViewers({ load, makeViewer, EventBus, createChangeMark
 
     eventBus.on('pagerendered', (event) => recolor?.(event));
     eventBus.on('pagerendered', () => still?.remove(), { once: true });
-    eventBus.on('textlayerrendered', ({ pageNumber }) => void paint(pageNumber));
+    eventBus.on('textlayerrendered', ({ pageNumber, source }) => {
+      const layer = source?.textLayer?.div;
+      if (layer) text.find?.(layer);
+      void paint(pageNumber);
+    });
     void open(url);
 
     return {
@@ -308,6 +312,9 @@ export function createPaneViewers({ load, makeViewer, EventBus, createChangeMark
           if (marks.length) void paint(Number(page.dataset.pageNumber));
           else unwrap(page, 'review-q');
         }
+      },
+      refind() {
+        for (const layer of pages.querySelectorAll('.textLayer')) text.find?.(layer);
       },
       recolor() {
         if (!viewer?.pdfDocument) return;
@@ -375,6 +382,10 @@ export function createPaneViewers({ load, makeViewer, EventBus, createChangeMark
     },
     recolor() {
       for (const viewer of viewers.values()) viewer.recolor();
+    },
+    /// Mark the find query again in every PDF pane.
+    refind() {
+      for (const viewer of viewers.values()) viewer.refind();
     },
     cleanup() {
       for (const viewer of viewers.values()) viewer.cleanup();

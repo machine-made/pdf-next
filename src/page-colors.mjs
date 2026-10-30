@@ -2,13 +2,13 @@
 ///
 /// PDF.js draws plain pages and each canvas is recoloured once it is drawn,
 /// with blend modes every webview draws (WebKit ignores a canvas filter, and
-/// PDF.js's own page colours map luminance, which turns plots grey). Each
-/// channel is mapped so paper goes to the background and ink to the
-/// foreground; the original is then drawn over that in `color` mode, so a
-/// colour keeps its hue and saturation and only its lightness moves. `color`
-/// also greys what was neutral, so a last step puts back the tint the
-/// foreground and background had: for a neutral pixel that error is linear
-/// in its value, and two fills and one draw undo it.
+/// PDF.js's own page colours map luminance, which turns plots grey). A
+/// `color` blend keeps the hue and saturation of what is drawn and takes only
+/// the lightness under it: underneath goes the page with its lightness mapped
+/// (white to the background's, black to the foreground's), on top a copy of
+/// the original carrying, for neutral pixels, the tint that paper and ink
+/// should have. Paper comes out as the background, black ink as the
+/// foreground, and a blue line stays blue, only lighter or darker.
 
 const LUMA = [0.3, 0.59, 0.11];
 const rgb = (hex) => [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
@@ -43,42 +43,37 @@ export function recolorCanvas(canvas, { foreground, background }) {
   const fg = rgb(foreground);
   const bg = rgb(background);
   const { width, height } = canvas;
-  const copy = original(canvas);
   const fill = (target, operation, color) => {
-    if (color.every((value) => Math.round(value) <= 0) && operation !== 'multiply') return;
     target.globalCompositeOperation = operation;
     target.fillStyle = css(color);
     target.fillRect(0, 0, width, height);
   };
-  context.save();
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  // Each channel c to fg + (bg - fg) c.
-  if (bg[0] + bg[1] + bg[2] < fg[0] + fg[1] + fg[2]) {
-    fill(context, 'difference', [255, 255, 255]);
-    fill(context, 'multiply', fg.map((value, i) => value - bg[i]));
-    fill(context, 'lighter', bg);
-  } else {
-    fill(context, 'multiply', bg.map((value, i) => value - fg[i]));
-    fill(context, 'lighter', fg);
-  }
-  // Hue and saturation from the original, lightness from the map.
-  context.globalCompositeOperation = 'color';
-  context.drawImage(copy.canvas, 0, 0);
-  // A neutral pixel c came out as the grey of its mapped luma; the tint it
-  // lost is a + b c per channel. b c is drawn as |b| c, or |b| (1 - c) with
-  // b folded into the constant, so every term is a sum of non-negatives.
+  // The tint of a neutral pixel of value c is a + b c: what the per-channel
+  // map fg + (bg - fg) c has beyond its luma. The copy is the original scaled
+  // into [lift, 255] so that tint fits, then the tint.
   const span = bg.map((value, i) => value - fg[i]);
   const a = fg.map((value) => value - luma(fg));
   const b = span.map((value) => value - luma(span));
-  if (b.some((value) => Math.abs(value) >= 0.5)) {
-    fill(copy, 'difference', b.map((value) => (value < 0 ? 255 : 0)));
-    fill(copy, 'multiply', b.map(Math.abs));
-    context.globalCompositeOperation = 'lighter';
-    context.drawImage(copy.canvas, 0, 0);
+  const lift = Math.max(0, ...a.map((value) => -value));
+  const scale = 255 - lift - Math.max(0, ...a.map((value, i) => value + b[i]));
+  const copy = original(canvas);
+  fill(copy, 'multiply', b.map((value) => scale + value));
+  fill(copy, 'lighter', a.map((value) => value + lift));
+  // Underneath, lightness only: white to the background's, black to the foreground's.
+  const dark = luma(bg) < luma(fg);
+  const low = dark ? luma(bg) : luma(fg);
+  const range = Math.abs(luma(bg) - luma(fg));
+  const alpha = 1 - range / 255;
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  if (dark) fill(context, 'difference', [255, 255, 255]);
+  if (alpha > 0.004) {
+    context.globalAlpha = alpha;
+    fill(context, 'source-over', [low / alpha, low / alpha, low / alpha]);
+    context.globalAlpha = 1;
   }
-  const rest = a.map((value, i) => value + Math.min(0, b[i]));
-  fill(context, 'lighter', rest.map((value) => Math.max(0, value)));
-  fill(context, 'difference', rest.map((value) => Math.max(0, -value)));
+  context.globalCompositeOperation = 'color';
+  context.drawImage(copy.canvas, 0, 0);
   context.restore();
   canvas.dataset.recolored = 'true';
 }

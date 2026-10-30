@@ -232,7 +232,7 @@ const cost = await page.evaluate(async () => {
   document.createElement = make;
   return { map: Math.round(map), full: Math.round(full), made };
 });
-ok(cost.full < 150 && cost.full - cost.map < 100, `Recolouring a 3.7-megapixel page in software costs ${cost.full} ms, ${cost.full - cost.map} ms more than the luminance map alone`);
+ok(cost.full < 100 && cost.full - cost.map < 60, `Recolouring a 3.7-megapixel page in software costs ${cost.full} ms, ${cost.full - cost.map} ms more than the luminance map alone`);
 ok(cost.made <= 1, `One scratch canvas serves every page (${cost.made} made for four)`);
 await page.addInitScript(() => Object.defineProperty(CanvasRenderingContext2D.prototype, 'filter', { get: () => 'none', set() {} }));
 await page.reload();

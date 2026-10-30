@@ -25,6 +25,12 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   within a second, keeping your page, scroll position and zoom. The toolbar sets how often it
   looks (1 s, 2 s, 3 s, or off). If the build deletes the file first, the last page stays on
   screen with a red dot until the new file lands.
+- **See what the rebuild changed.** In Markdown the changed blocks light up for a few seconds;
+  in a PDF the new words do, and thin ticks along the right edge show where on the whole
+  document the changes are. The ticks stay, faint, until the next build; click one to go
+  there, or press `.` and `,` for the next and previous change. Pages that did not change get
+  nothing, and a page the build added is marked whole. A long thesis is compared page by page
+  in the background, so the reload is as quick as before.
 - **It never shows a half-written file.** A build takes hundreds of milliseconds to write a
   PDF, and a naive viewer reloads the half it has. pdf-next waits until the file is whole: on
   Windows the writer holds a lock, so opening it fails until it is done; on macOS and Linux it
@@ -57,11 +63,14 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **Panes, like a terminal.** `Ctrl+Shift+D` splits the window to the right, `Ctrl+Shift+E`
   splits it down, and the pane menu in the toolbar does the same. Each pane has its own tabs:
   drag a tab to another pane, to a pane's edge to split it again, or onto a tab strip to merge;
-  drag the line between panes to resize; `Ctrl+Alt+←/→/↑/↓` moves between them. Any file works
+  drag the line between panes to resize, or move the live pane's edge from the keyboard with
+  `Ctrl+Alt+Shift+←/→/↑/↓`; `Ctrl+Alt+←/→/↑/↓` moves between them. `Ctrl+Shift+M`, or a
+  double click on the empty part of a tab strip, gives the whole window to one pane and brings
+  the others back. Any file works
   in any pane. The pane you click is the live one, with editing, find, zoom and the Review
   panel. The others stay where you left them and keep following their files: the PDF next to
   your notes reloads by itself when it is rebuilt, and images and Markdown do too. Every pane
-  shows its document's review marks. Press and drag in another pane to make it live and select
+  shows its document's review marks, and while find is open, its matches. Press and drag in another pane to make it live and select
   there in one go. The layout is saved with the session; close down to one pane and the plain
   tab strip comes back.
 
@@ -156,9 +165,12 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 ### Everything else
 
 - **Dark mode that respects the page.** It follows your system, and the mode button can
-  recolour PDF pages themselves: Clear → Night → Invert → Sepia. Shift+click goes straight
-  back to Clear.
-- **Find** with match counts (`Ctrl+F`), powered by PDF.js.
+  recolour PDF pages themselves: Clear → Night → Invert → Sepia. Night and Sepia turn the paper
+  and the black text to their own colours but keep a figure's colours: a blue line stays blue,
+  only lighter or darker, so plots stay readable. They look the same on Windows, macOS and
+  Linux, and printing still gives white paper. Shift+click goes straight back to Clear.
+- **Find** with match counts (`Ctrl+F`), powered by PDF.js. The other panes on screen mark the
+  matches too.
 - **Print** with `Ctrl+P`, through your system's own dialog, with your printers, page range,
   copies, duplex and paper size. A PDF is redrawn at 150 dpi on white, so what comes out is
   the page, not the screen, and A4 prints at true size on A4. Markdown reflows across sheets,
@@ -187,7 +199,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   `go paper`) and press Enter. It only shows what applies to what you have open, and the
   commands you used last come first.
 - **Keyboard first:** `Ctrl+K` command palette, `j`/`k` scroll, `n`/`p` pages, `g`/`G` first
-  and last, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
+  and last, `.`/`,` next and previous change, `+`/`-` zoom, `←`/`→` tabs (or the folder, with one file open), `Ctrl+W` close,
   `Ctrl+F` find, `Ctrl+R` reload, `Ctrl+O` open, `Ctrl+P` print, `Ctrl+U` raw Markdown (with a
   selection in rendered Markdown, underline), `Ctrl+B` / `Ctrl+I` / `Ctrl+E` bold, italic or
   edit a selection, `Delete` delete a selection in rendered Markdown (otherwise trash the file,
@@ -677,9 +689,10 @@ somewhere else. It also prints how long the first page took to draw and how long
 took to reload, and fails when either is over its budget for the platform.
 
 `tests/browser/` runs the page in Chromium with Playwright against a mocked Tauri backend, one
-file per area: PDF viewing, Markdown rendering and find, tabs, panes, the command palette, the
-review card, panel and flow, direct edits, Settings, errors on the status line, and axe-core
-accessibility checks (contrast, labels, keyboard reach) on the main views. Run `bun install` and
+file per area: PDF viewing and page colours, what a rebuild changed, Markdown rendering and
+find, tabs, panes, the command palette, the review card, panel and flow, direct edits,
+Settings, errors on the status line, and axe-core accessibility checks (contrast, labels,
+keyboard reach) on the main views. Run `bun install` and
 `bunx playwright install chromium` once first. `--coverage` also prints the line coverage of
 `src/*.mjs`.
 

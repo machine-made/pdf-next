@@ -215,11 +215,10 @@ export function createChangeMarks({ host, container, eventBus, viewer, budget = 
     const strs = source._textHighlighter?.textContentItemsStr;
     if (!strs) return;
     if (!checked.has(pageNumber) || !current.has(pageNumber)) {
-      const flat = flatten(strs);
+      const flat = flatten(strs, true);
       const top = source.div.getBoundingClientRect();
       record(pageNumber, flat.text, (start) => {
-        const map = flatten(strs, true);
-        const rect = source._textHighlighter.textDivs[map.item[start]]?.getBoundingClientRect();
+        const rect = source._textHighlighter.textDivs[flat.item[start]]?.getBoundingClientRect();
         return rect && top.height ? Math.min(1, Math.max(0, (rect.top - top.top) / top.height)) : 0;
       });
     }
@@ -233,11 +232,11 @@ export function createChangeMarks({ host, container, eventBus, viewer, budget = 
     const content = await page.getTextContent(textParams);
     const items = content.items.filter((item) => item.str !== undefined);
     const viewport = page.getViewport({ scale: 1 });
+    const flat = flatten(items.map((item) => item.str), true);
     return {
-      text: flatten(items.map((item) => item.str)).text,
+      text: flat.text,
       positions: (start) => {
-        const map = flatten(items.map((item) => item.str), true);
-        const item = items[map.item[start]];
+        const item = items[flat.item[start]];
         if (!item) return 0;
         const [, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
         return Math.min(1, Math.max(0, (y - (item.height || 0)) / viewport.height));

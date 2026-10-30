@@ -3489,6 +3489,24 @@ assert.match(styles, /\.review-row \{[^}]*--fg-dim: var\(--review-dim\);/,
 assert.match(styles, /\.review-no \{[^}]*color: var\(--review-no-fg\);/, 'Review numbers keep their contrast in both themes.');
 await access('tests/browser/run.mjs');
 
+// 0.18: what a rebuild changed, colours that survive Night, panes that fill the window.
+{
+  const colours = await readFile('src/page-colors.mjs', 'utf8');
+  const changes = await readFile('src/pdf-changes.mjs', 'utf8');
+  const panesSource = await readFile('src/panes.mjs', 'utf8');
+  assert.doesNotMatch(app, /pageColors/, 'Every webview draws plain pages; pdf-next recolours them itself.');
+  assert.doesNotMatch(colours, /\.filter\s*=/, 'Recolouring uses blend modes WebKit draws, never ctx.filter.');
+  assert.match(colours, /globalCompositeOperation = 'color';\s*context\.drawImage\(copy\.canvas, 0, 0\);/, 'Colours keep their hue in Night and Sepia.');
+  assert.match(styles, /body\.mode-night \.pdfViewer \.canvasWrapper canvas:not\(\[data-recolored\]\)/, 'A page is never shown white before it is recoloured.');
+  assert.match(changes, /export const CHANGE_BUDGET = \{ pages: [\d_]+, ms: [\d_]+ \}/, 'Background comparison has a page and time budget.');
+  assert.match(app, /case '\.':\s*case ',':\s*stepChange\(key === '\.' \? 1 : -1\);/, '. and , go to the next and previous change.');
+  assert.match(app, /label: 'Next change', group: 'View', shortcut: '\.'/, 'Next change is in the palette.');
+  assert.match(app, /label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl\+Shift\+M'/, 'Maximising a pane is in the palette.');
+  assert.match(panesSource, /live\.api\.maximize\(\)/, 'Maximising uses dockview\'s own maximised group.');
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*#markdown \.changed\.changed-fade,\s*\.change-marks\.fading > i \{/, 'Without motion a change is marked without fading.');
+  assert.match(readme, /`\.`\/`,` next and previous change/);
+}
+
 console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
 
 // The website: install lines that match the README, and a version the publish step fills in.

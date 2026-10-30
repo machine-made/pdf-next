@@ -313,7 +313,7 @@ const paneViewers = createPaneViewers({
   createChangeMarks,
   recolor: (event) => recolorRendered(event, PAGE_COLORS[state.mode]),
   spreadMode: () => (state.pageViews.pdf === 'two' ? SpreadMode.EVEN : SpreadMode.NONE),
-  text: { collect: collectTextParts, wrap: wrapSpanParts },
+  text: { collect: collectTextParts, wrap: wrapSpanParts, find: (layer) => markPdfLayer(layer) },
   onPick: (path) => pickPane(path),
   remember: (path, view) => {
     if (view && state.tabs.some((tab) => tab.path === path)) state.views.set(path, view);
@@ -2154,6 +2154,7 @@ function watchVisiblePanes() {
   const paths = panes.active ? panes.visible().filter((path) => path !== panes.livePath) : [];
   paneViewers.keep(paths);
   for (const path of paths) if (!panes.snapshotOf(path)) void fillPane(path);
+  if (!ui.find.hidden) scheduleFindInPanes();
   invoke('watch_secondary', { paths }).catch(() => {});
 }
 
@@ -2181,6 +2182,8 @@ function freezeLivePane() {
   panes.freeze(path, state.file.kind === 'pdf' && state.document
     ? paneViewers.pdf(path, { url: sourceUrl(state.file), view: captureView(), reviews: state.reviews, still })
     : still);
+  const article = still?.querySelector('article#markdown');
+  if (article && state.file.kind === 'markdown') markMarkdownCopy(article);
 }
 
 /// Bring a pane that is not live up to date with its file, or fill one that
@@ -2229,6 +2232,7 @@ async function fillPane(path, revision = 0) {
       colourCode(article);
       markFigures(article);
       paintMarkdownCopy(article, reviews, { collect: collectTextParts, wrap: wrapSpanParts });
+      markMarkdownCopy(article);
       if (scroller) scroller.scrollTop = top;
     } catch {
       // The file may have gone; the pane keeps what it had.
@@ -2324,6 +2328,7 @@ async function splitPane(direction = 'right') {
     // The stage was in the window; the pane that had it is the live one now.
     panes.mount(activePath);
   } else {
+    panes.unmaximize();
     panes.split(next, direction);
   }
   state.paneDirection = direction;
@@ -2348,6 +2353,21 @@ function onPanesExit(order) {
   syncPaneControl();
 }
 
+/// The live pane fills the window, or the other panes come back.
+function maximizePane() {
+  if (!panes.active) {
+    setStatus('Only one pane is open');
+    return;
+  }
+  panes.maximize();
+  saveSession();
+}
+
+/// Move the live pane's edge toward `direction` by a twentieth of the window.
+function resizePane(direction) {
+  if (panes.resize(direction)) saveSession();
+}
+
 function syncPaneControl() {
   if (ui.splitView) ui.splitView.value = panes.active ? (state.paneDirection === 'bottom' ? 'bottom' : 'right') : 'off';
 }
@@ -2362,6 +2382,7 @@ async function setSplitView(mode) {
 }
 
 async function movePaneFocus(direction) {
+  panes.unmaximize();
   const path = panes.neighbour(direction);
   if (path) await focusPane(path);
 }
@@ -2838,6 +2859,7 @@ function openFind() {
   ui.find.hidden = false;
   ui.findInput.focus();
   ui.findInput.select();
+  scheduleFindInPanes();
 }
 
 /// Markdown find marks the page, so typing waits for a pause first.
@@ -2849,6 +2871,7 @@ function closeFind() {
   ui.find.hidden = true;
   ui.findCount.textContent = '';
   clearMarkdownFind();
+  findInPanes();
   eventBus.dispatch('findbarclose', { source: null });
   ui.container.focus();
 }
@@ -2917,6 +2940,42 @@ function clearMarkdownFind() {
     unwrapMarks(ui.markdown, 'mark.aim.find');
     state.mdFind = null;
   }
+}
+
+// The panes that are not live mark the query too, while find is open: their
+// Markdown copies and the text layers of their PDF viewers.
+let paneFindTimer = 0;
+
+function markFindIn(root, inline, make) {
+  unwrapMarks(root, inline ? 'mark.aim.find' : 'find-q');
+  const want = ui.find.hidden ? '' : normalizeReviewText(ui.findInput.value);
+  if (want.length < 2) return;
+  const { joined, parts } = collectTextParts(root, inline);
+  const spans = findAllSpans(joined, want, FIND_LIMIT);
+  for (let at = spans.length - 1; at >= 0; at -= 1) wrapSpanParts(root, parts, spans[at], make);
+}
+
+function markMarkdownCopy(article) {
+  markFindIn(article, true, () => {
+    const mark = document.createElement('mark');
+    mark.className = 'aim find';
+    return mark;
+  });
+}
+
+const markPdfLayer = (layer) => markFindIn(layer, false, () => document.createElement('find-q'));
+
+function findInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = 0;
+  if (!panes.active) return;
+  for (const article of paneArticles()) markMarkdownCopy(article);
+  paneViewers.refind();
+}
+
+function scheduleFindInPanes() {
+  window.clearTimeout(paneFindTimer);
+  paneFindTimer = panes.active ? window.setTimeout(findInPanes, 150) : 0;
 }
 
 function runFind(type = '', again = false, backwards = false) {
@@ -6268,6 +6327,7 @@ ui.findPrev.addEventListener('click', () => runFind('again', true, true));
 
 ui.findInput.addEventListener('input', () => {
   window.clearTimeout(findTimer);
+  scheduleFindInPanes();
   if (state.file?.kind === 'markdown') {
     findTimer = window.setTimeout(() => {
       findTimer = 0;
@@ -6413,6 +6473,12 @@ const palette = createPalette({
       label: `Move to the pane ${direction === 'up' ? 'above' : direction === 'down' ? 'below' : `on the ${direction}`}`,
       group: 'Panes', shortcut: `Ctrl+Alt+${arrow}`, when: () => panes.active, run: () => movePaneFocus(direction),
     })),
+    { label: 'Fill the window with this pane', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.active && !panes.maximized, run: maximizePane },
+    { label: 'Bring the other panes back', group: 'Panes', shortcut: 'Ctrl+Shift+M', when: () => panes.maximized, run: maximizePane },
+    ...[['left', '←'], ['right', '→'], ['up', '↑'], ['down', '↓']].map(([direction, arrow]) => ({
+      label: `Move the pane edge ${direction}`, group: 'Panes', shortcut: `Ctrl+Alt+Shift+${arrow}`,
+      when: () => panes.active && !panes.maximized, run: () => resizePane(direction),
+    })),
     { label: 'Fit the window to the content', group: 'Window', shortcut: 'Ctrl+Shift+F', icon: '#i-wrap', run: toggleWrap },
     ...[['left', 'left half', '←'], ['right', 'right half', '→'], ['top', 'top half', '↑'], ['bottom', 'bottom half', '↓']].map(([edge, half, arrow]) => ({
       label: `Fill the ${half} of the screen`, group: 'Window', shortcut: `Ctrl+Shift+${arrow}`, icon: `#i-dock-${edge}`, run: () => dockTo(edge),
@@ -6495,15 +6561,21 @@ window.addEventListener('keydown', (event) => {
     void splitPane(key === 'd' ? 'right' : 'bottom');
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && panes.active) {
+  if ((event.ctrlKey || event.metaKey) && event.altKey && panes.active) {
     const paneKeys = { arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down' };
     if (paneKeys[key]) {
       event.preventDefault();
-      void movePaneFocus(paneKeys[key]);
+      if (event.shiftKey) resizePane(paneKeys[key]);
+      else void movePaneFocus(paneKeys[key]);
       return;
     }
   }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === 'm') {
+    event.preventDefault();
+    maximizePane();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey) {
     const dockKeys = {
       arrowleft: 'left',
       arrowright: 'right',

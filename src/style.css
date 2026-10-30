@@ -1135,6 +1135,17 @@ body.mode-invert .pdfViewer .page .canvasWrapper {
   --highlight-selected-bg-color: rgb(255 128 42 / 0.98);
 }
 
+/* Find in a pane that is not live: the live pane's wash, without a current match. */
+.textLayer find-q {
+  position: static;
+  display: inline;
+  color: inherit;
+  background: var(--aim-highlight);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .pdfViewer .textLayer ::selection {
   background: color-mix(in srgb, var(--accent) 45%, transparent) !important;
   color: transparent;
@@ -2088,6 +2099,7 @@ body.pages-on #mdWidth {
   #status,
   #empty,
   #viewerContainer,
+  .change-ticks,
   #imageStage {
     display: none !important;
   }

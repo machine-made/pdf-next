@@ -162,6 +162,8 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.addInitScript(mockTauri, { files, initial, theme, store });
+  // The launch update check would reach GitHub and race the status line.
+  await page.route('https://api.github.com/**', (route) => route.abort());
   if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   await page.goto(url);
