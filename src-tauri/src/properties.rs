@@ -174,7 +174,7 @@ proptest! {
             let view = std::fs::read_to_string(dir.join("notes_review.agent.txt")).unwrap();
             let mut lines = view.lines();
             // With no review left to name the file, the header names the stem.
-            let header = format!(" review, revision {now}:");
+            let header = format!(" rev {now}:");
             let first = lines.next().unwrap();
             prop_assert!(
                 (first.starts_with("# notes.md ") || first.starts_with("# notes ")) && first.contains(&header),
