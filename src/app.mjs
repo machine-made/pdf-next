@@ -13,6 +13,8 @@ import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, pare
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
 import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
+import { folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from './places.mjs';
+import { clampScale, pinchZoom, snapScale } from './zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -175,6 +177,9 @@ const ui = {
   aboutVersion: el('aboutVersion'),
   aboutUpdate: el('aboutUpdate'),
   aboutSource: el('aboutSource'),
+  recent: el('recent'),
+  recentList: el('recentList'),
+  emptyKey: el('emptyKey'),
   figureSelects: document.querySelectorAll('#settingsPanel select[data-figure]'),
 };
 
@@ -239,6 +244,10 @@ const state = {
   reviewOpen: false,
   reviewGrown: false,
   reviewSize: REVIEW_SIZE_DEFAULT,
+  /// Places are saved once the launch says this is not a smoke run, and only
+  /// while the file on screen has been put where it belongs.
+  placesOn: false,
+  placeReady: false,
 };
 
 // One pane by default; splitting tiles the window (src/panes.mjs).
@@ -517,6 +526,85 @@ function restoreImageView(view) {
   ui.imageStage.scrollLeft = view.left;
 }
 
+// ── Your place in each file, kept after the tab closes (src/places.mjs) ───
+
+/// A PDF place is the page at the top of the view and how far down it the
+/// view starts, so it comes back right in a window of another size.
+function placeView() {
+  const kind = state.file?.kind;
+  if (kind === 'image') {
+    return { kind, scale: state.imageScale };
+  }
+  if (kind === 'markdown') {
+    const { raw, ...view } = captureView() || {};
+    return view.kind ? view : null;
+  }
+  if (kind !== 'pdf' || !state.document) {
+    return null;
+  }
+  const top = ui.container.getBoundingClientRect().top + ui.container.clientTop;
+  const count = pdfViewer.pagesCount || 0;
+  const rectAt = (index) => pdfViewer.getPageView(index)?.div?.getBoundingClientRect();
+  let index = Math.max(0, (pdfViewer.currentPageNumber || 1) - 1);
+  let rect = rectAt(index);
+  while (rect && index > 0 && rect.top > top) rect = rectAt(--index);
+  while (rect && index < count - 1 && rect.bottom <= top) rect = rectAt(++index);
+  if (!rect?.height) {
+    return null;
+  }
+  const wide = ui.container.scrollWidth;
+  return {
+    kind,
+    page: index + 1,
+    within: Math.round(((top - rect.top) / rect.height) * 10_000) / 10_000,
+    scale: pdfViewer.currentScaleValue || 'auto',
+    left: wide ? Math.round((ui.container.scrollLeft / wide) * 10_000) / 10_000 : 0,
+  };
+}
+
+function restorePdfPlace(place) {
+  if (place?.kind !== 'pdf') {
+    return;
+  }
+  pdfViewer.currentScaleValue = String(place.scale || 'auto');
+  const count = pdfViewer.pagesCount || 1;
+  const div = pdfViewer.getPageView(Math.min(Math.max(1, Math.round(place.page) || 1), count) - 1)?.div;
+  if (!div) {
+    return;
+  }
+  const rect = div.getBoundingClientRect();
+  const top = ui.container.getBoundingClientRect().top + ui.container.clientTop;
+  ui.container.scrollTop += rect.top + (Number(place.within) || 0) * rect.height - top;
+  ui.container.scrollLeft = (Number(place.left) || 0) * ui.container.scrollWidth;
+}
+
+let placeTimer = 0;
+
+function rememberPlace() {
+  window.clearTimeout(placeTimer);
+  placeTimer = 0;
+  const file = state.file;
+  if (!state.placesOn || !state.placeReady || !file || state.tabs[state.active]?.path !== file.path) {
+    return;
+  }
+  notePlace(file, placeView());
+}
+
+/// Scrolling and zooming save a moment after they stop, not on every frame.
+function schedulePlace() {
+  if (!state.placesOn || !state.placeReady) {
+    return;
+  }
+  window.clearTimeout(placeTimer);
+  placeTimer = window.setTimeout(rememberPlace, 400);
+}
+
+/// Where a file opened afresh should land: where you left it, unless the
+/// opening names a place of its own.
+function placeFor(path, target) {
+  return state.placesOn && !target ? placeOf(path) : null;
+}
+
 // ── Loading ───────────────────────────────────────────────────────────────
 
 // Served by the doc protocol with Cache-Control: no-store, so the webview's
@@ -596,6 +684,7 @@ function setImageScale(value, { refit = true } = {}) {
   if (refit) {
     scheduleWrap();
   }
+  schedulePlace();
 }
 
 /// The picture's natural size as it reads on screen: a quarter turn swaps
@@ -928,6 +1017,7 @@ function setMarkdownScale(scale) {
   updateZoomControl(String(scale), scale);
   schedulePaginate();
   scheduleWrap();
+  schedulePlace();
   if (state.selectedFigure && typeof positionFigureResizer === 'function') {
     positionFigureResizer();
   }
@@ -1197,14 +1287,14 @@ function markFigures(root) {
 /// The HTML arrives already sanitized — ammonia ran on the Rust side — so
 /// assigning innerHTML here does not hand the document a script surface, and
 /// the CSP forbids inline script besides.
-async function showMarkdown(file, view, generation, fit) {
+async function showMarkdown(file, view, generation, fit, place = null) {
   await releaseDocument();
   const doc = await invoke('read_markdown', { path: file.path });
   if (state.generation !== generation) {
     return;
   }
   // innerHTML replaces the article, so a previous mark.aim is gone with it.
-  state.restoringMarkdownView = view || null;
+  state.restoringMarkdownView = view || place || null;
   ui.markdown.innerHTML = doc.html;
   embedMarkdownImages(ui.markdown, file.revision);
   colourCode(ui.markdown);
@@ -1213,7 +1303,7 @@ async function showMarkdown(file, view, generation, fit) {
   state.markdownDigest = doc.digest;
   state.markdownSource = doc.raw;
   setRaw(view?.raw ?? state.markdownRaw, { persist: false });
-  setMarkdownScale(view?.scale || 1);
+  setMarkdownScale(view?.scale || place?.scale || 1);
 
   // The anchors are read where the renderer put them, before any block moves.
   const newBlocks = markdownBlocks(ui.markdown);
@@ -1260,10 +1350,12 @@ async function showMarkdown(file, view, generation, fit) {
     return;
   }
   ui.markdownStage.scrollTop = 0;
-  if (!fit) {
-    return;
+  if (fit) {
+    await trimWindowToContent({ recenter: true });
   }
-  await trimWindowToContent({ recenter: true });
+  if (place && state.generation === generation) {
+    applyRestoredMarkdownScroll(place);
+  }
 }
 
 /// `_review.json` is prose too, but it is already text — no renderer.
@@ -1511,7 +1603,7 @@ function pinScale() {
   }
 }
 
-async function showPdf(file, view, generation) {
+async function showPdf(file, view, generation, place = null) {
   await releaseDocument();
   if (state.generation !== generation) {
     return;
@@ -1557,6 +1649,10 @@ async function showPdf(file, view, generation) {
     pdfViewer.currentScaleValue = '1';
     await waitForPdfPageBox();
     await trimWindowToContent({ recenter: true });
+    if (state.generation !== generation) {
+      return;
+    }
+    restorePdfPlace(place);
     scheduleWrap();
   }
   updatePageControls();
@@ -1634,6 +1730,7 @@ async function stepSibling(delta) {
 /// tab per file — browsing 200 PNGs must not leave 200 tabs behind.
 async function showInActiveTab(path) {
   const file = await invoke('open_path', { path });
+  rememberPlace();
   const tab = state.tabs[state.active];
   if (tab) {
     state.views.delete(tab.path);
@@ -1734,7 +1831,7 @@ async function stageSettled(limit = 1500) {
   }
 }
 
-async function showImage(file, fit, view, generation) {
+async function showImage(file, fit, view, generation, place = null) {
   await releaseDocument();
   if (state.generation !== generation) {
     return;
@@ -1750,8 +1847,12 @@ async function showImage(file, fit, view, generation) {
   if (state.generation !== generation) {
     return;
   }
+  const remembered = !view && place?.kind === 'image' &&
+    (place.scale > 0 || ['fit', 'page-fit'].includes(place.scale)) ? place.scale : null;
   if (view) {
     restoreImageView(view);
+  } else if (remembered !== null) {
+    setImageScale(remembered, { refit: false });
   } else {
     // A window that wraps the picture opens it at up to 100%. A kept or docked
     // window keeps its size, so the picture fills it: stepping through a
@@ -1760,7 +1861,7 @@ async function showImage(file, fit, view, generation) {
   }
   if (fit) {
     await trimWindowToContent({ recenter: true });
-    if (!view) {
+    if (!view && remembered === null) {
       await shrinkImageToWindow(generation);
     }
   }
@@ -1769,10 +1870,11 @@ async function showImage(file, fit, view, generation) {
 
 async function openFile(
   file,
-  { preserveView = false, keepWindow = false, view: given = null } = {},
+  { preserveView = false, keepWindow = false, view: given = null, place = null } = {},
 ) {
   // Rebuilds can outpace loading; only the newest one may touch the UI.
   const generation = ++state.generation;
+  state.placeReady = false;
   await flushCommentSave();
   if (state.generation !== generation) {
     return;
@@ -1803,6 +1905,7 @@ async function openFile(
       'file-missing',
     );
     setTitle('');
+    renderRecent();
     setStatus(`Unsupported file type: ${file.name}`, { error: true, sticky: true });
     return;
   }
@@ -1840,12 +1943,12 @@ async function openFile(
 
   try {
     if (file.kind === 'pdf') {
-      await showPdf(file, view, generation);
+      await showPdf(file, view, generation, place);
     } else if (file.kind === 'image') {
-      await showImage(file, !view && !keepWindow, view, generation);
+      await showImage(file, !view && !keepWindow, view, generation, place);
       void loadSiblings(file);
     } else if (file.kind === 'markdown') {
-      await showMarkdown(file, view, generation, !view && !keepWindow);
+      await showMarkdown(file, view, generation, !view && !keepWindow, place);
     } else if (file.kind === 'json') {
       await showJson(file, view, generation, !view && !keepWindow);
     }
@@ -1860,6 +1963,7 @@ async function openFile(
     }
     if (state.generation === generation) {
       document.body.classList.remove('file-missing');
+      state.placeReady = true;
     }
   } catch (error) {
     // A load cancelled by a newer rebuild is expected, not a failure to report.
@@ -2130,9 +2234,11 @@ async function restoreSession() {
   const tiled = saved.panes && panes.restore(saved.panes, state.tabs);
   renderTabs();
   if (tiled) panes.mount(activeEntry.path);
+  notePlace(activeEntry.file, null, { opened: true });
   await openFile(activeEntry.file, {
     keepWindow: false,
     view: state.views.get(activeEntry.path) || null,
+    place: placeFor(activeEntry.path, null),
   });
   if (tiled) {
     for (const path of panes.visible()) void fillPane(path);
@@ -2419,6 +2525,7 @@ function renderTabs() {
 /// cost one parse, not ten, and the one you are looking at stays put. A file
 /// already open is left alone in that case.
 async function openInTab(file, { activate = true, target = null } = {}) {
+  if (state.placesOn) notePlace(file, null, { opened: true });
   const existing = state.tabs.findIndex((tab) => tab.path === file.path);
   if (existing >= 0) {
     // A file that is already open is aimed rather than opened twice: a second
@@ -2450,7 +2557,7 @@ async function openInTab(file, { activate = true, target = null } = {}) {
   state.active = at;
   renderTabs();
   if (panes.active) panes.mount(file.path);
-  await openFile(file, { keepWindow: state.tabs.length > 1 });
+  await openFile(file, { keepWindow: state.tabs.length > 1, place: placeFor(file.path, target) });
   await consumeTarget(entry);
 }
 
@@ -2458,9 +2565,11 @@ async function openInTab(file, { activate = true, target = null } = {}) {
 /// place you left it rather than to the top of the document.
 function stashView() {
   const current = state.tabs[state.active];
-  if (!current) {
+  // After a close the active tab is already the neighbour, not what is shown.
+  if (!current || state.file?.path !== current.path) {
     return;
   }
+  rememberPlace();
   const view = captureView();
   if (view) {
     state.views.set(current.path, view);
@@ -2485,6 +2594,7 @@ async function activateTab(index, { force = false } = {}) {
     await openFile(file, {
       keepWindow: true,
       view: state.views.get(tab.path) || null,
+      place: placeFor(tab.path, tab.target),
     });
     if (panes.active) watchVisiblePanes();
     // After the remembered view, not before: an explicit page wins over where
@@ -2500,6 +2610,7 @@ async function closeTab(index) {
   if (!tab) {
     return;
   }
+  if (index === state.active) rememberPlace();
   state.views.delete(tab.path);
   state.tabs.splice(index, 1);
   if (!state.tabs.length) {
@@ -2524,6 +2635,8 @@ async function closeTab(index) {
 
 /// Back to the small empty window you get on a cold start.
 async function closeAll() {
+  rememberPlace();
+  state.placeReady = false;
   const generation = ++state.generation;
   await flushCommentSave();
   if (state.generation !== generation) {
@@ -2574,6 +2687,7 @@ async function closeAll() {
   }
   applyReviewStore({ reviews: [] });
   setStatus('');
+  renderRecent();
 }
 
 function cycleTab(delta) {
@@ -2583,6 +2697,94 @@ function cycleTab(delta) {
   const count = state.tabs.length;
   void activateTab((state.active + delta + count) % count);
 }
+
+// ── The empty window ──────────────────────────────────────────────────────
+// A drop target and the files opened last, from the same store as the places.
+// A file that is gone is shown dimmed and leaves the list when picked.
+
+const RECENT_SHOWN = 8;
+const KIND_ICONS = { pdf: '#i-kind-pdf', image: '#i-kind-image' };
+
+function renderRecent() {
+  if (state.file) return;
+  const entries = recentPlaces(RECENT_SHOWN);
+  ui.recent.hidden = !entries.length;
+  ui.recentList.replaceChildren(...entries.map((entry) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'recent-item';
+    button.dataset.path = entry.path;
+    button.title = entry.path;
+    const glyph = icon(KIND_ICONS[entry.kind] || '#i-kind-md');
+    glyph.setAttribute('aria-hidden', 'true');
+    const parts = [['recent-name', entry.name], ['recent-folder', `‎${folderOf(entry.path)}‎`], ['recent-when', openedLabel(entry.opened)]]
+      .map(([className, text]) => {
+        const span = document.createElement('span');
+        span.className = className;
+        span.textContent = text;
+        return span;
+      });
+    button.append(glyph, ...parts);
+    item.append(button);
+    return item;
+  }));
+  for (const entry of entries) {
+    invoke('open_path', { path: entry.path, activate: false }).catch(() => {
+      const button = [...ui.recentList.querySelectorAll('.recent-item')].find((item) => item.dataset.path === entry.path);
+      if (!button) return;
+      button.classList.add('missing');
+      button.querySelector('.recent-when').textContent = 'not found';
+    });
+  }
+}
+
+async function openRecent(path) {
+  const name = readPlaces().find((entry) => entry.path === path)?.name || path;
+  let file;
+  try {
+    file = await invoke('open_path', { path });
+  } catch {
+    forgetPlace(path);
+    renderRecent();
+    setStatus(`${name} is no longer there; removed it from the list`);
+    return;
+  }
+  await openInTab(file);
+}
+
+ui.recentList.addEventListener('click', (event) => {
+  const button = event.target.closest?.('.recent-item');
+  if (button) void openRecent(button.dataset.path);
+});
+ui.recentList.addEventListener('keydown', (event) => {
+  const items = [...ui.recentList.querySelectorAll('.recent-item')];
+  const at = items.indexOf(event.target);
+  if (at < 0 || event.ctrlKey || event.metaKey || event.altKey) return;
+  const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+  if (to !== undefined) {
+    event.preventDefault();
+    event.stopPropagation();
+    items[Math.max(0, Math.min(items.length - 1, to))].focus();
+  } else if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault();
+    event.stopPropagation();
+    const name = event.target.querySelector('.recent-name').textContent;
+    forgetPlace(event.target.dataset.path);
+    renderRecent();
+    const left = ui.recentList.querySelectorAll('.recent-item');
+    (left[Math.min(at, left.length - 1)] || ui.container).focus();
+    setStatus(`Removed ${name} from the list`);
+  }
+});
+// With nothing open, the arrows reach into the list from wherever focus is.
+document.addEventListener('keydown', (event) => {
+  if (state.file || ui.recent.hidden || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+  if (ui.recentList.contains(event.target) || (event.target !== document.body && !ui.stage.contains(event.target))) return;
+  const items = ui.recentList.querySelectorAll('.recent-item');
+  event.preventDefault();
+  items[event.key === 'ArrowDown' ? 0 : items.length - 1]?.focus();
+});
 
 // The wheel over the tab strip walks the tabs, wrapping at the ends. A
 // trackpad sends a stream of small deltas, so they are summed until they
@@ -2706,7 +2908,9 @@ function removeCustomZoom() {
   ui.zoom.querySelector('option[value="custom"]')?.remove();
 }
 
-function stepZoom(direction) {
+/// `at` is the point to keep still, in client pixels; the middle of the view
+/// when the zoom comes from a key, a button or the menu.
+function stepZoom(direction, at = null) {
   const kind = state.file?.kind;
   const image = kind === 'image';
   const markdown = kind === 'markdown' || kind === 'json';
@@ -2726,11 +2930,11 @@ function stepZoom(direction) {
     return;
   }
   if (image) {
-    setImageScale(next);
+    zoomImageTo(next, at);
   } else if (markdown) {
-    setMarkdownScale(next);
+    zoomMarkdownTo(next, at);
   } else {
-    pdfViewer.currentScaleValue = String(next);
+    zoomPdfTo(String(next), at);
   }
 }
 
@@ -2741,23 +2945,198 @@ function applyZoomChoice(value) {
   if (state.file?.kind === 'markdown' || state.file?.kind === 'json') {
     // Prose has no page to fit; every preset lands back at the natural size.
     const scale = Number(value);
-    setMarkdownScale(Number.isFinite(scale) && scale > 0 ? scale : 1);
+    zoomMarkdownTo(Number.isFinite(scale) && scale > 0 ? scale : 1);
     return;
   }
   if (state.file?.kind !== 'image') {
-    pdfViewer.currentScaleValue = value;
+    zoomPdfTo(value);
     return;
   }
   if (value === 'page-fit') {
-    setImageScale('page-fit');
+    zoomImageTo('page-fit');
   } else if (value === 'auto' || value === 'page-width') {
-    setImageScale('fit');
+    zoomImageTo('fit');
   } else {
     const scale = Number(value);
     if (Number.isFinite(scale) && scale > 0) {
-      setImageScale(scale);
+      zoomImageTo(scale);
     }
   }
+}
+
+// ── Zoom around a point ───────────────────────────────────────────────────
+// A point is remembered as a fraction of the element under it (a PDF page,
+// the picture, a Markdown block), then scrolled back under the same pixel once
+// the element has its new size.
+
+function middleOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+function pointIn(element, { x, y }) {
+  const rect = element?.getBoundingClientRect();
+  if (!rect?.width || !rect.height) return null;
+  return { element, x, y, fx: (x - rect.left) / rect.width, fy: (y - rect.top) / rect.height };
+}
+
+/// Scroll so the point is at `to`, where it was unless a pinch says otherwise.
+function holdPoint(point, scroller, to = point) {
+  const rect = point?.element.isConnected ? point.element.getBoundingClientRect() : null;
+  if (!rect) return;
+  scroller.scrollLeft += rect.left + point.fx * rect.width - to.x;
+  scroller.scrollTop += rect.top + point.fy * rect.height - to.y;
+}
+
+/// Where a point lands on one axis once the content is `r` times its size:
+/// still under the cursor where the content can scroll that far, otherwise
+/// where the layout puts content smaller than the view (centred, or at the
+/// start). A pinch previews exactly this, so letting go never jumps.
+function settleAxis({ at, view, size, start, extent, pad, centred }, r) {
+  const grown = extent * r;
+  const offset = (at - start) * r;
+  if (grown + 2 * pad <= size) return (centred ? view + (size - grown) / 2 : view + pad) + offset;
+  const scroll = Math.min(Math.max(pad + offset - (at - view), 0), grown + 2 * pad - size);
+  return view + pad + offset - scroll;
+}
+
+/// The two axes of `scroller` for settleAxis, with `content` the box whose
+/// size changes and `along` (optional) the box that runs the length of it.
+function pinchAxes(scroller, at, content, { along = content, pad = [0, 0], centred = [true, true] } = {}) {
+  const view = scroller.getBoundingClientRect();
+  const box = content.getBoundingClientRect();
+  const run = along.getBoundingClientRect();
+  return [
+    { at: at.x, view: view.left + scroller.clientLeft, size: scroller.clientWidth, start: box.left, extent: box.width, pad: pad[0], centred: centred[0] },
+    { at: at.y, view: view.top + scroller.clientTop, size: scroller.clientHeight, start: run.top, extent: run.height, pad: pad[1], centred: centred[1] },
+  ];
+}
+
+function pdfPoint(at) {
+  const hit = document.elementFromPoint(at.x, at.y)?.closest?.('#viewer .page');
+  const number = Number(hit?.dataset.pageNumber) || pdfViewer.currentPageNumber || 1;
+  return pointIn(pdfViewer.getPageView(number - 1)?.div, at);
+}
+
+/// The block of the column under the point, or the first one below it.
+function markdownPoint(at) {
+  if (state.markdownRaw || state.file?.kind === 'json') {
+    return pointIn(ui.markdownRaw, at);
+  }
+  const owner = (node) => node?.parentElement === ui.markdown || node?.parentElement?.classList.contains('md-page');
+  let node = document.elementFromPoint(at.x, at.y);
+  while (node && ui.markdown.contains(node) && !owner(node)) node = node.parentElement;
+  if (!owner(node)) {
+    node = [...ui.markdown.querySelectorAll(':scope > *:not(.md-page), :scope > .md-page > *')]
+      .find((block) => block.getBoundingClientRect().bottom > at.y);
+  }
+  return pointIn(node, at);
+}
+
+function zoomPdfTo(value, at = null, to = undefined) {
+  const point = pdfPoint(at || middleOf(ui.container));
+  pdfViewer.currentScaleValue = String(value);
+  holdPoint(point, ui.container, to);
+}
+
+function zoomImageTo(value, at = null, to = undefined) {
+  const point = pointIn(ui.imageBox, at || middleOf(ui.imageStage));
+  setImageScale(value);
+  holdPoint(point, ui.imageStage, to);
+}
+
+/// Markdown zoom reflows, so the block under the point is what stays put.
+function zoomMarkdownTo(scale, at = null) {
+  const point = markdownPoint(at || middleOf(ui.markdownStage));
+  setMarkdownScale(scale);
+  if (ui.markdown.querySelector(':scope > .md-page')) paginateMarkdown({ keepPosition: false });
+  holdPoint(point, ui.markdownStage);
+}
+
+/// While the fingers move, the picture on screen is scaled by the compositor;
+/// the real scale is set once, when they stop, and the pages are drawn again
+/// sharp at it. Passing near a fit lands on it.
+function scaledPinch({ layer, base, at, axes, fits, apply }) {
+  const rect = layer.getBoundingClientRect();
+  layer.style.transformOrigin = '0 0';
+  let raw = base;
+  let shown = { scale: base, preset: null };
+  let to = at;
+  return {
+    update(factor) {
+      raw = clampScale(raw * factor, base);
+      shown = snapScale(raw, fits);
+      const r = shown.scale / base;
+      to = { x: settleAxis(axes[0], r), y: settleAxis(axes[1], r) };
+      const x = to.x - rect.left - (at.x - rect.left) * r;
+      const y = to.y - rect.top - (at.y - rect.top) * r;
+      layer.style.transform = `translate(${x}px, ${y}px) scale(${r})`;
+      updateZoomControl(shown.preset || String(shown.scale), shown.scale);
+    },
+    commit() {
+      layer.style.transform = '';
+      layer.style.transformOrigin = '';
+      if (shown.preset && state.wrap) setWrap(false);
+      apply(shown.preset, Math.round(shown.scale * 1000) / 1000, to);
+    },
+  };
+}
+
+function pdfFits() {
+  const view = pdfViewer.getPageView((pdfViewer.currentPageNumber || 1) - 1);
+  if (!view?.width) return {};
+  // The paddings PDF.js itself leaves when it computes these presets.
+  const across = pdfViewer.spreadMode !== SpreadMode.NONE ? 2 : 1;
+  const width = ((ui.container.clientWidth - 40) / view.width) * view.scale / across;
+  const height = ((ui.container.clientHeight - 5) / view.height) * view.scale;
+  return { 'page-width': width, 'page-fit': Math.min(width, height) };
+}
+
+function startPinch(event) {
+  const kind = state.file?.kind;
+  const at = { x: event.clientX, y: event.clientY };
+  const over = (element) => element.contains(event.target);
+  if ((kind === 'markdown' || kind === 'json') && over(ui.markdownStage)) {
+    // Text has sizes, not a continuum: a notch or a tenth of a pinch is a step.
+    let sum = 0;
+    return {
+      update(factor) {
+        sum += Math.log(factor);
+        if (Math.abs(sum) < 0.1) return;
+        const direction = Math.sign(sum);
+        sum = 0;
+        stepZoom(direction, at);
+      },
+      commit() {},
+    };
+  }
+  if (kind === 'image' && over(ui.imageStage) && ui.image.naturalWidth) {
+    const [padX, padY] = stagePadding();
+    const width = (ui.imageStage.clientWidth - padX) / turnedNatural()[0];
+    return scaledPinch({
+      layer: ui.imageBox, base: imageScale(), at,
+      axes: pinchAxes(ui.imageStage, at, ui.imageBox, { pad: [padX / 2, padY / 2] }),
+      fits: { 'page-width': width, 'page-fit': pageFitScale() },
+      apply: (preset, scale, to) => {
+        zoomImageTo(preset === 'page-fit' ? 'page-fit' : scale, at, to);
+        if (preset === 'page-width') updateZoomControl('page-width', scale);
+      },
+    });
+  }
+  const sheet = kind === 'pdf' && state.document && over(ui.container) ? pdfPoint(at)?.element : null;
+  if (sheet) {
+    // A page narrower than the view is centred; the pages run down from the top.
+    const row = sheet.closest('.spread') || sheet;
+    const wide = ui.container.scrollWidth > ui.container.clientWidth + 1;
+    return scaledPinch({
+      layer: ui.viewer, base: pdfViewer.currentScale, at, fits: pdfFits(),
+      axes: pinchAxes(ui.container, at, row, {
+        along: ui.viewer, pad: [wide ? (ui.container.scrollWidth - row.offsetWidth) / 2 : 0, 0], centred: [true, false],
+      }),
+      apply: (preset, scale, to) => zoomPdfTo(preset || String(scale), at, to),
+    });
+  }
+  return null;
 }
 
 // ── Page modes ────────────────────────────────────────────────────────────
@@ -5713,6 +6092,11 @@ ui.zoom.addEventListener('change', () => {
 ui.zoomIn.addEventListener('click', () => stepZoom(1));
 ui.zoomOut.addEventListener('click', () => stepZoom(-1));
 wireMenuWheel();
+// On the window, so a pinch anywhere never zooms the webview's own page.
+pinchZoom(window, { start: startPinch });
+for (const scroller of [ui.container, ui.markdownStage, ui.imageStage]) {
+  scroller.addEventListener('scroll', schedulePlace, { passive: true });
+}
 ui.copyPath.addEventListener('click', () => void copyFileText('path'));
 ui.copyName.addEventListener('click', () => void copyFileText('name'));
 ui.mode.addEventListener('click', (event) => cycleMode(event.shiftKey || event.altKey));
@@ -6314,6 +6698,7 @@ eventBus.on('scalechanging', (event) => {
   const value = event.presetValue || pdfViewer.currentScaleValue || event.scale;
   updateZoomControl(String(value), event.scale);
   scheduleWrap();
+  schedulePlace();
 });
 eventBus.on('updatefindmatchescount', ({ matchesCount }) => {
   ui.findCount.textContent = matchesCount?.total
@@ -6355,6 +6740,11 @@ const palette = createPalette({
   };
   palette.add(
     { label: 'Open file…', group: 'File', shortcut: 'Ctrl+O', icon: '#i-open', run: () => ui.open.click() },
+    { label: 'Open recent…', group: 'File', icon: '#i-open', when: () => recentPlaces(1).length > 0, run: () => palette.open('Open recent: ') },
+    () => recentPlaces(RECENT_SHOWN).map((entry) => ({
+      id: `recent:${entry.path}`, label: `Open recent: ${entry.name}`, group: 'File', icon: KIND_ICONS[entry.kind] || '#i-kind-md',
+      detail: folderOf(entry.path), current: entry.path === state.file?.path, run: () => openRecent(entry.path),
+    })),
     { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
     { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
     { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
@@ -6824,6 +7214,7 @@ listen('file-changed', async (event) => {
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') {
+    rememberPlace();
     saveSession();
     // A hidden window does not need warm font and image caches; they rebuild
     // lazily on return. cleanup() refuses to run mid-render, which is fine —
@@ -6941,6 +7332,8 @@ if (!launch?.smoke) {
 }
 state.version = String(launch?.version || '');
 state.platform = String(launch?.platform || '');
+state.placesOn = !launch?.smoke;
+if (state.platform === 'macos') ui.emptyKey.textContent = '⌘';
 setTitle(state.file?.name || '');
 if (typeof launch?.poll === 'number') {
   // The flag wins over the saved preference, which was already sent above.
@@ -6959,6 +7352,7 @@ if (launch?.mode) {
 }
 
 window.addEventListener('beforeunload', () => {
+  rememberPlace();
   saveSession();
 });
 
@@ -6990,6 +7384,7 @@ if (initial) {
 } else if (!launch?.smoke) {
   await restoreSession();
 }
+if (!state.file) renderRecent();
 mark('open');
 ui.container.focus();
 

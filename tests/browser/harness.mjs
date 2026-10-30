@@ -54,7 +54,8 @@ export const defaultFiles = {
 
 // A file is its raw text, or { raw, html } to hand the page markup shaped like
 // the Rust renderer's. `window.__fail[cmd] = 'message'` makes a command reject
-// (sessionStorage `fail`, as JSON, does the same across a reload).
+// (sessionStorage `fail`, as JSON, does the same across a reload). A path in
+// `window.__missing` (or sessionStorage `missing`) does not exist.
 function mockTauri({ files, initial, theme, store }) {
   if (store) window.__store = store;
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
@@ -91,7 +92,9 @@ function mockTauri({ files, initial, theme, store }) {
           case 'launch_options': return { version: '0.0.0-test' };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
-          case 'open_path': return info(args.path);
+          case 'open_path':
+            if ([...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')].includes(args.path)) throw `${args.path} does not exist`;
+            return info(args.path);
           case 'read_markdown': {
             const f = files[args.path];
             return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: `sha256:${text(args.path).length}:${rev}` };
