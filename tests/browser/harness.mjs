@@ -176,7 +176,7 @@ function mockTauri({ files, initial, theme, store }) {
 const tally = { pass: 0, fail: 0, errors: [] };
 
 /** Open the app. `initial` is the launch file, or null for the empty window. */
-export async function start({ files = defaultFiles, initial = '/d/a.md', theme = 'light', store = null, viewport = { width: 1500, height: 900 } } = {}) {
+export async function start({ files = defaultFiles, initial = '/d/a.md', theme = 'light', store = null, viewport = { width: 1500, height: 900 }, prepare = null } = {}) {
   const server = await serve();
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport, colorScheme: theme });
@@ -186,6 +186,7 @@ export async function start({ files = defaultFiles, initial = '/d/a.md', theme =
   // The launch update check would reach GitHub and race the status line.
   await page.route('https://api.github.com/**', (route) => route.abort());
   if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
+  if (prepare) await prepare(page);
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   await page.goto(url);
   if (initial?.endsWith('.md')) await page.waitForSelector('#markdown p');
