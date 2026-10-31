@@ -15,7 +15,7 @@ function worker({ streamLimit = 64 * 1024, documentLimit = 256 * 1024,
       `const MAX_DOCUMENT_DECODE_BYTES = ${documentLimit};`);
   return runInNewContext(script + `
     ({ DecodeStream, Stream, FlateStream, BrotliStream, Parser, Lexer, Dict, Name,
-       XRef, LocalPdfManager, DecodedStreamLimitError })`, {
+       XRef, LocalPdfManager, DecodedStreamLimitError, withDecodedStreamBudget })`, {
     console, DecompressionStream: decompressor, TextDecoder, TextEncoder,
     setTimeout, clearTimeout,
   });
@@ -85,23 +85,66 @@ async function contentStream(core, bytes) {
   assert.equal(growing.decodedStreamBudget.allocated, 512 + 1024);
 }
 
-// Distinct streams and filter layers share the document quota. A new document
-// has a fresh quota even when the same worker is reused across reloads.
+// Distinct streams in one page task share that task's quota. A new task on
+// the same document starts clean, including after the previous task failed.
 {
   const core = worker({ documentLimit: 1024 });
-  const { dict, xref } = documentContext(core);
-  for (let i = 0; i < 2; i++) {
-    const stream = new core.DecodeStream();
-    stream.dict = dict;
-    stream.ensureBuffer(512);
+  const { dict } = documentContext(core);
+  let failedBudget;
+  core.withDecodedStreamBudget(() => {
+    for (let i = 0; i < 2; i++) {
+      const stream = new core.DecodeStream();
+      stream.dict = dict;
+      stream.ensureBuffer(512);
+    }
+    const third = new core.DecodeStream();
+    third.dict = dict;
+    assert.throws(() => third.ensureBuffer(1), limitError(core));
+    failedBudget = third.decodedStreamBudget;
+    assert.equal(failedBudget.allocated, 1024);
+    assert.equal(failedBudget.failed, true);
+    assert.throws(() => third.ensureBuffer(1), limitError(core));
+  });
+  core.withDecodedStreamBudget(() => {
+    const fresh = new core.DecodeStream();
+    fresh.dict = dict;
+    assert.equal(fresh.ensureBuffer(512).length, 512);
+    assert.equal(fresh.decodedStreamBudget.allocated, 512);
+    assert.equal(fresh.decodedStreamBudget.failed, false);
+    assert.notEqual(fresh.decodedStreamBudget, failedBudget);
+  });
+}
+
+// Many tasks, each under the quota, whose sum is over it, all succeed.
+// Two tasks in flight on one document do not share a counter.
+{
+  const core = worker({ documentLimit: 1024 });
+  const { dict } = documentContext(core);
+  for (let i = 0; i < 5; i++) {
+    core.withDecodedStreamBudget(() => {
+      const stream = new core.DecodeStream();
+      stream.dict = dict;
+      assert.equal(stream.ensureBuffer(512).length, 512);
+      assert.equal(stream.decodedStreamBudget.allocated, 512);
+    });
   }
-  const third = new core.DecodeStream();
-  third.dict = dict;
-  assert.throws(() => third.ensureBuffer(1), limitError(core));
-  assert.equal(xref.decodedStreamBudget.allocated, 1024);
-  const fresh = new core.DecodeStream();
-  fresh.dict = documentContext(core).dict;
-  assert.equal(fresh.ensureBuffer(512).length, 512);
+  const parallel = worker({ documentLimit: 800 });
+  const encoded = deflateSync(Buffer.alloc(512));
+  const shared = documentContext(parallel);
+  const results = await Promise.all([0, 1].map(() => parallel.withDecodedStreamBudget(async () => {
+    const stream = decode(parallel, encoded, shared.dict);
+    const bytes = await asyncBytes(stream);
+    return {
+      length: bytes.length,
+      allocated: stream.decodedStreamBudget.allocated,
+      budget: stream.decodedStreamBudget,
+    };
+  })));
+  assert.equal(results[0].length, 512);
+  assert.equal(results[1].length, 512);
+  assert.equal(results[0].allocated, 512);
+  assert.equal(results[1].allocated, 512);
+  assert.notEqual(results[0].budget, results[1].budget);
 }
 
 // Real compression must be bounded through both synchronous and async callers.
@@ -129,30 +172,34 @@ for (const [decoderName, compress] of [
   assert.equal(nativeCalls, 0);
 }
 
-// Concurrent streams consume the same cumulative document quota. Software
+// Concurrent streams in one page task share that task's quota. Software
 // Brotli must account for output chunks and their joined copy as well as history.
 {
   const core = worker({ documentLimit: 768 });
-  const { dict, xref } = documentContext(core);
+  const { dict } = documentContext(core);
   const encoded = deflateSync(Buffer.alloc(512));
-  assert.equal((await asyncBytes(decode(core, encoded, dict))).length, 512);
-  assert.equal(xref.decodedStreamBudget.allocated, 512);
-  const results = await Promise.allSettled([
-    asyncBytes(decode(core, encoded, dict)), asyncBytes(decode(core, encoded, dict)),
-  ]);
-  assert.ok(results.every((result) => result.status === 'rejected' && limitError(core)(result.reason)));
-  assert.ok(xref.decodedStreamBudget.allocated <= 768);
+  await core.withDecodedStreamBudget(async () => {
+    const first = decode(core, encoded, dict);
+    assert.equal((await asyncBytes(first)).length, 512);
+    assert.equal(first.decodedStreamBudget.allocated, 512);
+    const results = await Promise.allSettled([
+      asyncBytes(decode(core, encoded, dict)), asyncBytes(decode(core, encoded, dict)),
+    ]);
+    assert.ok(results.every((result) => result.status === 'rejected' && limitError(core)(result.reason)));
+    assert.ok(first.decodedStreamBudget.allocated <= 768);
+  });
 
   const brotli = worker();
-  const context = documentContext(brotli);
   const bytes = Buffer.alloc(20 * 1024, 32);
-  const stream = decode(brotli, brotliCompressSync(bytes), context.dict, brotli.BrotliStream);
-  assert.equal(stream.getBytes().length, bytes.length);
-  assert.ok(context.xref.decodedStreamBudget.allocated >= 2 * 16384 + bytes.length,
-    'Brotli chunks and joined output must both count.');
+  brotli.withDecodedStreamBudget(() => {
+    const stream = decode(brotli, brotliCompressSync(bytes), documentContext(brotli).dict, brotli.BrotliStream);
+    assert.equal(stream.getBytes().length, bytes.length);
+    assert.ok(stream.decodedStreamBudget.allocated >= 2 * 16384 + bytes.length,
+      'Brotli chunks and joined output must both count.');
+  });
   const lowQuota = worker({ documentLimit: 16384 });
-  assert.throws(() => decode(lowQuota, brotliCompressSync(bytes),
-    documentContext(lowQuota).dict, lowQuota.BrotliStream).getBytes(), limitError(lowQuota));
+  assert.throws(() => lowQuota.withDecodedStreamBudget(() => decode(lowQuota, brotliCompressSync(bytes),
+    documentContext(lowQuota).dict, lowQuota.BrotliStream).getBytes()), limitError(lowQuota));
 }
 
 // Use the actual parser's attacker-controlled filter arrays. Both nested Flate
@@ -198,6 +245,7 @@ for (const [decoderName, compress] of [
     ['FlateDecode', 'ASCIIHexDecode']);
   await assert.rejects(async () => (await contentStream(core, intermediate)).getBytes(), limitError(core));
 
+  // One page's content read is one task: two streams together over the quota fail.
   const quota = worker({ documentLimit: 2400 });
   const separate = pdfWithContents([
     deflateSync(Buffer.alloc(512, 32)), deflateSync(Buffer.alloc(512, 32)),

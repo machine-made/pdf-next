@@ -661,10 +661,11 @@ every byte of it.
 - No `eval`, no WASM execution, no plugins, no framing, and PDF scripting is off, so a document
   cannot execute anything on its own.
 - Generic PDF stream decoding is capped at 64 MiB per stream and 256 MiB of cumulative
-  allocations per document, including intermediate filter layers and decompression copies.
+  allocations per page task (drawing one page, reading one page's text, or reading one
+  page's annotations), including intermediate filter layers and decompression copies.
   Software decoders enforce these limits before allocating output; the native decompression
   fast path is disabled because it cannot enforce a byte quota. Image filters must be the final
-  decoding layer. A document that exceeds either limit fails decoding; opening it again starts
+  decoding layer. A page task that exceeds either limit fails that task; the next task starts
   a fresh budget.
 
 ## Memory, measured not claimed
