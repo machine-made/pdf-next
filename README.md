@@ -660,13 +660,13 @@ every byte of it.
   resolution and the file dialog, is driven from Rust where the frontend cannot reach it.
 - No `eval`, no WASM execution, no plugins, no framing, and PDF scripting is off, so a document
   cannot execute anything on its own.
-- Generic PDF stream decoding is capped at 64 MiB per stream and 256 MiB of cumulative
-  allocations per page task (drawing one page, reading one page's text, or reading one
-  page's annotations), including intermediate filter layers and decompression copies.
-  Software decoders enforce these limits before allocating output; the native decompression
-  fast path is disabled because it cannot enforce a byte quota. Image filters must be the final
-  decoding layer. A page task that exceeds either limit fails that task; the next task starts
-  a fresh budget.
+- PDF stream decoding has two limits. One stream may decode to at most 64 MiB. One page task
+  may allocate at most 256 MiB in total, counting filter layers and decompression copies. A
+  page task draws one page, or reads one page's text or annotations.
+- The software decoders check both limits before they allocate. The native decompression fast
+  path is off, because it cannot check a byte limit. Image filters must be the last decoding
+  layer.
+- A page task over either limit fails on its own. The next task starts from zero.
 
 ## Memory, measured not claimed
 

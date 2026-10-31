@@ -6,6 +6,7 @@
 import { start } from './harness.mjs';
 
 const CAP = 20480;
+let routed = false;
 const { page, ok, finish } = await start({
   initial: '/d/scroll-budget.pdf',
   viewport: { width: 700, height: 420 },
@@ -19,12 +20,14 @@ const { page, ok, finish } = await start({
       if (!body.includes(`const MAX_DOCUMENT_DECODE_BYTES = ${CAP};`)) {
         throw new Error('worker cap was not replaced');
       }
+      routed = true;
       await route.fulfill({ response, body });
     });
   },
 });
 
 await page.waitForSelector('#viewer .page canvas', { timeout: 15_000 });
+ok(routed, `The worker was served with the cap lowered to ${CAP} bytes`);
 
 // Visible page canvases. A rendered page of this file is red, not white.
 async function visibleInk() {
