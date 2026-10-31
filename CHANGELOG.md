@@ -2,7 +2,7 @@
 
 ## 0.18.1
 
-- Fixed long PDFs going blank after scrolling down and back up: the limit on unpacked page data now applies to each page drawn, not to everything drawn since the file was opened
+- Fixed long PDFs going blank after scrolling down and back up, until the file was reopened; pages now keep drawing however far you scroll
 
 ## 0.18.0
 
