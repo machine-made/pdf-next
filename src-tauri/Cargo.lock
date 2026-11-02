@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-next"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "ammonia",
  "cap-std",

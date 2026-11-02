@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.1
+
+- Fixed long PDFs going blank after scrolling down and back up, until the file was reopened; pages now keep drawing however far you scroll
+
 ## 0.18.0
 
 - Changed the toolbar to about ten controls: page view, Markdown type, panes, page mode, the watch interval, copy, print and Reduce PDF are now in a View menu, and docking, fit to content, full screen and Present in a Window menu laid out like the screen
