@@ -289,7 +289,15 @@ await close();
   await page.waitForTimeout(500);
   const status = await page.$eval('#status', (s) => s.textContent);
   ok(/file is locked/.test(status), `The Reload button reports a failed reload (${status})`);
-  await page.evaluate(() => { window.__fail = {}; });
+  await page.evaluate(() => { window.__fail = {}; window.__calls.length = 0; });
+  await page.click('#reload');
+  await page.waitForTimeout(500);
+  const again = await page.evaluate(() => ({
+    read: window.__calls.some(([cmd]) => cmd === 'read_markdown'),
+    shown: document.body.innerText.includes('Some notes.'),
+    status: document.getElementById('status').textContent,
+  }));
+  ok(again.read && again.shown && !/file is locked/.test(again.status), `and the next click reloads the file (${JSON.stringify(again)})`);
   await close();
 }
 
