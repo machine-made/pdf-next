@@ -114,12 +114,15 @@ export function wirePopover(button, panel, { onOpen = () => {} } = {}) {
 /// `delay` ms without the pointer near the top. The pointer within `near` px
 /// of the top, Alt, or keyboard focus in the bar brings it back; `blocked()` (a panel,
 /// menu or dialog open, no file) keeps it. Only opacity changes, so nothing
-/// below moves, and the controls stay in the tab order.
+/// below moves, and the controls stay in the tab order. Focus in the bar holds it
+/// only while the keyboard is the last input: a click in the page number leaves
+/// focus there, and scrolling afterwards is reading.
 export function createFocusMode({ bar, enabled, blocked, near = 48, delay = 2000 }) {
   let timer = 0;
   let pointerNear = false;
+  let byPointer = false;
   const hidden = () => document.body.classList.contains('bar-hidden');
-  const focused = () => Boolean(bar.querySelector(':focus-visible'));
+  const focused = () => !byPointer && Boolean(bar.querySelector(':focus-visible'));
   const canHide = () => enabled() && !pointerNear && !focused() && !blocked();
   const show = () => {
     window.clearTimeout(timer);
@@ -148,8 +151,14 @@ export function createFocusMode({ bar, enabled, blocked, near = 48, delay = 2000
     else reading();
   }, { passive: true });
   document.addEventListener('scroll', reading, { capture: true, passive: true });
-  window.addEventListener('wheel', reading, { passive: true });
+  window.addEventListener('wheel', () => {
+    byPointer = true;
+    reading();
+  }, { passive: true });
   window.addEventListener('keydown', (event) => {
+    byPointer = false;
+    // Typing into a control of a hidden bar shows it again.
+    if (hidden() && focused()) show();
     if (event.key !== 'Alt') return reading();
     show();
     later();

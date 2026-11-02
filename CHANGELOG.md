@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed the toolbar staying put after a click in the page number: it now fades when you scroll, and keyboard focus in the bar still keeps it while you type or tab
+
 ## 0.18.1
 
 - Fixed long PDFs going blank after scrolling down and back up, until the file was reopened; pages now keep drawing however far you scroll

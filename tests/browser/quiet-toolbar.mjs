@@ -197,6 +197,26 @@ ok(!(await page.evaluate(() => document.body.classList.contains('presenting'))) 
 ok(await page.$eval('#markdownStage', (s) => s.scrollTop) === mdScroll && await page.evaluate(() => window.__fullscreen === false), 'at the same place, out of full screen');
 await close();
 
+// Focus mode on a PDF: a click in the page number leaves keyboard focus in the bar, and
+// scrolling afterwards must still hide it. Tabbing into the bar keeps it, as above.
+{
+  const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
+  const barHidden = () => page.evaluate(() => document.body.classList.contains('bar-hidden'));
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.click('#page');
+  await page.mouse.move(600, 500);
+  await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(2400);
+  ok(await page.evaluate(() => document.activeElement?.id) === 'page', 'The page number still has focus after the click');
+  ok(await barHidden(), 'The toolbar hides while reading, though the page number was clicked');
+  await page.keyboard.press('2');
+  await page.waitForTimeout(2400);
+  ok(!(await barHidden()), 'and typing in the page number brings it back and keeps it');
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => document.activeElement?.blur());
+  await close();
+}
+
 // Presenting a PDF: one page fitted to the screen; the view, zoom and page come back.
 {
   const { page, ok, finish } = await start({ initial: '/d/three-pages.pdf' });

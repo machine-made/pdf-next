@@ -219,7 +219,8 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **Focus mode.** Once you start reading, the toolbar fades after a couple of seconds, in place,
   so the page does not move. Bring the pointer to the top of the window, press `Alt`, or tab
   into it and it comes back; it stays while the Review panel, Settings, find, the palette or a
-  menu is open. Settings ("Hide the toolbar while reading") or the palette turns it off.
+  menu is open, and while you type in the page number or tab through the bar. Scrolling after a
+  click in the bar fades it again. Settings ("Hide the toolbar while reading") or the palette turns it off.
 - **Dark mode that respects the page.** It follows your system, and Page mode in the View menu
   can recolour PDF pages themselves: Clear → Night → Invert → Sepia. Night and Sepia turn the paper
   and the black text to their own colours but keep a figure's colours: a blue line stays blue,
