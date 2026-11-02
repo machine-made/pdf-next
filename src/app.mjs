@@ -72,6 +72,7 @@ const paneMarkdownStages = () => document.querySelectorAll('#panes .pane-snapsho
 const ui = {
   bar: el('bar'),
   open: el('open'),
+  reload: el('reload'),
   prev: el('prev'),
   next: el('next'),
   page: el('page'),
@@ -6197,6 +6198,12 @@ ui.aboutSource.addEventListener('click', () => {
   void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
 });
 
+function reloadFile() {
+  if (state.file) void openFile(state.file, { preserveView: true });
+}
+
+ui.reload.addEventListener('click', reloadFile);
+
 ui.open.addEventListener('click', async () => {
   const picked = await invoke('pick_file');
   if (picked) {
@@ -6903,7 +6910,7 @@ const palette = createPalette({
       id: `recent:${entry.path}`, label: `Open recent: ${entry.name}`, group: 'File', icon: KIND_ICONS[entry.kind] || '#i-kind-md',
       detail: folderOf(entry.path), current: entry.path === state.file?.path, run: () => openRecent(entry.path),
     })),
-    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
+    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: reloadFile },
     { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
     { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
     { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
@@ -7392,9 +7399,7 @@ window.addEventListener('keydown', (event) => {
   }
   if ((event.ctrlKey || event.metaKey) && key === 'r') {
     event.preventDefault();
-    if (state.file) {
-      openFile(state.file, { preserveView: true });
-    }
+    reloadFile();
     return;
   }
   if (typing) {

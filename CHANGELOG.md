@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a Reload button to the toolbar, next to Open; it does what `Ctrl+R` does
 - Fixed the toolbar staying put after a click in the page number: it now fades when you scroll, and keyboard focus in the bar still keeps it while you type or tab
 
 ## 0.18.1
