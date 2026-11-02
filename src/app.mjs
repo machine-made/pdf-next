@@ -72,6 +72,7 @@ const paneMarkdownStages = () => document.querySelectorAll('#panes .pane-snapsho
 const ui = {
   bar: el('bar'),
   open: el('open'),
+  reload: el('reload'),
   prev: el('prev'),
   next: el('next'),
   page: el('page'),
@@ -2937,6 +2938,8 @@ function stepSelect(select, direction) {
     index += direction;
     if (index < 0 || index >= options.length) return false;
     const option = options[index];
+    // Off stops reloading and is saved: only a click or key chooses it, never a passing wheel.
+    if (option.value === '0' && (select === ui.poll || select === ui.setPoll)) return false;
     if (!option.hidden && !option.disabled) {
       select.selectedIndex = index;
       select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -6197,6 +6200,27 @@ ui.aboutSource.addEventListener('click', () => {
   void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
 });
 
+/// Returns openFile's promise, so the palette can report a failed reload.
+function reloadFile() {
+  if (state.file) return openFile(state.file, { preserveView: true });
+}
+
+ui.reload.addEventListener('click', () => {
+  void Promise.resolve(reloadFile()).catch((error) => setStatus(String(error?.message || error), { error: true }));
+});
+
+/// The interval the watcher runs at: the saved setting, or --poll, which the menu may not be able to show.
+let pollSeconds = 1;
+
+/// With checking Off nothing reloads by itself; the button says so, in its tooltip,
+/// its label and a mark on the icon.
+function reloadHint() {
+  const off = pollSeconds === 0;
+  ui.reload.title = off ? 'Reload (Ctrl+R). Checking for changes is off.' : 'Reload (Ctrl+R)';
+  ui.reload.setAttribute('aria-label', off ? 'Reload the file. Checking for changes is off.' : 'Reload the file');
+  ui.reload.classList.toggle('poll-off', off);
+}
+
 ui.open.addEventListener('click', async () => {
   const picked = await invoke('pick_file');
   if (picked) {
@@ -6766,6 +6790,8 @@ new ResizeObserver(() => {
 ui.poll.addEventListener('change', () => {
   const seconds = Number(ui.poll.value) || 0;
   invoke('set_poll_seconds', { seconds });
+  pollSeconds = seconds;
+  reloadHint();
   try {
     localStorage.setItem('pdf-next.poll', String(seconds));
   } catch {
@@ -6903,7 +6929,7 @@ const palette = createPalette({
       id: `recent:${entry.path}`, label: `Open recent: ${entry.name}`, group: 'File', icon: KIND_ICONS[entry.kind] || '#i-kind-md',
       detail: folderOf(entry.path), current: entry.path === state.file?.path, run: () => openRecent(entry.path),
     })),
-    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: () => openFile(state.file, { preserveView: true }) },
+    { label: 'Reload', group: 'File', shortcut: 'Ctrl+R', when: hasFile, run: reloadFile },
     { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
     { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
     { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
@@ -7392,9 +7418,7 @@ window.addEventListener('keydown', (event) => {
   }
   if ((event.ctrlKey || event.metaKey) && key === 'r') {
     event.preventDefault();
-    if (state.file) {
-      openFile(state.file, { preserveView: true });
-    }
+    reloadFile();
     return;
   }
   if (typing) {
@@ -7711,6 +7735,8 @@ try {
   const saved = localStorage.getItem('pdf-next.poll');
   const seconds = ['0', '1', '2', '3'].includes(saved) ? Number(saved) : 1;
   ui.poll.value = String(seconds);
+  pollSeconds = seconds;
+  reloadHint();
   await invoke('set_poll_seconds', { seconds });
 } catch {
   ui.poll.value = '1';
@@ -7743,6 +7769,8 @@ if (typeof launch?.poll === 'number') {
   if (ui.poll.querySelector(`option[value="${launch.poll}"]`)) {
     ui.poll.value = String(launch.poll);
   }
+  pollSeconds = launch.poll;
+  reloadHint();
   await invoke('set_poll_seconds', { seconds: launch.poll }).catch(() => {});
 }
 if (launch?.mode) {

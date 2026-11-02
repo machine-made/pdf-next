@@ -146,7 +146,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   is fetched, and Literata, Merriweather, Source Serif 4, Newsreader and Inter change their
   letter shapes with the text size (optical size). Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
-  over the zoom menu or its buttons it zooms.
+  over the zoom menu or its buttons it zooms. The wheel never picks Off for the reload interval. When checking is Off, the Reload button wears a ring.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
   toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and short tags like
   `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in every colour mode. The
@@ -210,7 +210,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   sharp, the moment you stop; passing Fit width or Fit page, it settles there for a moment. In
   Markdown the wheel steps the text size and the paragraph under the cursor stays put. `+`, `-`
   and the zoom menu zoom around the middle of the view.
-- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, the page, zoom,
+- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, reload (the same as `Ctrl+R`), the page, zoom,
   find, the View menu, the Window menu, the Review panel and Settings. The View menu holds the
   page view, raw Markdown, the Markdown font, size and width, panes, the page mode, how often
   to check for changes, copying the path or name, print and Reduce PDF; only what applies to
@@ -219,7 +219,8 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **Focus mode.** Once you start reading, the toolbar fades after a couple of seconds, in place,
   so the page does not move. Bring the pointer to the top of the window, press `Alt`, or tab
   into it and it comes back; it stays while the Review panel, Settings, find, the palette or a
-  menu is open. Settings ("Hide the toolbar while reading") or the palette turns it off.
+  menu is open, and while you type in the page number or tab through the bar. Scrolling after a
+  click in the bar fades it again. Settings ("Hide the toolbar while reading") or the palette turns it off.
 - **Dark mode that respects the page.** It follows your system, and Page mode in the View menu
   can recolour PDF pages themselves: Clear → Night → Invert → Sepia. Night and Sepia turn the paper
   and the black text to their own colours but keep a figure's colours: a blue line stays blue,

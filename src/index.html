@@ -41,6 +41,10 @@
         <path d="M13 8A5 5 0 1 1 9.8 3.35" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         <path d="M9.5 1.5L12 3.5L9.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </symbol>
+      <symbol id="i-reload" viewBox="0 0 16 16" fill="none">
+        <path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M12.8 1.5V4.6H9.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
       <symbol id="i-open" viewBox="0 0 16 16" fill="none">
         <path d="M2.5 12.5V4.5C2.5 3.95 2.95 3.5 3.5 3.5H6.5L8 5.5H12.5C13.05 5.5 13.5 5.95 13.5 6.5V12.5C13.5 13.05 13.05 13.5 12.5 13.5H3.5C2.95 13.5 2.5 13.05 2.5 12.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
       </symbol>
@@ -154,6 +158,9 @@
       <div class="group">
         <button id="open" type="button" title="Open (Ctrl+O)" aria-label="Open file">
           <svg class="icon"><use href="#i-open"/></svg>
+        </button>
+        <button id="reload" type="button" class="file-only" title="Reload (Ctrl+R)" aria-label="Reload the file">
+          <svg class="icon"><use href="#i-reload"/></svg>
         </button>
       </div>
       <div class="sep"></div>
