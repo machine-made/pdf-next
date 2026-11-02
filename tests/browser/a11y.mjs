@@ -13,6 +13,12 @@ const allow = [
 const axe = await readFile(axePath, 'utf8');
 const summary = [];
 const audit = async (page, ok, name) => {
+  // The toolbar fades after 2 s of reading; axe must see it at full opacity, not part-way through the fade.
+  await page.evaluate(() => {
+    const bar = document.getElementById('bar');
+    bar.style.transition = 'none';
+    bar.style.opacity = '1';
+  });
   await page.evaluate(axe); // evaluate, not a script tag: the page has the app CSP
   const result = await page.evaluate(() => window.axe.run(document, {
     runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
