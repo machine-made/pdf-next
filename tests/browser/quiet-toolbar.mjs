@@ -217,6 +217,20 @@ await close();
   await close();
 }
 
+// A click in the document, then a click in the page number: the bar stays for the typing to come.
+{
+  const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.mouse.click(600, 500);
+  await page.click('#page');
+  await page.mouse.move(600, 500);
+  await page.waitForTimeout(2400);
+  ok(await page.evaluate(() => document.activeElement?.id) === 'page' && !(await page.evaluate(() => document.body.classList.contains('bar-hidden'))),
+    'A click in the page number after a click in the document keeps the toolbar');
+  await page.evaluate(() => document.activeElement?.blur());
+  await close();
+}
+
 // The pointer, not only the wheel, makes the mouse the last input: a click in the page number,
 // then a scroll with no wheel (here a synthetic pointerdown and a set scrollTop) still hides the toolbar.
 {
@@ -263,6 +277,29 @@ await close();
   const afterClick = await view();
   ok(byKey.some((c) => c.includes('/d/three-pages.pdf')) && byClick.join() === byKey.join(), `Clicking it does what Ctrl+R does, on the open PDF (${byClick.join(' | ')})`);
   ok(before === 'page 2, zoom 0.75' && afterKey === before && afterClick === before, `Both keep the page and zoom (${before} -> ${afterKey}, ${afterClick})`);
+  const status = await page.$eval('#status', (s) => s.textContent);
+  ok(!/unavailable/.test(status), `Reloading a file with no reviews reports no error (${status})`);
+  await close();
+}
+
+// A failed reload says so in the status line, and the button still works after it.
+{
+  const { page, ok, close } = await start({ files: { '/d/doc.md': 'Some notes.\n' }, initial: '/d/doc.md' });
+  await page.waitForFunction(() => document.body.innerText.includes('Some notes.'), null, { timeout: 10_000 });
+  await page.evaluate(() => { window.__fail.read_markdown = 'file is locked'; });
+  await page.click('#reload');
+  await page.waitForTimeout(500);
+  const status = await page.$eval('#status', (s) => s.textContent);
+  ok(/file is locked/.test(status), `The Reload button reports a failed reload (${status})`);
+  await page.evaluate(() => { window.__fail = {}; window.__calls.length = 0; });
+  await page.click('#reload');
+  await page.waitForTimeout(500);
+  const again = await page.evaluate(() => ({
+    read: window.__calls.some(([cmd]) => cmd === 'read_markdown'),
+    shown: document.body.innerText.includes('Some notes.'),
+    status: document.getElementById('status').textContent,
+  }));
+  ok(again.read && again.shown && !/file is locked|unavailable/.test(again.status), `and the next click reloads the file (${JSON.stringify(again)})`);
   await close();
 }
 

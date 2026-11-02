@@ -4340,7 +4340,10 @@ async function loadReviews({ fromDisk = false } = {}) {
     }
     if (store == null) {
       if (state.reviewDocumentPath === path) {
-        setStatus('Review data temporarily unavailable; existing reviews and drafts are preserved.', { error: true });
+        // A file that never had reviews has no sidecar either: nothing is missing.
+        if (state.reviews.length || draftsForPath(path).size) {
+          setStatus('Review data temporarily unavailable; existing reviews and drafts are preserved.', { error: true });
+        }
         return;
       }
       applyReviewStore({ reviews: [] }, { authoritative: true });
@@ -6202,7 +6205,9 @@ ui.aboutSource.addEventListener('click', () => {
 
 /// Returns openFile's promise, so the palette can report a failed reload.
 function reloadFile() {
-  if (state.file) return openFile(state.file, { preserveView: true });
+  if (!state.file) return undefined;
+  setStatus('');
+  return openFile(state.file, { preserveView: true });
 }
 
 ui.reload.addEventListener('click', () => {

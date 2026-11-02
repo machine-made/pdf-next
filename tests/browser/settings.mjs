@@ -77,7 +77,7 @@ await page.hover('#setPoll');
 await page.mouse.wheel(0, 100);
 await page.waitForTimeout(100);
 const stepped = await page.$eval('#setPoll', (s) => s.value);
-ok(stepped !== '3', `Control: the wheel does step Check for changes (3 -> ${stepped})`);
+ok(stepped === '2', `Control: the wheel does step Check for changes (3 -> ${stepped})`);
 await choose('setPoll', '3');
 await page.evaluate(() => { window.__calls.length = 0; });
 await page.mouse.wheel(0, -100);

@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.18.2
 
 - Fixed the mouse wheel turning "Check for changes" to Off. The wheel no longer steps that menu to Off.
-- Marked the Reload button with a ring when checking for changes is Off, so a saved Off is visible.
+- Added a ring on the Reload button when checking for changes is Off, so a saved Off is visible.
 - Added a Reload button to the toolbar, next to Open. It does what `Ctrl+R` does.
+- Fixed a false "Review data temporarily unavailable" error each time a file with no reviews reloaded
 - Fixed the toolbar staying put after a click in the bar. It fades when you scroll or use the scrollbar, and keyboard focus still keeps it while you type or tab.
 
 ## 0.18.1
