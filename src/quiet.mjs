@@ -155,7 +155,7 @@ export function createFocusMode({ bar, enabled, blocked, near = 48, delay = 2000
   // Keys reset it in the capture phase: a popover stops Escape before the bubbling listener.
   // A click inside the bar (the page number) is not reading: focus there still holds the bar.
   window.addEventListener('pointerdown', (event) => {
-    if (!(event.target instanceof Node && bar.contains(event.target))) byPointer = true;
+    byPointer = !(event.target instanceof Node && bar.contains(event.target));
   }, { capture: true, passive: true });
   window.addEventListener('wheel', () => {
     byPointer = true;
