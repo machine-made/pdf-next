@@ -146,7 +146,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   is fetched, and Literata, Merriweather, Source Serif 4, Newsreader and Inter change their
   letter shapes with the text size (optical size). Each choice is remembered. The mouse wheel over any of these menus (zoom,
   page view, font, size, width, panes, reload interval) steps through it without opening it;
-  over the zoom menu or its buttons it zooms.
+  over the zoom menu or its buttons it zooms. The wheel never picks Off for the reload interval.
 - **Coloured code.** Fenced blocks tagged python, c, cpp, rust, fortran, julia, bash, shell,
   toml, yaml, json, latex, matlab, makefile, cmake, diff or javascript (and short tags like
   `py`, `rs`, `f90`, `sh`, `tex`, `yml`) are coloured by highlight.js in every colour mode. The

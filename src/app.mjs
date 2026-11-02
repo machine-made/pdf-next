@@ -2938,6 +2938,8 @@ function stepSelect(select, direction) {
     index += direction;
     if (index < 0 || index >= options.length) return false;
     const option = options[index];
+    // Off stops reloading and is saved: only a click or key chooses it, never a passing wheel.
+    if (option.value === '0' && (select === ui.poll || select === ui.setPoll)) return false;
     if (!option.hidden && !option.disabled) {
       select.selectedIndex = index;
       select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -6204,6 +6206,11 @@ function reloadFile() {
 
 ui.reload.addEventListener('click', reloadFile);
 
+/// With checking Off nothing reloads by itself; the button says so.
+function reloadHint() {
+  ui.reload.title = ui.poll.value === '0' ? 'Reload (Ctrl+R). Checking for changes is off.' : 'Reload (Ctrl+R)';
+}
+
 ui.open.addEventListener('click', async () => {
   const picked = await invoke('pick_file');
   if (picked) {
@@ -6773,6 +6780,7 @@ new ResizeObserver(() => {
 ui.poll.addEventListener('change', () => {
   const seconds = Number(ui.poll.value) || 0;
   invoke('set_poll_seconds', { seconds });
+  reloadHint();
   try {
     localStorage.setItem('pdf-next.poll', String(seconds));
   } catch {
@@ -7716,6 +7724,7 @@ try {
   const saved = localStorage.getItem('pdf-next.poll');
   const seconds = ['0', '1', '2', '3'].includes(saved) ? Number(saved) : 1;
   ui.poll.value = String(seconds);
+  reloadHint();
   await invoke('set_poll_seconds', { seconds });
 } catch {
   ui.poll.value = '1';
@@ -7747,6 +7756,7 @@ if (typeof launch?.poll === 'number') {
   // reading whatever it did, while the watcher runs at what was asked.
   if (ui.poll.querySelector(`option[value="${launch.poll}"]`)) {
     ui.poll.value = String(launch.poll);
+    reloadHint();
   }
   await invoke('set_poll_seconds', { seconds: launch.poll }).catch(() => {});
 }
