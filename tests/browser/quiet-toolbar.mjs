@@ -277,6 +277,8 @@ await close();
   const afterClick = await view();
   ok(byKey.some((c) => c.includes('/d/three-pages.pdf')) && byClick.join() === byKey.join(), `Clicking it does what Ctrl+R does, on the open PDF (${byClick.join(' | ')})`);
   ok(before === 'page 2, zoom 0.75' && afterKey === before && afterClick === before, `Both keep the page and zoom (${before} -> ${afterKey}, ${afterClick})`);
+  const status = await page.$eval('#status', (s) => s.textContent);
+  ok(!/unavailable/.test(status), `Reloading a file with no reviews reports no error (${status})`);
   await close();
 }
 
@@ -297,7 +299,7 @@ await close();
     shown: document.body.innerText.includes('Some notes.'),
     status: document.getElementById('status').textContent,
   }));
-  ok(again.read && again.shown && !/file is locked/.test(again.status), `and the next click reloads the file (${JSON.stringify(again)})`);
+  ok(again.read && again.shown && !/file is locked|unavailable/.test(again.status), `and the next click reloads the file (${JSON.stringify(again)})`);
   await close();
 }
 
