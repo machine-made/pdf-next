@@ -401,6 +401,24 @@ body:not(.has-file) #poll {
   display: none;
 }
 
+/* Checking for changes is Off: a ring on the Reload icon, since nothing reloads by itself. */
+#reload {
+  position: relative;
+}
+
+#reload.poll-off::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--error);
+  border-radius: 50%;
+  background: var(--chrome);
+}
+
 /* The View and Window menus. Fixed, so the toolbar's scrolling box does not
    clip them; script puts them under their button. */
 .popover {

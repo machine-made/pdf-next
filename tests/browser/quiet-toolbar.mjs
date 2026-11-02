@@ -197,6 +197,94 @@ ok(!(await page.evaluate(() => document.body.classList.contains('presenting'))) 
 ok(await page.$eval('#markdownStage', (s) => s.scrollTop) === mdScroll && await page.evaluate(() => window.__fullscreen === false), 'at the same place, out of full screen');
 await close();
 
+// Focus mode on a PDF: a click in the page number leaves keyboard focus in the bar, and
+// scrolling afterwards must still hide it. Tabbing into the bar keeps it, as above.
+{
+  const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
+  const barHidden = () => page.evaluate(() => document.body.classList.contains('bar-hidden'));
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.click('#page');
+  await page.mouse.move(600, 500);
+  await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(2400);
+  ok(await page.evaluate(() => document.activeElement?.id) === 'page', 'The page number still has focus after the click');
+  ok(await barHidden(), 'The toolbar hides while reading, though the page number was clicked');
+  await page.keyboard.press('2');
+  await page.waitForTimeout(2400);
+  ok(!(await barHidden()), 'and typing in the page number brings it back and keeps it');
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => document.activeElement?.blur());
+  await close();
+}
+
+// The pointer, not only the wheel, makes the mouse the last input: a click in the page number,
+// then a scroll with no wheel (here a synthetic pointerdown and a set scrollTop) still hides the toolbar.
+{
+  const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
+  const barHidden = () => page.evaluate(() => document.body.classList.contains('bar-hidden'));
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  await page.click('#page');
+  await page.mouse.move(600, 500);
+  await page.waitForTimeout(2400);
+  ok(!(await barHidden()), 'Control: with no scroll, the toolbar stays while the page number has focus');
+  await page.evaluate(() => {
+    window.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    document.getElementById('viewerContainer').scrollTop += 120;
+  });
+  await page.waitForTimeout(2400);
+  ok(await page.evaluate(() => document.activeElement?.id) === 'page' && await barHidden(), 'A scroll after pointer input, with no wheel, hides it');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => document.activeElement?.blur());
+  await close();
+}
+
+// The Reload button: the same as Ctrl+R.
+{
+  const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  const reload = await page.$eval('#reload', (b) => ({ title: b.title, label: b.getAttribute('aria-label'), shown: b.getClientRects().length > 0 }));
+  ok(reload.shown && /Ctrl\+R/.test(reload.title) && /^Reload/.test(reload.label), `The toolbar has a Reload button (${reload.title})`);
+  const calls = async (act) => {
+    const before = await page.evaluate(() => window.__calls.length);
+    await act();
+    await page.waitForTimeout(500);
+    return page.evaluate((from) => window.__calls.slice(from).map(([cmd, args]) => `${cmd} ${JSON.stringify(args)}`), before);
+  };
+  const view = () => page.evaluate(() => `page ${document.getElementById('page').value}, zoom ${document.getElementById('zoom').value}`);
+  await page.selectOption('#zoom', '0.75');
+  await page.fill('#page', '2');
+  await page.press('#page', 'Enter');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => document.activeElement?.blur());
+  const before = await view();
+  const byKey = await calls(() => page.keyboard.press('Control+r'));
+  const afterKey = await view();
+  const byClick = await calls(() => page.click('#reload'));
+  const afterClick = await view();
+  ok(byKey.some((c) => c.includes('/d/three-pages.pdf')) && byClick.join() === byKey.join(), `Clicking it does what Ctrl+R does, on the open PDF (${byClick.join(' | ')})`);
+  ok(before === 'page 2, zoom 0.75' && afterKey === before && afterClick === before, `Both keep the page and zoom (${before} -> ${afterKey}, ${afterClick})`);
+  await close();
+}
+
+// A profile already at Off: the Reload button wears a mark from the first paint, and says why.
+{
+  const { page, ok, close } = await start({
+    initial: '/d/three-pages.pdf',
+    prepare: (p) => p.addInitScript(() => localStorage.setItem('pdf-next.poll', '0')),
+  });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  const mark = () => page.$eval('#reload', (b) => {
+    const after = getComputedStyle(b, '::after');
+    return { off: b.classList.contains('poll-off'), shown: after.content !== 'none' && after.width === '5px', label: b.getAttribute('aria-label'), title: b.title };
+  });
+  const off = await mark();
+  ok(off.off && off.shown && /off/i.test(off.label) && /off/i.test(off.title), `A saved Off shows a mark on the Reload button (${JSON.stringify(off)})`);
+  await page.evaluate(() => { const s = document.getElementById('poll'); s.value = '2'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  const on = await mark();
+  ok(!on.off && !on.shown && !/off/i.test(on.label), 'and the mark goes when checking is on again');
+  await close();
+}
+
 // Presenting a PDF: one page fitted to the screen; the view, zoom and page come back.
 {
   const { page, ok, finish } = await start({ initial: '/d/three-pages.pdf' });
