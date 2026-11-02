@@ -71,7 +71,15 @@ ok(await page.$eval('#settingsPanel', (p) => p.hidden), 'Esc closes Settings');
 // A wheel passing over the interval menu must not turn watching off: the next step up from 3 s is Off.
 await page.keyboard.press('Control+,');
 await page.waitForTimeout(100);
+// Control: a wheel step to a usable value (3 s to 2 s) does reach this menu; then it goes back.
+await choose('setPoll', '3');
 await page.hover('#setPoll');
+await page.mouse.wheel(0, 100);
+await page.waitForTimeout(100);
+const stepped = await page.$eval('#setPoll', (s) => s.value);
+ok(stepped !== '3', `Control: the wheel does step Check for changes (3 -> ${stepped})`);
+await choose('setPoll', '3');
+await page.evaluate(() => { window.__calls.length = 0; });
 await page.mouse.wheel(0, -100);
 await page.waitForTimeout(100);
 ok(await page.$eval('#setPoll', (s) => s.value) === '3' && !(await page.evaluate(() => window.__calls.some((c) => c[0] === 'set_poll_seconds' && c[1].seconds === 0))),

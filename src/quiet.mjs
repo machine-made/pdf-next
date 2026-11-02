@@ -151,12 +151,20 @@ export function createFocusMode({ bar, enabled, blocked, near = 48, delay = 2000
     else reading();
   }, { passive: true });
   document.addEventListener('scroll', reading, { capture: true, passive: true });
+  // Pointer input (a click, the scrollbar, touch) or the wheel makes the mouse the last input.
+  // Keys reset it in the capture phase: a popover stops Escape before the bubbling listener.
+  // A click inside the bar (the page number) is not reading: focus there still holds the bar.
+  window.addEventListener('pointerdown', (event) => {
+    if (!(event.target instanceof Node && bar.contains(event.target))) byPointer = true;
+  }, { capture: true, passive: true });
   window.addEventListener('wheel', () => {
     byPointer = true;
     reading();
   }, { passive: true });
-  window.addEventListener('keydown', (event) => {
+  window.addEventListener('keydown', () => {
     byPointer = false;
+  }, { capture: true, passive: true });
+  window.addEventListener('keydown', (event) => {
     // Typing into a control of a hidden bar shows it again.
     if (hidden() && focused()) show();
     if (event.key !== 'Alt') return reading();

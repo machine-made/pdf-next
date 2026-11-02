@@ -6200,15 +6200,25 @@ ui.aboutSource.addEventListener('click', () => {
   void invoke('open_link', { url: 'https://github.com/machine-made/pdf-next' }).catch(() => {});
 });
 
+/// Returns openFile's promise, so the palette can report a failed reload.
 function reloadFile() {
-  if (state.file) void openFile(state.file, { preserveView: true });
+  if (state.file) return openFile(state.file, { preserveView: true });
 }
 
-ui.reload.addEventListener('click', reloadFile);
+ui.reload.addEventListener('click', () => {
+  void Promise.resolve(reloadFile()).catch((error) => setStatus(String(error?.message || error), { error: true }));
+});
 
-/// With checking Off nothing reloads by itself; the button says so.
+/// The interval the watcher runs at: the saved setting, or --poll, which the menu may not be able to show.
+let pollSeconds = 1;
+
+/// With checking Off nothing reloads by itself; the button says so, in its tooltip,
+/// its label and a mark on the icon.
 function reloadHint() {
-  ui.reload.title = ui.poll.value === '0' ? 'Reload (Ctrl+R). Checking for changes is off.' : 'Reload (Ctrl+R)';
+  const off = pollSeconds === 0;
+  ui.reload.title = off ? 'Reload (Ctrl+R). Checking for changes is off.' : 'Reload (Ctrl+R)';
+  ui.reload.setAttribute('aria-label', off ? 'Reload the file. Checking for changes is off.' : 'Reload the file');
+  ui.reload.classList.toggle('poll-off', off);
 }
 
 ui.open.addEventListener('click', async () => {
@@ -6780,6 +6790,7 @@ new ResizeObserver(() => {
 ui.poll.addEventListener('change', () => {
   const seconds = Number(ui.poll.value) || 0;
   invoke('set_poll_seconds', { seconds });
+  pollSeconds = seconds;
   reloadHint();
   try {
     localStorage.setItem('pdf-next.poll', String(seconds));
@@ -7724,6 +7735,7 @@ try {
   const saved = localStorage.getItem('pdf-next.poll');
   const seconds = ['0', '1', '2', '3'].includes(saved) ? Number(saved) : 1;
   ui.poll.value = String(seconds);
+  pollSeconds = seconds;
   reloadHint();
   await invoke('set_poll_seconds', { seconds });
 } catch {
@@ -7756,8 +7768,9 @@ if (typeof launch?.poll === 'number') {
   // reading whatever it did, while the watcher runs at what was asked.
   if (ui.poll.querySelector(`option[value="${launch.poll}"]`)) {
     ui.poll.value = String(launch.poll);
-    reloadHint();
   }
+  pollSeconds = launch.poll;
+  reloadHint();
   await invoke('set_poll_seconds', { seconds: launch.poll }).catch(() => {});
 }
 if (launch?.mode) {

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Fixed the mouse wheel turning "Check for changes" to Off when it passed over the menu, which stopped files reloading by themselves until the setting was changed back; the wheel no longer steps that menu to Off, and the Reload button's tooltip says when checking is off
-- Added a Reload button to the toolbar, next to Open; it does what `Ctrl+R` does
-- Fixed the toolbar staying put after a click in the page number: it now fades when you scroll, and keyboard focus in the bar still keeps it while you type or tab
+- Fixed the mouse wheel turning "Check for changes" to Off. The wheel no longer steps that menu to Off.
+- Marked the Reload button with a ring when checking for changes is Off, so a saved Off is visible.
+- Added a Reload button to the toolbar, next to Open. It does what `Ctrl+R` does.
+- Fixed the toolbar staying put after a click in the bar. It fades when you scroll or use the scrollbar, and keyboard focus still keeps it while you type or tab.
 
 ## 0.18.1
 
