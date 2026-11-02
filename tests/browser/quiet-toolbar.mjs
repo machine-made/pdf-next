@@ -218,7 +218,7 @@ await close();
 }
 
 // The pointer, not only the wheel, makes the mouse the last input: a click in the page number,
-// then scrolling by the scrollbar or by touch (a scroll with no wheel), still hides the toolbar.
+// then a scroll with no wheel (here a synthetic pointerdown and a set scrollTop) still hides the toolbar.
 {
   const { page, ok, close } = await start({ initial: '/d/three-pages.pdf' });
   const barHidden = () => page.evaluate(() => document.body.classList.contains('bar-hidden'));

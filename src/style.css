@@ -413,6 +413,7 @@ body:not(.has-file) #poll {
   right: 3px;
   width: 5px;
   height: 5px;
+  box-sizing: border-box;
   border: 1.5px solid var(--error);
   border-radius: 50%;
   background: var(--chrome);
