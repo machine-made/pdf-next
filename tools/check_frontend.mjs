@@ -2283,7 +2283,7 @@ assert.match(page, /id="reduce"/, 'PDF toolbar can write a smaller name_reduced.
   const bar = page.slice(page.indexOf('<header id="bar">'), page.indexOf('</header>'));
   const outside = bar.replace(/<div id="(viewMenu|dockMenu)" class="popover"[\s\S]*?\n {8}<\/div>\n/g, '');
   const controls = outside.match(/<(button|select|input)\b/g) || [];
-  assert.ok(controls.length <= 16, `The toolbar keeps to a few controls (${controls.length}, counting each file kind's own).`);
+  assert.ok(controls.length <= 17, `The toolbar keeps to a few controls (${controls.length}, counting each file kind's own).`);
   for (const id of ['pageView', 'raw', 'mdFont', 'mdSize', 'mdWidth', 'splitView', 'mode', 'poll', 'copyPath', 'copyName', 'print', 'reduce']) {
     assert.match(bar, new RegExp(`<div id="viewMenu"[\\s\\S]*id="${id}"[\\s\\S]*id="dockMenuButton"`), `${id} is in the View menu.`);
   }
@@ -2291,6 +2291,7 @@ assert.match(page, /id="reduce"/, 'PDF toolbar can write a smaller name_reduced.
     assert.match(bar, new RegExp(`<div id="dockMenu"[\\s\\S]*id="${id}"`), `${id} is in the Window menu.`);
   }
   assert.doesNotMatch(bar, /id="(ask|note)"/, 'Ask and Add review live on their shortcuts, the card and the right-click menu.');
+  assert.match(bar, /id="reload"[^>]*title="Reload \(Ctrl\+R\)" aria-label="Reload the file"/, 'The toolbar has a Reload button, the same as Ctrl+R.');
   assert.match(bar, /id="notes"[^>]*>\s*<svg class="icon"><use href="#i-review"/, 'The Review panel keeps its toolbar button.');
   assert.match(bar, /id="viewMenuButton"[^>]*aria-haspopup="dialog" aria-expanded="false" aria-controls="viewMenu"/);
   assert.match(styles, /#update:not\(\.available\) \{\s*display: none/, 'The update button only shows when there is an update.');

@@ -210,7 +210,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   sharp, the moment you stop; passing Fit width or Fit page, it settles there for a moment. In
   Markdown the wheel steps the text size and the paragraph under the cursor stays put. `+`, `-`
   and the zoom menu zoom around the middle of the view.
-- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, the page, zoom,
+- **A quiet toolbar.** The bar keeps to what you reach for while reading: open, reload (the same as `Ctrl+R`), the page, zoom,
   find, the View menu, the Window menu, the Review panel and Settings. The View menu holds the
   page view, raw Markdown, the Markdown font, size and width, panes, the page mode, how often
   to check for changes, copying the path or name, print and Reduce PDF; only what applies to

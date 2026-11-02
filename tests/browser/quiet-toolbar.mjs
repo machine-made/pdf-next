@@ -217,6 +217,25 @@ await close();
   await close();
 }
 
+// The Reload button: the same as Ctrl+R.
+{
+  const { page, ok, finish } = await start({ initial: '/d/three-pages.pdf' });
+  await page.waitForSelector('#viewer .page canvas', { timeout: 10_000 });
+  const reload = await page.$eval('#reload', (b) => ({ title: b.title, label: b.getAttribute('aria-label'), shown: b.getClientRects().length > 0 }));
+  ok(reload.shown && /Ctrl\+R/.test(reload.title) && /^Reload/.test(reload.label), `The toolbar has a Reload button (${reload.title})`);
+  const calls = async (act) => {
+    const before = await page.evaluate(() => window.__calls.length);
+    await act();
+    await page.waitForTimeout(500);
+    return page.evaluate((from) => window.__calls.slice(from).map(([cmd]) => cmd), before);
+  };
+  await page.evaluate(() => document.activeElement?.blur());
+  const byKey = await calls(() => page.keyboard.press('Control+r'));
+  const byClick = await calls(() => page.click('#reload'));
+  ok(byKey.length > 0 && byClick.join() === byKey.join(), `Clicking it does what Ctrl+R does (${byClick.join(' ')})`);
+  await finish();
+}
+
 // Presenting a PDF: one page fitted to the screen; the view, zoom and page come back.
 {
   const { page, ok, finish } = await start({ initial: '/d/three-pages.pdf' });
