@@ -5,3 +5,5 @@ src-tauri/target/
 src-tauri/gen/
 .DS_Store
 *.log
+.jac
+/AGENTS.md
