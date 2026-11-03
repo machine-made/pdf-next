@@ -105,7 +105,7 @@ await page.keyboard.press('Control+u');
 await page.waitForTimeout(50);
 
 await page.reload();
-await page.waitForSelector('#markdownRaw:not([hidden])');
+await page.waitForSelector('#markdown p');
 await page.waitForTimeout(300);
 await page.click('#settingsToggle');
 await page.waitForTimeout(100);
@@ -117,7 +117,7 @@ ok(!(await page.$eval('#setDirectEdits', (c) => c.checked)), 'Edit the file in p
 ok(await page.$eval('#markdown', (a) => [a.dataset.font, a.dataset.size, a.dataset.width, a.dataset.figWidth].join()) === 'serif,22,900,75', 'The article comes back styled');
 ok(await page.evaluate(() => window.__calls.some((c) => c[0] === 'set_poll_seconds' && c[1].seconds === 3)), 'The watcher is set to the saved interval at start');
 ok(await body('mode-night'), 'The page mode is kept');
-ok(await page.$eval('#raw', (b) => b.getAttribute('aria-pressed')) === 'true', 'The raw view is kept');
+ok(await page.$eval('#raw', (b) => b.getAttribute('aria-pressed')) === 'false' && await page.$eval('#markdownRaw', (el) => getComputedStyle(el).display === 'none'), 'A reload opens the file rendered');
 ok(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--review-size')) === reviewSize, `The review text size is kept (${reviewSize})`);
 await page.evaluate(() => localStorage.setItem('pdf-next.md-size', '999'));
 await page.reload();

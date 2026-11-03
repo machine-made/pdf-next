@@ -365,7 +365,7 @@ const nav = createNavigator({
     (state.file?.kind === 'pdf' ? ui.container : ui.markdownStage).focus({ preventScroll: true });
   },
   openLink: (url) => void invoke('open_link', { url }).catch((error) => setStatus(String(error), { error: true })),
-  showRendered: () => state.markdownRaw && setRaw(false, { persist: false }),
+  showRendered: () => state.markdownRaw && setRaw(false),
   colors: () => PAGE_COLORS[state.mode] || null,
   onResize: scheduleWrap,
   status: (message) => setStatus(message),
@@ -576,7 +576,7 @@ function restorePlace(view) {
     return;
   }
   state.restoringMarkdownView = null;
-  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw), { persist: false });
+  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw));
   if (view.scale !== state.markdownScale) setMarkdownScale(view.scale);
   ui.markdownStage.scrollTop = view.top;
   ui.markdownStage.scrollLeft = view.left;
@@ -1013,7 +1013,7 @@ const COMMENT_SAVE_MS = 400;
 
 /// Rendered or raw. Both nodes stay in the DOM with the same content, so the
 /// toggle is a visibility flip — no re-render, no IPC round trip.
-function setRaw(on, { persist = true } = {}) {
+function setRaw(on) {
   state.markdownRaw = on;
   ui.markdown.hidden = on;
   ui.markdownRaw.hidden = !on;
@@ -1025,14 +1025,6 @@ function setRaw(on, { persist = true } = {}) {
   ui.raw.setAttribute('aria-pressed', String(on));
   if (!on) {
     schedulePaginate();
-  }
-  if (!persist) {
-    return;
-  }
-  try {
-    localStorage.setItem('pdf-next.md-raw', on ? '1' : '');
-  } catch {
-    // Preference only.
   }
 }
 
@@ -1370,7 +1362,7 @@ async function showMarkdown(file, view, generation, fit, place = null) {
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
   state.markdownSource = doc.raw;
-  setRaw(view?.raw ?? state.markdownRaw, { persist: false });
+  setRaw(Boolean(view?.raw));
   setMarkdownScale(view?.scale || place?.scale || 1);
 
   // The anchors are read where the renderer put them, before any block moves.
@@ -1435,7 +1427,7 @@ async function showJson(file, view, generation, fit) {
   }
   ui.markdown.textContent = '';
   ui.markdownRaw.textContent = raw;
-  setRaw(true, { persist: false });
+  setRaw(true);
   setMarkdownScale(view?.scale || 1);
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -2106,7 +2098,7 @@ async function applyTarget(target) {
   nav.push();
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
-    setRaw(false, { persist: false });
+    setRaw(false);
     // Find marks stay: state.mdFind still points at them.
     unwrapMarks(ui.markdown, 'mark.aim:not(.find)');
     let from = null;
@@ -2244,6 +2236,13 @@ function icon(href) {
 
 const SESSION_KEY = 'pdf-next.session';
 
+function withoutRaw(view) {
+  if (!view || typeof view !== 'object') return view;
+  const copy = { ...view };
+  delete copy.raw;
+  return copy;
+}
+
 function saveSession() {
   if (typeof localStorage === 'undefined' || launch?.smoke) return;
   try {
@@ -2253,12 +2252,12 @@ function saveSession() {
     }
     const views = {};
     for (const [k, v] of state.views.entries()) {
-      views[k] = v;
+      views[k] = withoutRaw(v);
     }
     const current = state.tabs[state.active];
     if (current && state.file?.path === current.path) {
       const live = captureView();
-      if (live) views[current.path] = live;
+      if (live) views[current.path] = withoutRaw(live);
     }
     const payload = {
       tabs: state.tabs.map((t) => ({ path: t.path, name: t.name, kind: t.kind })),
@@ -2284,7 +2283,7 @@ async function restoreSession() {
   if (!saved || !Array.isArray(saved.tabs) || !saved.tabs.length) return false;
   if (saved.views && typeof saved.views === 'object') {
     for (const [k, v] of Object.entries(saved.views)) {
-      if (v && typeof v === 'object') state.views.set(k, v);
+      if (v && typeof v === 'object') state.views.set(k, withoutRaw(v));
     }
   }
   const validTabs = [];
@@ -3312,7 +3311,7 @@ function openFind() {
     return;
   }
   if (state.file.kind === 'markdown' && state.markdownRaw) {
-    setRaw(false, { persist: false });
+    setRaw(false);
   }
   ui.find.hidden = false;
   ui.findInput.focus();
@@ -7153,7 +7152,7 @@ async function startPresentation() {
     pdfViewer.currentScaleValue = 'page-fit';
     pdfViewer.currentPageNumber = presentation.page;
   } else {
-    if (state.markdownRaw) setRaw(false, { persist: false });
+    if (state.markdownRaw) setRaw(false);
     setPageView('single', { persist: false, apply: false });
     paginateMarkdown();
     fitPresentation();
@@ -7189,7 +7188,7 @@ async function stopPresentation() {
     setMarkdownScale(saved.scale);
     setPageView(saved.view, { persist: false, apply: false });
     paginateMarkdown({ keepPosition: false });
-    if (saved.raw) setRaw(true, { persist: false });
+    if (saved.raw) setRaw(true);
   }
   restore();
   if (!saved.fullscreen) {
@@ -7696,12 +7695,12 @@ try {
   setMode(null);
 }
 
-// Raw markdown is a way of reading, not a per-file quirk, so it is a global
-// preference like the page mode.
+// An older build stored raw as a global preference. A fresh open is rendered,
+// so that saved choice must not come back.
 try {
-  setRaw(localStorage.getItem('pdf-next.md-raw') === '1', { persist: false });
+  localStorage.removeItem('pdf-next.md-raw');
 } catch {
-  setRaw(false, { persist: false });
+  // Preference only.
 }
 for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   let saved = null;

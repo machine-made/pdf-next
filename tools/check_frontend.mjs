@@ -294,6 +294,52 @@ function appFunction(name, next, context, source = app) {
   assert.equal(ui.markdown.dataset.font, 'mono', 'The face changes without storage.');
 }
 
+// Raw is a visibility flip on the open file, never a saved preference.
+{
+  const calls = [];
+  const state = { markdownRaw: false, selectedFigure: { id: 1 } };
+  const ui = {
+    markdown: { hidden: false },
+    markdownRaw: { hidden: true },
+    figureResizer: { hidden: false },
+    raw: {
+      classList: { toggle(_name, on) { ui.raw.on = on; } },
+      setAttribute(_name, value) { ui.raw.pressed = value; },
+    },
+  };
+  let paginated = 0;
+  const setRaw = appFunction('setRaw', '/// One of the markdown text menus', {
+    state,
+    ui,
+    localStorage: { setItem: (...args) => calls.push(args) },
+    schedulePaginate() { paginated += 1; },
+  });
+  setRaw(true);
+  assert.equal(ui.markdown.hidden, true, 'Raw hides the rendered article.');
+  assert.equal(ui.markdownRaw.hidden, false, 'Raw shows the source.');
+  assert.equal(ui.figureResizer.hidden, true, 'Raw hides a selected figure.');
+  assert.equal(state.selectedFigure, null, 'Raw clears the selected figure.');
+  setRaw(false);
+  assert.equal(ui.markdown.hidden, false, 'Rendered shows the article.');
+  assert.equal(ui.markdownRaw.hidden, true, 'Rendered hides the source.');
+  assert.equal(paginated, 1, 'Leaving raw lays the pages out again.');
+  assert.equal(calls.length, 0, 'setRaw never calls setItem.');
+  assert.doesNotMatch(app, /localStorage\.(get|set)Item\('pdf-next\.md-raw'/,
+    'No code reads or writes the old global raw key.');
+  assert.match(app, /localStorage\.removeItem\('pdf-next\.md-raw'\)/,
+    'A raw choice saved by an older version is removed at boot.');
+  assert.doesNotMatch(app, /view\?\.raw \?\? state\.markdownRaw/,
+    'A new file does not inherit the raw view of the file it replaced.');
+  assert.match(app, /views\[k\] = withoutRaw\(v\)/,
+    'A saved session drops raw from every remembered view.');
+  assert.match(app, /views\[current\.path\] = withoutRaw\(live\)/,
+    'The live view saved with the session drops raw too.');
+  assert.match(app, /state\.views\.set\(k, withoutRaw\(v\)\)/,
+    'A restored session drops raw before the tab is shown.');
+  assert.match(page, /<option value="latin-modern" selected>Latin Modern<\/option>/,
+    'A fresh Markdown file uses Latin Modern.');
+}
+
 // Page view: where a page ends, and the menu that picks the view per kind.
 {
   const block = (top, height, keepNext = false) => ({ top, bottom: top + height, keepNext });
