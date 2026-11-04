@@ -4292,8 +4292,8 @@ let commentSaveTimer = 0;
 let commentFlushPromise = null;
 let commentFlushAgain = false;
 const pendingComments = new Map();
-// What the reader is typing into a review row besides its comment: a reply to
-// the agent's question, or the note for a reopen. Kept across repaints.
+// What the reader is typing into a review row besides its comment: the note
+// for a reopen. Kept across repaints.
 const reviewTextDrafts = new Map();
 const reviewDiffCache = new Map();
 
@@ -4329,6 +4329,13 @@ function applyReviewStore(store, { authoritative = false } = {}) {
     : Math.max(1, ...reviews.map((review) => reviewIdNum(review.id) + 1));
   state.reviewRevision = Number.isSafeInteger(revision) ? revision : 0;
   state.reviewDocumentPath = state.file?.path || null;
+  // The store was saved but the agent's inbox file was not (a file of someone
+  // else's stands there). The caller sets its own message right after this
+  // returns, so the warning goes up after it.
+  if (typeof store?.inboxWarning === 'string' && store.inboxWarning) {
+    const warning = store.inboxWarning;
+    window.setTimeout(() => setStatus(warning, { error: true, sticky: true }), 0);
+  }
   if (!paintDrawsPanel) {
     renderReviewList();
   }
@@ -4412,9 +4419,9 @@ async function reloadReviewsFromDisk() {
 
 function renderReviewList() {
   const active = document.activeElement;
-  const activeTextarea = active?.matches?.('.review-comment, .review-reply, .review-reopen-note') ? active : null;
+  const activeTextarea = active?.matches?.('.review-comment, .review-reopen-note') ? active : null;
   const activeId = activeTextarea?.closest('.review-row')?.dataset.reviewId;
-  const activeClass = ['review-comment', 'review-reply', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
+  const activeClass = ['review-comment', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
   const selectionStart = activeTextarea?.selectionStart;
   const selectionEnd = activeTextarea?.selectionEnd;
   ui.reviewList.textContent = '';
@@ -4428,13 +4435,8 @@ function renderReviewList() {
     (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
-  const questions = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'question').length;
-  if (questions) {
-    const asked = document.createElement('span');
-    asked.className = 'review-question-count';
-    asked.textContent = ` · ${questions} question${questions === 1 ? '' : 's'}`;
-    ui.reviewCount.append(asked);
-  }
+  const closed = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'done').length;
+  if (closed) ui.reviewCount.append(document.createTextNode(` · ${closed} done`));
   if (!visible.length) {
     const empty = document.createElement('p');
     empty.className = 'review-empty';
@@ -4449,7 +4451,6 @@ function renderReviewList() {
     row.dataset.reviewTint = String(reviewTint(review));
     row.dataset.action = review.action || 'improve';
     row.dataset.status = reviewStatus(review);
-    if (reviewStatus(review) === 'question' && !review._draftOnly) row.classList.add('question');
     const stateKey = reviewStateKey(state.file?.path, review.id);
     const conflict = state.reviewConflicts.get(stateKey);
     if (conflict) row.classList.add('conflict');
@@ -4482,9 +4483,8 @@ function renderReviewList() {
     status.className = 'review-status';
     status.textContent = review._draftOnly
       ? 'Removed on disk · your unsaved draft is preserved'
-      : `${reviewStatus(review) === 'question' ? 'question · the agent waits for your answer' : reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
+      : `${reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
     row.append(status);
-    if (!review._draftOnly) appendReviewQuestion(row, review);
     if (locationStatus === 'preserved') {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -4555,16 +4555,7 @@ function renderReviewList() {
       void flushCommentSave();
     });
     row.append(comment);
-    if (review.reply && reviewStatus(review) !== 'question') {
-      const reply = document.createElement('div');
-      reply.className = 'review-reply-text';
-      const label = document.createElement('span');
-      label.className = 'review-reply-label';
-      label.textContent = 'You answered';
-      reply.append(label, document.createTextNode(review.reply));
-      row.append(reply);
-    }
-    if (!review._draftOnly && reviewStatus(review) === 'applied') appendReviewDiff(row, review);
+    if (!review._draftOnly && reviewStatus(review) === 'done') appendReviewDiff(row, review);
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
@@ -4579,6 +4570,18 @@ function renderReviewList() {
         void reattachReview(review);
       });
       actions.append(reattach);
+      // The reader's own close: a status patch like Reopen, so pdf-next never
+      // reopens it, and a PDF comment without a build says why it cannot close.
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'review-done';
+      done.textContent = 'Done';
+      done.title = 'Close this review yourself';
+      done.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void patchReview(review, { status: 'done' }, `Review ${review.id} done`);
+      });
+      actions.append(done);
     }
     if (review._draftOnly) {
       const copy = document.createElement('button');
@@ -4616,21 +4619,10 @@ function renderReviewList() {
       });
       actions.append(useDisk, saveDraft);
     }
-    const settled = !review._draftOnly && ['applied', 'resolved'].includes(reviewStatus(review));
+    const settled = !review._draftOnly && reviewStatus(review) === 'done';
     if (settled && state.reopenReviewId === review.id) {
       row.append(reopenForm(review));
     } else if (settled) {
-      if (reviewStatus(review) === 'applied') {
-        const resolve = document.createElement('button');
-        resolve.type = 'button';
-        resolve.textContent = 'Resolve';
-        resolve.title = 'The change is right: close this review';
-        resolve.addEventListener('click', (event) => {
-          event.stopPropagation();
-          void patchReview(review, { status: 'resolved' }, 'Review resolved');
-        });
-        actions.append(resolve);
-      }
       const reopen = document.createElement('button');
       reopen.type = 'button';
       reopen.textContent = 'Reopen';
@@ -4683,10 +4675,10 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   const box = document.createElement('div');
   box.className = `review-${kind}-box`;
   const field = document.createElement('textarea');
-  field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
+  field.className = 'review-reopen-note';
   field.rows = 2;
   field.placeholder = placeholder;
-  field.setAttribute('aria-label', kind === 'reply' ? 'Your answer to the agent' : 'What is still wrong');
+  field.setAttribute('aria-label', 'What is still wrong');
   field.value = reviewTextDrafts.get(key) ?? '';
   field.addEventListener('click', (event) => event.stopPropagation());
   field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
@@ -4725,34 +4717,6 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   actions.append(button);
   box.append(field, actions);
   return box;
-}
-
-/// The agent's question, for an item it handed back to the reader.
-function appendReviewQuestion(row, review) {
-  if (reviewStatus(review) !== 'question') return;
-  const asked = document.createElement('div');
-  asked.className = 'review-question';
-  const label = document.createElement('span');
-  label.className = 'review-question-label';
-  label.textContent = 'The agent asks';
-  asked.append(label, document.createTextNode(String(review.question || '(no question text)')));
-  row.append(asked, reviewTextField(review, 'reply', {
-    placeholder: 'Your answer (Enter to send)', label: 'Send', send: (text, key) => sendReviewReply(review, text, key),
-  }));
-}
-
-async function sendReviewReply(review, text, key) {
-  if (!text) {
-    setStatus('Write an answer first');
-    return;
-  }
-  const path = state.file?.path;
-  // The answer is to this question: a reworded one, or a store write by the
-  // agent elsewhere, is not a conflict, a changed question is.
-  const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
-    also: { question: review.question ?? null },
-  });
-  if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
 }
 
 function reopenForm(review) {
@@ -5064,16 +5028,13 @@ async function deleteReview(id) {
   }
 }
 
-/// Compare-and-swap one record: each patched field, and each field in `also`,
-/// must still hold the value shown.
-async function patchReview(review, patch, message, { also = {} } = {}) {
+/// Compare-and-swap one record: each patched field must still hold the value
+/// shown.
+async function patchReview(review, patch, message) {
   if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
-  const expected = {
-    ...Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null])),
-    ...also,
-  };
+  const expected = Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null]));
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
     if (state.generation !== generation || state.file?.path !== path) return false;
@@ -5226,10 +5187,6 @@ function makeReviewBadge(review) {
   badge.textContent = reviewLabel(review, state.reviews);
   badge.dataset.reviewId = review.id;
   badge.dataset.reviewTint = String(reviewTint(review));
-  if (reviewStatus(review) === 'question') {
-    badge.dataset.reviewStatus = 'question';
-    badge.title = `The agent asks: ${review.question || ''}`;
-  }
   return badge;
 }
 
@@ -5290,7 +5247,6 @@ function applyReviewTint(el, id) {
   const review = state.reviews.find((item) => item.id === id);
   el.dataset.reviewTint = String(reviewTint(review || id));
   if (reviewAction(review) === 'delete') el.dataset.reviewAction = 'delete';
-  if (reviewStatus(review) === 'question') el.dataset.reviewStatus = 'question';
 }
 
 function clearReviewTint(el) {
@@ -5534,7 +5490,7 @@ function paintMarkdownMarks() {
     } else if (found.legacy) {
       byLines.set(review, null);
     }
-    const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+    const gone = reviewAction(review) === 'delete' && reviewStatus(review) === 'done';
     // `lines`: no context was saved, so the line range stands in for the text.
     locations.set(
       reviewStateKey(state.file.path, review.id),
@@ -5560,7 +5516,7 @@ function paintMarkdownMarks() {
       return last;
     });
     hosts.set(item.review, first && markdownBadgeHost(first));
-    if (first && item.review.before && reviewStatus(item.review) === 'applied') {
+    if (first && item.review.before && reviewStatus(item.review) === 'done') {
       spans.set(reviewStateKey(state.file.path, item.review.id),
         atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line'));
     }
@@ -5729,7 +5685,7 @@ async function paintPdfMarks() {
   for (const review of state.reviews) {
     const start = review.at?.page;
     const anchor = review.anchor || { position: start ? { page: start } : null };
-    if (reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review))) {
+    if (reviewAction(review) === 'delete' && reviewStatus(review) === 'done') {
       locationUpdates.set(reviewStateKey(state.file.path, review.id), 'preserved');
       continue;
     }

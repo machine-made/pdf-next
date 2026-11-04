@@ -48,6 +48,9 @@ impl AllowedDocuments {
 pub(crate) struct ReviewPath {
     path: PathBuf,
     dir: Arc<Dir>,
+    /// A folder below `dir` that holds this file (the hidden store folder).
+    /// Opened for each call, created only by a write.
+    folder: Option<&'static str>,
     #[cfg(windows)]
     physical_parent: Arc<PathBuf>,
 }
@@ -69,6 +72,7 @@ impl ReviewPath {
         Ok(Self {
             path,
             dir: Arc::new(dir),
+            folder: None,
             #[cfg(windows)]
             physical_parent,
         })
@@ -88,13 +92,45 @@ impl ReviewPath {
         Self {
             path: self.path.with_file_name(name),
             dir: self.dir.clone(),
+            folder: self.folder,
             #[cfg(windows)]
             physical_parent: self.physical_parent.clone(),
         }
     }
 
+    /// The document's store: `.pdf-next/{stem}.json` in the document's folder.
     pub(crate) fn sidecar(&self) -> Self {
-        self.sibling(super::review_sidecar(&self.path).file_name().unwrap())
+        Self {
+            path: super::review_sidecar(&self.path),
+            dir: self.dir.clone(),
+            folder: Some(super::STORE_FOLDER),
+            #[cfg(windows)]
+            physical_parent: self.physical_parent.clone(),
+        }
+    }
+
+    /// The folder this file is in. A write passes `create`.
+    fn leaf(&self, create: bool) -> io::Result<Arc<Dir>> {
+        let Some(folder) = self.folder else {
+            return Ok(self.dir.clone());
+        };
+        if create {
+            match self.dir.create_dir(folder) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.dir.open_dir(folder).map(Arc::new)
+    }
+
+    /// Create the folder of this file when it has one.
+    pub(crate) fn ensure_folder(&self) -> io::Result<()> {
+        self.leaf(true).map(|_| ())
+    }
+
+    pub(crate) fn remove_file(&self) -> io::Result<()> {
+        self.leaf(false)?.remove_file(self.name())
     }
 
     pub(crate) fn with_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> Self {
@@ -102,29 +138,31 @@ impl ReviewPath {
     }
 
     pub(crate) fn open(&self) -> io::Result<fs::File> {
-        self.dir.open(self.name()).map(|file| file.into_std())
+        self.leaf(false)?
+            .open(self.name())
+            .map(|file| file.into_std())
     }
 
     pub(crate) fn open_with(&self, options: &OpenOptions) -> io::Result<fs::File> {
-        self.dir
+        self.leaf(false)?
             .open_with(self.name(), options)
             .map(|file| file.into_std())
     }
 
     pub(crate) fn metadata(&self) -> io::Result<Metadata> {
-        self.dir.metadata(self.name())
+        self.leaf(false)?.metadata(self.name())
     }
 
     pub(crate) fn exists(&self) -> bool {
-        self.dir.exists(self.name())
+        self.leaf(false).is_ok_and(|dir| dir.exists(self.name()))
     }
 
     pub(crate) fn is_file(&self) -> bool {
-        self.dir.is_file(self.name())
+        self.leaf(false).is_ok_and(|dir| dir.is_file(self.name()))
     }
 
     pub(crate) fn read_to_string(&self) -> io::Result<String> {
-        self.dir.read_to_string(self.name())
+        self.leaf(false)?.read_to_string(self.name())
     }
 
     #[cfg(not(windows))]
@@ -140,15 +178,13 @@ impl ReviewPath {
         }
         // Builder supplies random names and collision retries. Creation and
         // cleanup must use the retained directory, never its stored pathname.
+        let leaf = self.leaf(true)?;
         let file = tempfile::Builder::new()
             .disable_cleanup(true)
             .make_in(self.path.parent().unwrap_or(Path::new(".")), |path| {
-                self.dir.open_with(path.file_name().unwrap(), &options)
+                leaf.open_with(path.file_name().unwrap(), &options)
             })?;
-        let mut temp = RelativeTempFile {
-            file,
-            dir: &self.dir,
-        };
+        let mut temp = RelativeTempFile { file, dir: &leaf };
         if let Ok(metadata) = self.metadata() {
             temp.file
                 .as_file()
@@ -156,7 +192,7 @@ impl ReviewPath {
         }
         temp.file.write_all(bytes)?;
         temp.file.as_file().sync_all()?;
-        self.dir.rename(temp.name(), &self.dir, self.name())
+        leaf.rename(temp.name(), &leaf, self.name())
     }
 
     #[cfg(windows)]
@@ -167,7 +203,14 @@ impl ReviewPath {
         // physical path stable. Obtain it from the handle, not the admitted
         // pathname, which may have been substituted before the directory opened.
         // Keep the verbatim prefix so UNC paths work with std::fs::rename.
-        let mut temp = tempfile::NamedTempFile::new_in(&*self.physical_parent)?;
+        let physical_parent = match self.folder {
+            Some(folder) => {
+                self.leaf(true)?;
+                self.physical_parent.join(folder)
+            }
+            None => (*self.physical_parent).clone(),
+        };
+        let mut temp = tempfile::NamedTempFile::new_in(&physical_parent)?;
         if let Ok(metadata) = self.metadata() {
             temp.as_file()
                 .set_permissions(metadata.permissions().into_std(temp.as_file())?)?;
@@ -175,7 +218,7 @@ impl ReviewPath {
         temp.write_all(bytes)?;
         temp.as_file().sync_all()?;
         let temp = temp.into_temp_path();
-        fs::rename(&temp, self.physical_parent.join(self.name()))
+        fs::rename(&temp, physical_parent.join(self.name()))
     }
 }
 

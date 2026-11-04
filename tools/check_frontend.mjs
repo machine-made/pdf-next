@@ -742,7 +742,7 @@ for (const kind of ['markdown', 'pdf']) {
   assert.deepEqual(render({ id: 'r1', status: 'open', quote: 'q' }, 'lines'),
     { older: false, lines: true, unlocated: false, reattach: true, dimmed: false },
     'A review placed by its lines offers Reattach, so an old sidecar can be upgraded.');
-  assert.equal(render({ id: 'r1', status: 'applied', quote: 'q' }, 'lines').reattach, false,
+  assert.equal(render({ id: 'r1', status: 'done', quote: 'q' }, 'lines').reattach, false,
     'Only an open review is reattached.');
 }
 
@@ -771,7 +771,7 @@ for (const kind of ['markdown', 'pdf']) {
     { id: 'r1', quote: 'repeat', at, anchor: { prefix: 'b', suffix: 'c' } },
     { id: 'r2', quote: 'repeat', at },
     { id: 'r3', quote: 'repeat', at, anchor: { prefix: 'zzz' } },
-    { id: 'r4', quote: 'missing', at, action: 'delete', status: 'applied', anchor: { prefix: 'a' } },
+    { id: 'r4', quote: 'missing', at, action: 'delete', status: 'done', anchor: { prefix: 'a' } },
     { id: 'r5', quote: 'repeat', at: {}, anchor: { prefix: 'b' } },
     { id: 'r6', quote: 'repeat', at, anchor: { prefix: 'a', suffix: 'b' } },
     { id: 'r7', quote: 'gone', at },
@@ -833,7 +833,7 @@ for (const kind of ['markdown', 'pdf']) {
   assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new'), true);
   assert.equal(madeOnOlderVersion(review('open', 'sha256:new'), 'sha256:new'), false);
   assert.equal(madeOnOlderVersion(review('open'), 'sha256:new'), false, 'A review saved without a digest is not flagged.');
-  assert.equal(madeOnOlderVersion(review('applied', 'sha256:old'), 'sha256:new'), false, 'Only open reviews need a second look.');
+  assert.equal(madeOnOlderVersion(review('done', 'sha256:old'), 'sha256:new'), false, 'Only open reviews need a second look.');
   assert.equal(madeOnOlderVersion({ status: 'open' }, 'sha256:new'), false);
   assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), null), false, 'No digest for the shown file, no flag.');
   assert.equal(madeOnOlderVersion(review('open', 'sha256:old'), 'sha256:new', 'located'), false,
@@ -2876,18 +2876,28 @@ assert.match(
 );
 assert.match(
   main,
-  /const REVIEW_SUFFIX: &str = "_review\.json"/,
-  'The sidecar is {stem}_review.json next to the document.',
+  /const STORE_FOLDER: &str = "\.pdf-next"/,
+  'The store is in the hidden .pdf-next folder next to the document.',
 );
 assert.match(
   main,
-  /fn review_sidecar\(doc: &Path\)[\s\S]*?format!\("\{stem\}\{REVIEW_SUFFIX\}"\)/,
-  'paper.pdf must own paper_review.json.',
+  /fn review_sidecar\(doc: &Path\)[\s\S]*?\.join\(STORE_FOLDER\)[\s\S]*?format!\("\{\}\.json", document_stem\(doc\)\)/,
+  'paper.pdf must own .pdf-next/paper.json.',
+);
+assert.match(
+  main,
+  /fn review_inbox\(doc: &Path\)[\s\S]*?format!\("\{\}_review\.txt", document_stem\(doc\)\)/,
+  'paper.pdf must own paper_review.txt, the file the agent reads.',
 );
 assert.match(
   readme,
-  /paper_review\.json/,
-  'The README must name the per-file sidecar.',
+  /\.pdf-next\/paper\.json/,
+  'The README must name the per-file store.',
+);
+assert.match(
+  readme,
+  /paper_review\.txt/,
+  'The README must name the inbox file.',
 );
 assert.doesNotMatch(
   readme,
@@ -3172,8 +3182,8 @@ if (releaseTag) {
   assert.equal(result.expected.at, review.at);
   const settled = { ...review, at: { line: 4 }, anchor: { ...result.patch.anchor } };
   assert.equal(heal(settled, joined, found, { line: 4 }, { line: 4 }), null, 'A review in place is not rewritten.');
-  assert.equal(heal({ ...review, status: 'applied' }, joined, found, { line: 4 }, { line: 4 }), null,
-    'Only open reviews are healed; applied and resolved ones keep their record.');
+  assert.equal(heal({ ...review, status: 'done' }, joined, found, { line: 4 }, { line: 4 }), null,
+    'Only open reviews are healed; done ones keep their record.');
 }
 
 // A caret in the rendered view maps to a source offset only where its text is
@@ -3470,16 +3480,17 @@ assert.ok(styles.split('\n').filter((line) => line.includes('ui-monospace')).eve
   assert.deepEqual([...block.matchAll(/\("([a-z]+:[a-z]+)",/g)].map((m) => m[1]), REVIEW_REQUESTS, 'Rust and JS requests match.');
   const statuses = rust.slice(rust.indexOf('const REVIEW_STATUSES'), rust.indexOf(';', rust.indexOf('const REVIEW_STATUSES')));
   assert.deepEqual([...statuses.matchAll(/"([a-z]+)"/g)].map((m) => m[1]), REVIEW_STATUSES, 'Rust and JS review statuses match.');
-  assert.equal(reviewStatus({ status: 'question' }), 'question', 'A review waiting on the reader keeps its status.');
+  assert.equal(reviewStatus({ status: 'question' }), 'open', 'There is no question status any more: the agent asks in its terminal.');
   for (const ask of ['why', 'how', 'more', 'example', 'source', 'derive']) {
     const line = block.match(new RegExp(`\\("ask:${ask}", "([^"]+)"\\)`))?.[1] ?? '';
     assert.ok(!/^(explain|give)\b/.test(line), `ask:${ask} asks for a rewrite of the text, not an answer: ${line}`);
   }
   const readme = await readFile('README.md', 'utf8');
   assert.ok(!readme.includes('the answer goes in the done note'), 'The README says an Ask means rewrite the text.');
-  for (const command of ['brief', 'next', 'done', 'ask', 'add', 'relocate']) {
+  for (const command of ['brief', 'next', 'done', 'add', 'relocate']) {
     assert.ok(readme.includes(`pdf-next reviews ${command} `), `The README documents reviews ${command}.`);
   }
+  assert.ok(!readme.includes('pdf-next reviews ask '), 'The README no longer documents reviews ask: the agent asks in its terminal.');
   let picked = toggleRequest([], 'scope:phrase');
   picked = toggleRequest(picked, 'ask:why');
   picked = toggleRequest(picked, 'scope:section');
@@ -3625,8 +3636,8 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
     'A plain click opens a figure in its own tab; a selection does not.');
 }
 
-// Review UI: before/after of applied reviews (diff-match-patch, vendored),
-// Ask means rewrite, and the agent's questions answered from the panel.
+// Review UI: before/after of done reviews (diff-match-patch, vendored),
+// Ask means rewrite, and no question flow in the panel.
 {
   await assert.doesNotReject(access('src/vendor/diff-match-patch/diff_match_patch.mjs'), 'diff-match-patch must be vendored.');
   await assert.doesNotReject(access('src/vendor/diff-match-patch/LICENSE'), 'diff-match-patch licence must be vendored.');
@@ -3664,19 +3675,25 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
   const many = diffView(wordDiff('x '.repeat(3000), 'y '.repeat(3000)), { limit: 200 });
   assert.ok(many.cut && many.parts.reduce((sum, part) => sum + part.text.length, 0) <= 200, 'A big rewrite is cut.');
 
-  assert.equal(reviewStatus({ status: 'question' }), 'question', 'question is a status of its own.');
-  assert.match(page, /<option value="question">Question<\/option>/, 'The status filter has Question.');
+  assert.deepEqual(REVIEW_STATUSES, ['open', 'done'], 'A review is open or done.');
+  assert.equal(reviewStatus({ status: 'question' }), 'open', 'question is not a status.');
+  assert.match(page, /<option value="done">Done<\/option>/, 'The status filter has Done.');
+  assert.doesNotMatch(page, /<option value="(question|applied|resolved)"/, 'The status filter has no question, applied or resolved.');
   assert.match(app, /const before = picked\.kind === 'markdown' \? passageSource\(state\.markdownSource, picked\.at\) : '';[\s\S]*?\.\.\.\(before \? \{ before \} : \{\}\),\s*\};\s*const store = await invoke\('append_review'/,
     'A new Markdown review saves its passage as before.');
   assert.match(REQUEST_GROUPS[0].hint, /unclear[\s\S]*rewrites it so it answers/, 'The Ask row says Ask means rewrite.');
-  assert.match(app, /patchReview\(review, \{ reply: text, status: 'open' \}, [^)]*\{\s*also: \{ question: review\.question \?\? null \},\s*\}\)/,
-    'Send saves the reply and opens the item, checked against the question it answers.');
-  assert.match(app, /const expected = \{\s*\.\.\.Object\.fromEntries\(Object\.keys\(patch\)[\s\S]*?\.\.\.also,\s*\};/,
-    'A review patch expects each field it changes, plus the ones it names.');
+  assert.doesNotMatch(app, /sendReviewReply|appendReviewQuestion|review-question|review-reply/,
+    'The question flow is gone from the panel: the agent asks in its terminal.');
+  assert.doesNotMatch(app, /'Resolve'|status: 'resolved'/, 'pdf-next closes comments itself: no Resolve button.');
+  assert.match(app, /const expected = Object\.fromEntries\(Object\.keys\(patch\)\.map\(\(key\) => \[key, Object\.hasOwn\(review, key\) \? review\[key\] : null\]\)\);/,
+    'A review patch expects each field it changes.');
   assert.match(app, /invoke\('update_review', \{ document: path, id: review\.id, expectedComment: old, comment \}\)[\s\S]*?patchReview\(current, \{ status: 'open' \}/,
     'Reopen writes its note into the comment, then reopens through the status path.');
-  assert.match(styles, /\.review-row\.question \{/);
-  assert.match(styles, /\.review-no\[data-review-status='question'\]/, 'A question shows on its highlight badge.');
+  assert.match(app, /done\.textContent = 'Done';[\s\S]*?patchReview\(review, \{ status: 'done' \}/,
+    'An open comment has a Done button that closes it through the status patch.');
+  assert.match(app, /store\?\.inboxWarning[\s\S]*?setStatus\(warning, \{ error: true, sticky: true \}\)/,
+    'A save that could not write the agent inbox shows the warning in the status line.');
+  assert.doesNotMatch(styles, /\.review-row\.question|data-review-status='question'/, 'No question styles.');
   for (const token of ['--diff-del', '--diff-ins']) {
     assert.equal(styles.split(`${token}:`).length - 1, 3, `${token} is set for light, dark and the system dark mode.`);
   }

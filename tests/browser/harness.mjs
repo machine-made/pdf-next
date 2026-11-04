@@ -79,16 +79,41 @@ function mockTauri({ files, initial, theme, store, platform }) {
   const info = (p) => ({ path: p, name: p.split('/').pop(), kind: kind(p), revision: rev });
   const copy = (value) => JSON.parse(JSON.stringify(value));
   const write = (change) => {
-    const st = window.__store || { format: 3, revision: 0, nextId: 1, reviews: [] };
+    const st = window.__store || { format: 4, revision: 0, nextId: 1, reviews: [] };
     change(st);
     st.revision += 1;
     window.__store = st;
-    return copy(st);
+    // `window.__inboxWarning` stands for a foreign inbox file the backend
+    // could not overwrite: the save is returned with the warning.
+    return window.__inboxWarning ? { ...copy(st), inboxWarning: window.__inboxWarning } : copy(st);
   };
   const find = (id) => {
     const review = window.__store?.reviews.find((r) => r.id === id);
     if (!review) throw new Error('review not found');
     return review;
+  };
+  // What the Rust side does before it announces a changed Markdown file
+  // (settle): an open comment whose quoted text is gone from the file, or was
+  // edited between its old neighbours, is closed by pdf-next; one still found
+  // stays open. It uses the page's own resolver, the same rules as Rust's.
+  const settleStore = async (path) => {
+    const open = (window.__store?.reviews || []).filter((r) => r.kind === 'markdown' && (r.status || 'open') === 'open');
+    if (!open.length || typeof files[path] === 'undefined') return;
+    const { resolveMarkdownReview } = await import('/review-label.mjs');
+    const plain = text(path).split('\n\n').filter(Boolean).map((block) => block.replace(/\n$/, '')).join(' ');
+    let closed = false;
+    for (const review of open) {
+      if (review.anchor?.documentRevision === digestOf(path)) continue;
+      const found = resolveMarkdownReview(plain, review);
+      if (found.status === 'located' || found.status === 'ambiguous') continue;
+      review.status = 'done';
+      review.closedBy = 'pdf-next';
+      review.resolution = found.status === 'changed'
+        ? 'closed by pdf-next: the quoted text was edited'
+        : 'closed by pdf-next: the quoted text was removed';
+      closed = true;
+    }
+    if (closed) window.__store.revision += 1;
   };
   // The launch update check would ask GitHub and, answered, cover the status
   // line a test is reading; the tests run offline.
@@ -161,8 +186,13 @@ function mockTauri({ files, initial, theme, store, platform }) {
             for (const key of Object.keys(args.expected)) {
               if (key !== '$revision' && JSON.stringify(args.expected[key]) !== JSON.stringify(review[key] ?? null)) throw new Error(`review conflict: ${key} changed on disk`);
             }
+            // As the Rust command: a PDF comment goes to done only with a build that succeeded,
+            // and an explicit status or resolution is not pdf-next's own close.
+            if (args.patch.status === 'done' && review.status !== 'done' && review.kind === 'pdf' && review.build?.success !== true) {
+              throw new Error('PDF review cannot be marked done without a successful build');
+            }
             Object.assign(review, args.patch);
-            if (args.patch.reply && review.status === 'question') review.status = 'open';
+            if ('status' in args.patch || 'resolution' in args.patch) delete review.closedBy;
           });
           case 'delete_review': return write((st) => {
             find(args.id);
@@ -197,7 +227,10 @@ function mockTauri({ files, initial, theme, store, platform }) {
     event: {
       listen: async (name, fn) => {
         (window.__listeners ||= {})[name] = fn;
-        window.__emit = (n, payload) => window.__listeners[n]?.({ payload });
+        window.__emit = async (n, payload) => {
+          if (n === 'file-changed') await settleStore(payload?.path);
+          return window.__listeners[n]?.({ payload });
+        };
         return () => {};
       },
     },

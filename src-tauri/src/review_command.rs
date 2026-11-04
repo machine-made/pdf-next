@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::review_directory::AllowedDocuments;
 use serde_json::{json, Value};
 
-const HELP: &str = "Usage:\n  pdf-next reviews brief <PDF|MD> [--since <revision>]\n  pdf-next reviews next <PDF|MD>\n  pdf-next reviews done <PDF|MD> rN <what you changed> [--built <command>]\n  pdf-next reviews ask <PDF|MD> rN <question>\n  pdf-next reviews add <MD> --line N [--end M] --quote <text> [--action A] [--request R]... [--comment <text>]\n  pdf-next reviews add <PDF> --page N [--end M] --quote <text> [--action A] [--request R]... [--comment <text>]\n  pdf-next reviews relocate <MD> [--expected-revision N] [--dry-run]\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n  pdf-next reviews restore <PDF|MD> --record <JSONfile|-> --expected-revision N\n\nCommands:\n  brief      Print the short view: one line per open review (also in {stem}_review.agent.txt).\n             With --since, only the items changed after that store revision.\n  next       Print the first open review in reading order, with its Markdown source lines.\n  done       Mark one review applied, with what you changed. A PDF needs --built <command>.\n  ask        Ask the reader about an open review; it waits until the reader replies in the app.\n  add        File a review. --request takes a review card word such as ask:why (repeatable).\n  relocate   Find the open reviews of an edited Markdown file again and record their lines.\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the sidecar revision.\n  restore    Put a removed review back under its own ID (the full record, as listed).\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --record FILE              One complete review record, as `list` printed it; - reads stdin.\n  --expected-revision N      Sidecar revision read with the patch (required for update and restore).\n  --dry-run                  Validate and print the result without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews brief notes.md\n  pdf-next reviews next notes.md\n  pdf-next reviews done notes.md r12 \"stated the ideal-gas assumption\"\n  pdf-next reviews done paper.pdf r3 \"split the long sentence\" --built \"latexmk -pdf paper.tex\"\n  pdf-next reviews ask notes.md r4 \"Which reference do you mean?\"\n  pdf-next reviews add notes.md --line 12 --quote \"the exit speed\" --request ask:why --request scope:paragraph\n  pdf-next reviews relocate notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n\nAgent workflow: read the open items with `brief` or one at a time with `next`, fix each in the\nsource, and close it with `done` (or append \"<id> <what you changed>\" to {stem}_review.done). An Ask\n(why, how, more, example, source, derive) means the text is unclear: rewrite the text so it answers\nthe question, and say in the done note what you changed. When you cannot do an item without the\nreader, `ask` (or append \"<id> ? <question>\"); the reply comes back in that item's line.\nNever edit the JSON store yourself.\n\nFor a PDF: find the quote in the LaTeX entry point or its included files, edit the source, compile\nit, and mark the item done only after a successful build. Treat source hints as candidates;\nequation symbols need their context. For Markdown, `at` names the source lines; edit the .md.";
+const HELP: &str = "Usage:\n  pdf-next reviews brief <PDF|MD> [--since <revision>]\n  pdf-next reviews next <PDF|MD>\n  pdf-next reviews done <PDF|MD> rN <what you changed> [--built <command>]\n  pdf-next reviews add <MD> --line N [--end M] --quote <text> [--action A] [--request R]... [--comment <text>]\n  pdf-next reviews add <PDF> --page N [--end M] --quote <text> [--action A] [--request R]... [--comment <text>]\n  pdf-next reviews relocate <MD> [--expected-revision N] [--dry-run]\n  pdf-next reviews list <PDF|MD>\n  pdf-next reviews update <PDF|MD> --id rN --patch <JSONfile|-> --expected-revision N [--dry-run]\n  pdf-next reviews restore <PDF|MD> --record <JSONfile|-> --expected-revision N\n\nAgent workflow: read {stem}_review.txt next to the document. It lists the open comments. Edit the\ndocument where a comment points. pdf-next marks a Markdown comment done when its quoted text is edited\nor removed. Ask the reader in your terminal, not through pdf-next. Never edit the store in .pdf-next\nyourself.\n\nThe commands below are for scripts.\n\nCommands:\n  brief      Print the open comments, the same text as {stem}_review.txt. With --since, only the\n             items changed after that store revision.\n  next       Print the first open review in reading order, with its Markdown source lines.\n  done       Mark one review done, with what you changed. A PDF needs --built <command>: a PDF\n             comment closes only after a successful build.\n  add        File a review. --request takes a review card word such as ask:why (repeatable).\n  relocate   Find the open reviews of an edited Markdown file again and record their lines.\n  list       Print the document's review store as JSON.\n  update     Compare-and-patch one review using the store revision.\n  restore    Put a removed review back under its own ID (the full record, as listed).\n\nOptions:\n  --id ID                    Stable review ID, for example r12.\n  --patch FILE               JSON object of allowed review fields; - reads stdin.\n  --record FILE              One complete review record, as `list` printed it; - reads stdin.\n  --expected-revision N      Store revision read with the patch (required for update and restore).\n  --dry-run                  Validate and print the result without writing.\n  -h, --help                 Show this help.\n\nExamples:\n  pdf-next reviews brief notes.md\n  pdf-next reviews next notes.md\n  pdf-next reviews done paper.pdf r3 \"split the long sentence\" --built \"latexmk -pdf paper.tex\"\n  pdf-next reviews add notes.md --line 12 --quote \"the exit speed\" --request ask:why --request scope:paragraph\n  pdf-next reviews relocate notes.md\n  pdf-next reviews update paper.pdf --id r12 --patch patch.json --expected-revision 8\n\nFor a PDF: find the quote in the LaTeX entry point or its included files, edit the source, compile\nit, and mark the item done only after a successful build. Treat source hints as candidates;\nequation symbols need their context. For Markdown, `at` names the source lines; edit the .md.\nThe store is .pdf-next/{stem}.json; the open comments are in {stem}_review.txt.";
 const MAX_PATCH_BYTES: usize = 16_000;
 /// A whole record may be as large as the store allows one to be.
 const MAX_RECORD_BYTES: usize = 64_000;
@@ -68,7 +68,9 @@ fn run(args: &[OsString]) -> Result<String, CliError> {
         "brief" => run_brief(&args[1..]),
         "next" => run_next(&args[1..]),
         "done" => run_done(&args[1..]),
-        "ask" => run_ask(&args[1..]),
+        "ask" => Err(runtime(
+            "ask the reader in your terminal, not through pdf-next",
+        )),
         "add" => run_add(&args[1..]),
         "relocate" => run_relocate(&args[1..]),
         other => Err(usage(format!("unknown reviews command `{other}`"))),
@@ -98,7 +100,7 @@ fn run_list(args: &[OsString]) -> Result<String, CliError> {
         return Err(usage("reviews list needs exactly one document path"));
     }
     let (document, allowed) = document_path(&args[0])?;
-    apply_inbox(&document, &allowed)?;
+    settle(&document, &allowed)?;
     let store = crate::list_reviews(&document, &allowed).map_err(runtime)?;
     serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
 }
@@ -148,6 +150,9 @@ fn run_update(args: &[OsString]) -> Result<String, CliError> {
     }
     let patch_path = patch_path.ok_or_else(|| usage("--patch is required"))?;
     let revision = expected_revision.ok_or_else(|| usage("--expected-revision is required"))?;
+    if !dry_run {
+        settle(&document, &allowed)?;
+    }
     let patch_text = read_patch(patch_path)?;
     let patch: Value = serde_json::from_str(&patch_text)
         .map_err(|error| usage(format!("invalid patch JSON: {error}")))?;
@@ -160,11 +165,18 @@ fn run_update(args: &[OsString]) -> Result<String, CliError> {
     serde_json::to_string_pretty(&store).map_err(|error| runtime(error.to_string()))
 }
 
-/// Lines waiting in `{stem}_review.done` are applied before any command reads
-/// the store, so what it prints is current.
-fn apply_inbox(document: &str, allowed: &AllowedDocuments) -> Result<(), CliError> {
+/// The store is brought up to date before any command reads it, so what it
+/// prints is current: a store from before 0.19 moves, and a Markdown comment
+/// whose quoted text was edited or removed is closed.
+///
+/// A failure to settle (a read-only folder, a file in the way) must not stop
+/// a read: it is reported on stderr and the command goes on with the store
+/// as it is.
+fn settle(document: &str, allowed: &AllowedDocuments) -> Result<(), CliError> {
     let admitted = crate::open_review_document(document, allowed).map_err(runtime)?;
-    crate::apply_done_inbox(&admitted).map_err(runtime)?;
+    if let Err(error) = crate::settle_document(&admitted) {
+        eprintln!("pdf-next: could not bring the review store up to date: {error}");
+    }
     Ok(())
 }
 
@@ -176,7 +188,7 @@ fn number_option(value: Option<&OsString>, name: &str) -> Result<u64, CliError> 
 }
 
 /// `reviews brief <doc> [--since N]`: the agent view, the same text as
-/// `{stem}_review.agent.txt`, or only what changed after revision N.
+/// `{stem}_review.txt`, or only what changed after revision N.
 fn run_brief(args: &[OsString]) -> Result<String, CliError> {
     let since = match args {
         [_] => None,
@@ -188,7 +200,7 @@ fn run_brief(args: &[OsString]) -> Result<String, CliError> {
         }
     };
     let (document, allowed) = document_path(&args[0])?;
-    apply_inbox(&document, &allowed)?;
+    settle(&document, &allowed)?;
     let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
     crate::review_brief(&admitted, since)
         .map(|view| view.trim_end().to_string())
@@ -202,19 +214,18 @@ fn run_next(args: &[OsString]) -> Result<String, CliError> {
         return Err(usage("reviews next needs exactly one document path"));
     }
     let (document, allowed) = document_path(&args[0])?;
-    apply_inbox(&document, &allowed)?;
+    settle(&document, &allowed)?;
     let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
     crate::review_next(&admitted)
         .map(|view| view.trim_end().to_string())
         .map_err(runtime)
 }
 
-/// The ID and free text of `done` and `ask`, plus `--built` for `done`.
+/// The ID and free text of `done`, plus `--built`.
 fn id_and_text<'a>(
     args: &'a [OsString],
     command: &str,
     what: &str,
-    built_allowed: bool,
 ) -> Result<(&'a str, String, Option<String>), CliError> {
     if args.len() < 3 {
         return Err(usage(format!(
@@ -232,7 +243,7 @@ fn id_and_text<'a>(
         let text = arg
             .to_str()
             .ok_or_else(|| usage("arguments must be UTF-8"))?;
-        if text == "--built" && built_allowed {
+        if text == "--built" {
             built = Some(
                 rest.next()
                     .and_then(|value| value.to_str())
@@ -260,31 +271,15 @@ fn open_count(store: &crate::ReviewFile) -> usize {
 
 /// `reviews done <doc> <id> <what you changed…> [--built <command>]`.
 fn run_done(args: &[OsString]) -> Result<String, CliError> {
-    let (id, text, built) = id_and_text(args, "done", "what you changed", true)?;
+    let (id, text, built) = id_and_text(args, "done", "what you changed")?;
     if text.len() > 4_000 {
         return Err(usage("what you changed is longer than 4 000 characters"));
     }
     let (document, allowed) = document_path(&args[0])?;
-    apply_inbox(&document, &allowed)?;
+    settle(&document, &allowed)?;
     let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
     let store = crate::mark_review_done(&admitted, id, &text, built.as_deref()).map_err(runtime)?;
-    Ok(format!("{id} applied; {} open", open_count(&store)))
-}
-
-/// `reviews ask <doc> <id> <question…>`.
-fn run_ask(args: &[OsString]) -> Result<String, CliError> {
-    let (id, text, _) = id_and_text(args, "ask", "the question", false)?;
-    if text.len() > 2_000 {
-        return Err(usage("the question is longer than 2 000 characters"));
-    }
-    let (document, allowed) = document_path(&args[0])?;
-    apply_inbox(&document, &allowed)?;
-    let admitted = crate::open_review_document(&document, &allowed).map_err(runtime)?;
-    let store = crate::ask_review_question(&admitted, id, &text).map_err(runtime)?;
-    Ok(format!(
-        "{id} waits on the reader; {} open",
-        open_count(&store)
-    ))
+    Ok(format!("{id} done; {} open", open_count(&store)))
 }
 
 /// `reviews add <doc> --line N [--end M] | --page N, --quote, --action,
@@ -326,6 +321,7 @@ fn run_add(args: &[OsString]) -> Result<String, CliError> {
     let quote = quote
         .filter(|quote| !quote.trim().is_empty())
         .ok_or_else(|| usage("--quote is required: the text the review is about"))?;
+    settle(&document, &allowed)?;
     let action = action.unwrap_or_else(|| {
         if requests.is_empty() || !comment.is_empty() {
             "improve".into()
@@ -370,7 +366,7 @@ fn run_relocate(args: &[OsString]) -> Result<String, CliError> {
         }
     }
     if !dry_run {
-        apply_inbox(&document, &allowed)?;
+        settle(&document, &allowed)?;
     }
     let (report, store) = crate::relocate_reviews(&document, expected_revision, &allowed, dry_run)
         .map_err(runtime)?;
@@ -431,6 +427,7 @@ fn run_restore(args: &[OsString]) -> Result<String, CliError> {
     }
     let record_path = record_path.ok_or_else(|| usage("--record is required"))?;
     let revision = expected_revision.ok_or_else(|| usage("--expected-revision is required"))?;
+    settle(&document, &allowed)?;
     let record_text = read_json_input(record_path, MAX_RECORD_BYTES, "review record")?;
     let record = serde_json::from_str(&record_text)
         .map_err(|error| usage(format!("invalid review record JSON: {error}")))?;
@@ -479,6 +476,23 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
 
+    /// Make a file look an hour old: settle leaves a file written in the last
+    /// two seconds alone, as it may be half written.
+    fn age(path: &std::path::Path) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3_600))
+            .unwrap();
+    }
+
+    /// A store in the hidden folder next to a document.
+    fn put_store(directory: &std::path::Path, stem: &str, json: &str) -> std::path::PathBuf {
+        let folder = directory.join(".pdf-next");
+        fs::create_dir_all(&folder).unwrap();
+        let store = folder.join(format!("{stem}.json"));
+        fs::write(&store, json).unwrap();
+        store
+    }
+
     #[test]
     fn help_is_consumed_before_viewer_argument_parsing() {
         assert_eq!(maybe_run(arguments(&["reviews", "--help"])), Some(0));
@@ -501,14 +515,13 @@ mod tests {
     fn list_and_update_use_the_sidecar_revision_cas() {
         let directory = tempfile::tempdir().unwrap();
         let pdf = directory.path().join("paper.pdf");
-        let sidecar = directory.path().join("paper_review.json");
         let patch = directory.path().join("patch.json");
         fs::write(&pdf, b"%PDF-1.7\n").unwrap();
-        fs::write(
-            &sidecar,
-            r#"{"format":3,"revision":8,"nextId":2,"document":{"pdf":"paper.pdf","project":"."},"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":1},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
-        )
-        .unwrap();
+        let sidecar = put_store(
+            directory.path(),
+            "paper",
+            r#"{"format":4,"revision":8,"nextId":2,"document":{"pdf":"paper.pdf","project":"."},"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":1},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
+        );
         let document = pdf.to_str().unwrap();
         let listed: serde_json::Value =
             serde_json::from_str(&run_list(&arguments(&[document])).unwrap()).unwrap();
@@ -583,21 +596,23 @@ mod tests {
     fn list_and_update_work_on_a_markdown_document() {
         let directory = tempfile::tempdir().unwrap();
         let markdown = directory.path().join("notes.md");
-        let sidecar = directory.path().join("notes_review.json");
         let patch = directory.path().join("patch.json");
         fs::write(&markdown, b"# Title\n\nselected text\n").unwrap();
-        fs::write(
-            &sidecar,
-            r#"{"format":3,"revision":2,"nextId":2,"reviews":[{"id":"r1","file":"notes.md","kind":"markdown","at":{"line":3},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
-        )
-        .unwrap();
+        age(&markdown);
+        put_store(
+            directory.path(),
+            "notes",
+            r#"{"format":4,"revision":2,"nextId":2,"reviews":[{"id":"r1","file":"notes.md","kind":"markdown","at":{"line":3},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
+        );
         let document = markdown.to_str().unwrap();
         let listed: serde_json::Value =
             serde_json::from_str(&run_list(&arguments(&[document])).unwrap()).unwrap();
-        assert_eq!(listed["revision"], 2);
+        // The first command places the comment on this text and records it.
+        assert_eq!(listed["revision"], 3);
         assert_eq!(listed["reviews"][0]["kind"], "markdown");
+        assert!(listed["reviews"][0]["anchor"]["documentRevision"].is_string());
 
-        fs::write(&patch, r#"{"status":"applied","resolution":"reworded"}"#).unwrap();
+        fs::write(&patch, r#"{"status":"done","resolution":"reworded"}"#).unwrap();
         let updated: serde_json::Value = serde_json::from_str(
             &run_update(&arguments(&[
                 document,
@@ -606,17 +621,30 @@ mod tests {
                 "--patch",
                 patch.to_str().unwrap(),
                 "--expected-revision",
-                "2",
+                "3",
             ]))
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(updated["revision"], 3);
-        assert_eq!(updated["reviews"][0]["status"], "applied");
+        assert_eq!(updated["revision"], 4);
+        assert_eq!(updated["reviews"][0]["status"], "done");
+        for refused in [r#"{"status":"question"}"#, r#"{"reply":"yes"}"#] {
+            fs::write(&patch, refused).unwrap();
+            let error = run_update(&arguments(&[
+                document,
+                "--id",
+                "r1",
+                "--patch",
+                patch.to_str().unwrap(),
+                "--expected-revision",
+                "4",
+            ]));
+            assert!(matches!(error, Err(CliError::Runtime(_))), "{refused}");
+        }
     }
 
     #[test]
-    fn the_agent_loop_runs_through_add_next_ask_done_and_relocate() {
+    fn the_agent_loop_runs_through_add_next_done_and_relocate() {
         let directory = tempfile::tempdir().unwrap();
         let markdown = directory.path().join("notes.md");
         fs::write(
@@ -624,6 +652,7 @@ mod tests {
             "# Title\n\nThe wake grows downstream of the body.\n",
         )
         .unwrap();
+        age(&markdown);
         let document = markdown.to_str().unwrap();
         let add = |extra: &[&str]| {
             let mut args = vec!["add", document];
@@ -663,16 +692,13 @@ mod tests {
             next.ends_with("3| The wake grows downstream of the body."),
             "{next}"
         );
-        assert_eq!(
-            run(&arguments(&["ask", document, "r1", "Why", "of", "what?"])).unwrap(),
-            "r1 waits on the reader; 0 open"
-        );
-        assert_eq!(
-            run(&arguments(&["next", document])).unwrap(),
-            "# notes.md: nothing open, 1 waiting on the reader"
-        );
+        // Questions go to the reader in the agent's terminal.
+        assert!(matches!(
+            run(&arguments(&["ask", document, "r1", "Why", "of", "what?"])),
+            Err(CliError::Runtime(m)) if m == "ask the reader in your terminal, not through pdf-next"
+        ));
         let brief = run(&arguments(&["brief", document, "--since", "0"])).unwrap();
-        assert!(brief.contains("1 waiting on the reader (r1)"), "{brief}");
+        assert!(brief.contains("1 open (1 changed since rev 0)"), "{brief}");
         assert!(matches!(
             run(&arguments(&["brief", document, "--since", "x"])),
             Err(CliError::Usage(_))
@@ -683,14 +709,22 @@ mod tests {
             "# Title\n\nA new line.\n\nThe wake grows downstream of the body.\n",
         )
         .unwrap();
-        let relocated = run(&arguments(&["relocate", document])).unwrap();
+        age(&markdown);
+        let dry = run(&arguments(&["relocate", document, "--dry-run"])).unwrap();
         assert_eq!(
-            relocated,
-            "r1 moved L3 -> L5\nr2 moved L3 -> L5\n2 moved, revision 4"
+            dry,
+            "r1 moved L3 -> L5\nr2 moved L3 -> L5\n2 moved, revision 2 (dry run)"
         );
+        // Every command settles the store first, so the lines are current
+        // before `relocate` looks.
+        let relocated = run(&arguments(&["relocate", document])).unwrap();
+        assert_eq!(relocated, "r1 unchanged\nr2 unchanged\n0 moved, revision 3");
+        assert!(run(&arguments(&["next", document]))
+            .unwrap()
+            .contains("r1 L5 "),);
         assert_eq!(
             run(&arguments(&["done", document, "r2", "said", "where"])).unwrap(),
-            "r2 applied; 0 open"
+            "r2 done; 1 open"
         );
     }
 
@@ -709,15 +743,15 @@ mod tests {
             "the wake grows",
         ]))
         .unwrap();
-        let sidecar = directory.path().join("notes_review.json");
-        let before = fs::read(&sidecar).unwrap();
-        fs::write(directory.path().join("notes_review.done"), "r1 said why\n").unwrap();
+        let sidecar = directory.path().join(".pdf-next/notes.json");
+        let inbox = directory.path().join("notes_review.txt");
+        let before = (fs::read(&sidecar).unwrap(), fs::read(&inbox).unwrap());
         let out = run(&arguments(&["relocate", document, "--dry-run"])).unwrap();
         assert!(out.ends_with("0 moved, revision 1"), "{out}");
         assert_eq!(
-            fs::read(&sidecar).unwrap(),
+            (fs::read(&sidecar).unwrap(), fs::read(&inbox).unwrap()),
             before,
-            "a dry run leaves the store as it was"
+            "a dry run leaves the store and the inbox as they were"
         );
     }
 
@@ -729,6 +763,62 @@ mod tests {
         let refused = run_list(&arguments(&[text.to_str().unwrap()]));
         assert!(
             matches!(refused, Err(CliError::Runtime(message)) if message.contains("PDF or Markdown"))
+        );
+    }
+
+    #[test]
+    fn inbox_ask_is_gone() {
+        let directory = tempfile::tempdir().unwrap();
+        let markdown = directory.path().join("notes.md");
+        fs::write(&markdown, "# Title\n\nselected text\n").unwrap();
+        let document = markdown.to_str().unwrap();
+        run(&arguments(&[
+            "add",
+            document,
+            "--line",
+            "3",
+            "--quote",
+            "selected text",
+        ]))
+        .unwrap();
+        let asked = run(&arguments(&["ask", document, "r1", "Which", "text?"]));
+        assert!(matches!(
+            asked,
+            Err(CliError::Runtime(message))
+                if message == "ask the reader in your terminal, not through pdf-next"
+        ));
+        let store: serde_json::Value =
+            serde_json::from_str(&run(&arguments(&["list", document])).unwrap()).unwrap();
+        assert_eq!(store["reviews"][0]["status"], "open", "nothing was asked");
+        assert!(!store["reviews"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("question"));
+        let help = run(&arguments(&["--help"])).unwrap();
+        assert!(!help.contains("pdf-next reviews ask"), "{help}");
+        assert!(help.contains("Ask the reader in your terminal"), "{help}");
+    }
+
+    #[test]
+    fn inbox_cli_read_survives_settle_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let markdown = directory.path().join("notes.md");
+        fs::write(&markdown, "# Title\n\nselected text\n").unwrap();
+        fs::write(
+            directory.path().join("notes_review.json"),
+            r#"{"format":3,"revision":2,"nextId":2,"reviews":[{"id":"r1","file":"notes.md","kind":"markdown","at":{"line":3},"quote":"selected text","comment":"","action":"improve","status":"open","resolution":"","color":1}]}"#,
+        )
+        .unwrap();
+        // The new store cannot be written: a file stands where its folder goes.
+        fs::write(directory.path().join(".pdf-next"), "in the way").unwrap();
+        let document = markdown.to_str().unwrap();
+        for command in ["brief", "list", "next"] {
+            let out = run(&arguments(&[command, document]));
+            assert!(out.is_ok(), "{command}: {out:?}");
+        }
+        assert!(
+            directory.path().join("notes_review.json").exists(),
+            "the old store stays"
         );
     }
 }

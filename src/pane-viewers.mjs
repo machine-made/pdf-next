@@ -96,7 +96,7 @@ export function imagePane({ url, onPick }) {
 // ── Review marks, read-only ───────────────────────────────────────────────
 
 const located = (found) => found.status === 'located' || found.status === 'changed';
-const gone = (review) => reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+const gone = (review) => reviewAction(review) === 'delete' && reviewStatus(review) === 'done';
 
 function tint(element, review, changed) {
   if (changed) element.classList.add('changed');

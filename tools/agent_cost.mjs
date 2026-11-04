@@ -1,21 +1,25 @@
 // What an agent reads while it works through a review store: builds stores of
-// 10, 50 and 200 reviews (Markdown and PDF, mixed actions and requests), runs
-// the real `pdf-next reviews` loop and counts the characters of every reply.
+// 10, 50 and 200 reviews (Markdown and PDF, mixed actions and requests), counts
+// the characters of the inbox file `{stem}_review.txt` that an agent reads, and
+// runs the real `pdf-next reviews` script loops, counting every reply.
 //
 //   node tools/agent_cost.mjs [--bin path/to/pdf-next]   print the tables
-//   node tools/agent_cost.mjs --check                    fail when a 50-review loop exceeds BUDGET
+//   node tools/agent_cost.mjs --check                    fail when a 50-review inbox or loop exceeds BUDGET
 //
 // Tokens are estimated two ways: characters / 3.5, and words × 4/3.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Characters an agent may read in one 50-review loop (36 open items), about
 // 10% over what 0.17.0 prints. Before 0.17.0 the brief loop read 5 749 / 5 613.
+// The inbox file of a 50-review Markdown store (36 open items) is what an
+// agent reads in 0.19: it holds no more than the brief loop did.
 const BUDGET = {
+  inbox: 5_600,
   'markdown brief': 5_600,
   'markdown next': 18_700,
   'pdf brief': 5_500,
@@ -128,7 +132,9 @@ function fixture(count, kind, seed = 7) {
       if (rand() < 0.3) comment = pick(NOTES);
       if (rand() < 0.15) requests = [pick(SCOPES)];
     }
-    const status = rand() < 0.75 ? 'open' : rand() < 0.6 ? 'applied' : 'resolved';
+    // 0.18 drew a second number to tell applied from resolved. Drawing it still
+    // keeps the fixtures, and so the tables, the same as before 0.19.
+    const status = rand() < 0.75 ? 'open' : (rand(), 'done');
     const before = paragraph.text.slice(Math.max(0, start - 200), start);
     const after = paragraph.text.slice(end, end + 200);
     const review = {
@@ -153,7 +159,7 @@ function fixture(count, kind, seed = 7) {
     };
     reviews.push(review);
   }
-  const store = { format: 3, revision: 40, nextId: count + 1, reviews };
+  const store = { format: 4, revision: 40, nextId: count + 1, reviews };
   return { source: `${lines.join('\n')}\n`, store };
 }
 
@@ -162,8 +168,33 @@ function makeTree(count, kind) {
   const { source, store } = fixture(count, kind);
   const doc = join(dir, kind === 'pdf' ? 'paper.pdf' : 'paper.md');
   writeFileSync(doc, kind === 'pdf' ? '%PDF-1.1\n%%EOF\n' : source);
-  writeFileSync(join(dir, 'paper_review.json'), `${JSON.stringify(store, null, 2)}\n`);
+  mkdirSync(join(dir, '.pdf-next'));
+  writeFileSync(join(dir, '.pdf-next', 'paper.json'), `${JSON.stringify(store, null, 2)}\n`);
+  prime(dir, doc, store);
   return { dir, doc };
+}
+
+/// The inbox file is written when the app saves the store. A fixture the app
+/// never saw has none, so save it once: a patch that changes nothing.
+function prime(dir, doc, store) {
+  const settled = run(['brief', doc], { allowFail: true });
+  if (!settled.ok) return;
+  const revision = settled.out.match(/rev(?:ision)? (\d+)/)?.[1];
+  const patch = join(dir, 'prime.json');
+  writeFileSync(patch, JSON.stringify({ color: store.reviews[0].color }));
+  run(['update', doc, '--id', 'r1', '--patch', patch, '--expected-revision', revision], { allowFail: true });
+  rmSync(patch, { force: true });
+}
+
+/// The inbox file an agent reads, as pdf-next wrote it.
+function inboxFile(count, kind) {
+  const { dir } = makeTree(count, kind);
+  try {
+    const file = join(dir, 'paper_review.txt');
+    return existsSync(file) ? { calls: 1, chars: readFileSync(file, 'utf8').length, words: readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).length } : null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function run(cliArgs, { allowFail = false } = {}) {
@@ -274,6 +305,14 @@ if (args.includes('--sample')) {
 
 if (check) {
   const failures = [];
+  const inbox = inboxFile(50, 'markdown');
+  if (!inbox) {
+    console.error('agent_cost: pdf-next wrote no {stem}_review.txt for a 50-review Markdown store');
+    process.exit(1);
+  }
+  const inboxVerdict = inbox.chars <= BUDGET.inbox ? 'ok' : 'OVER';
+  console.log(`markdown inbox file, 50 reviews: ${inbox.chars} chars (budget ${BUDGET.inbox}) ${inboxVerdict}`);
+  if (inboxVerdict !== 'ok') failures.push('inbox');
   for (const kind of ['markdown', 'pdf']) {
     const brief = briefLoop(50, kind);
     const loops = { [`${kind} brief`]: sum(brief.brief, brief.done) };
@@ -300,6 +339,7 @@ const row = (count, kind, step, data) => rows.push(data
   : [count, kind, step, '–', 'n/a', 'n/a', 'n/a']);
 for (const count of [10, 50, 200]) {
   for (const kind of ['markdown', 'pdf']) {
+    row(count, kind, '**inbox file**', inboxFile(count, kind));
     const brief = briefLoop(count, kind);
     row(count, kind, 'brief', brief.brief);
     row(count, kind, 'done (all)', brief.done);

@@ -324,7 +324,7 @@ E = mc^2
         let applied = crate::patch_review_record(
             pdf.to_str().unwrap(),
             &id,
-            &json!({"status":"applied", "resolution":"Removed selected sentence and rebuilt.",
+            &json!({"status":"done", "resolution":"Removed selected sentence and rebuilt.",
                 "source":{"file":"chapters/methods.tex"},
                 "build":{"success":true,"documentRevision":after}}),
             &json!({"$revision":store.revision}),
@@ -351,7 +351,7 @@ E = mc^2
         assert!(crate::patch_review_record(
             pdf.to_str().unwrap(),
             &id,
-            &json!({"status":"applied", "build":{"success":false}}),
+            &json!({"status":"done", "build":{"success":false}}),
             &json!({"$revision":applied.revision}),
             &allowed,
             false

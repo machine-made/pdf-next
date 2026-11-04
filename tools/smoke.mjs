@@ -82,7 +82,7 @@ function denseReviews(file) {
 
 function reviewStore(file, revision, reviews = []) {
   return JSON.stringify({
-    format: 3,
+    format: 4,
     revision,
     nextId: reviews.length + 1,
     document: { task: 'PDF review smoke fixture', pdf: basename(file), project: '.' },
@@ -91,9 +91,9 @@ function reviewStore(file, revision, reviews = []) {
 }
 
 function validateDenseSidecar(file, revision) {
-  const sidecar = join(dirname(file), `${basename(file, extname(file))}_review.json`);
+  const sidecar = join(dirname(file), '.pdf-next', `${basename(file, extname(file))}.json`);
   const store = JSON.parse(readFileSync(sidecar, 'utf8'));
-  if (store.format !== 3 || store.revision !== revision || store.nextId !== 33) {
+  if (store.format !== 4 || store.revision !== revision || store.nextId !== 33) {
     throw new Error('dense-page sidecar format, revision, or nextId changed');
   }
   if (store.reviews.length !== 32 || new Set(store.reviews.map((review) => review.id)).size !== 32) {
@@ -257,7 +257,8 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
           const bytes = readFileSync(file);
           let expectedBytes = bytes;
           const stem = basename(file, extname(file));
-          const sidecar = join(dirname(file), `${stem}_review.json`);
+          const sidecar = join(dirname(file), '.pdf-next', `${stem}.json`);
+          mkdirSync(dirname(sidecar), { recursive: true });
           const pause = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
           const stressReload = stem.toLowerCase() === 'dense-page';
           const fixtureReviews = stressReload ? denseReviews(file) : [];
@@ -460,7 +461,8 @@ try {
     const opened = join(copies, basename(file));
     if (basename(opened).toLowerCase() === 'dense-page.pdf') {
       const reviews = denseReviews(opened);
-      writeFileSync(join(copies, 'dense-page_review.json'), reviewStore(opened, 1, reviews));
+      mkdirSync(join(copies, '.pdf-next'), { recursive: true });
+      writeFileSync(join(copies, '.pdf-next', 'dense-page.json'), reviewStore(opened, 1, reviews));
     }
     const { code, output, firstReport, reload } = await open(binary, opened, seconds);
     const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';

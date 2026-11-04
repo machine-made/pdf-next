@@ -1,5 +1,5 @@
 /// The buttons on the review card. Each is a stable word the agent reads in
-/// `{stem}_review.agent.txt`, spelled out as an instruction there; the review
+/// `{stem}_review.txt`, spelled out as an instruction there; the review
 /// record keeps the words in `requests`, as `group:name`. Rust holds the same
 /// list (REVIEW_REQUESTS in main.rs); tools/check_frontend.mjs keeps them equal.
 

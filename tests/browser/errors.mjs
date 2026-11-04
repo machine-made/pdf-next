@@ -67,16 +67,18 @@ await clear();
 
 await fail('patch_review', 'review conflict: status changed on disk');
 await page.evaluate(() => {
-  window.__store.reviews[0].status = 'applied';
+  window.__store.reviews[0].status = 'done';
   window.__store.revision += 1;
   window.__emit('reviews-changed', { path: '/d/a.md' });
 });
 await settle();
-await page.click('#reviewList .review-row button:has-text("Resolve")');
+await page.click('#reviewList .review-row button:has-text("Reopen")');
+await page.keyboard.type('Check it');
+await page.keyboard.press('Enter');
 await settle();
 await shows('changed on disk; reloaded it', 'A status change that conflicts reloads and says so');
 await fail('patch_review', 'disk is full');
-await page.click('#reviewList .review-row button:has-text("Resolve")');
+await page.locator('#reviewList .review-reopen-note').press('Enter');
 await settle();
 await shows('Review update failed: disk is full', 'Any other refusal says why');
 await clear();

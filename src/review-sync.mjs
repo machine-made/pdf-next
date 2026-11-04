@@ -1,4 +1,4 @@
-/// Human + agent share `{stem}_review.json`. Disk that parses is the store.
+/// Human + agent share the review store `.pdf-next/{stem}.json`. Disk that parses is the store.
 /// The panel is a view that also writes. Conflicting or removed-record drafts
 /// remain available for explicit recovery instead of being silently discarded.
 

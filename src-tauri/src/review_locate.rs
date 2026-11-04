@@ -195,6 +195,58 @@ pub(crate) enum Found {
     Unlocated,
 }
 
+/// How many times the whitespace-normalised quote stands in the text, whatever
+/// its context. A comment whose quote is still there is not gone.
+pub(crate) fn count_exact(text: &[char], quote: &str) -> usize {
+    let want = normalize(quote);
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(at) = find_from(text, &want, from) {
+        count += 1;
+        from = at + 1;
+    }
+    count
+}
+
+/// Whether the quote stands in the raw source once HTML tags and Markdown
+/// emphasis marks (`*`, `_`, `` ` ``, `~`) are taken out of both. For text the
+/// renderer does not show, such as the inside of a raw HTML block.
+pub(crate) fn quote_in_raw(source: &str, quote: &str) -> bool {
+    fn strip(text: &str, tag_gap: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut in_tag = false;
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if in_tag {
+                if c == '>' {
+                    in_tag = false;
+                    out.push_str(tag_gap);
+                }
+            } else if c == '<'
+                && chars
+                    .peek()
+                    .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!'))
+            {
+                in_tag = true;
+            } else if !matches!(c, '*' | '_' | '`' | '~') {
+                out.push(c);
+            }
+        }
+        out.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+    let want = strip(quote, "");
+    if want.is_empty() {
+        return false;
+    }
+    // A tag may or may not stand for a space between words.
+    ["", " "]
+        .iter()
+        .any(|gap| strip(source, gap).contains(&want))
+}
+
 fn find_from(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
     if needle.is_empty() || needle.len() > hay.len() {
         return None;
