@@ -6089,7 +6089,8 @@ function blockTextNodes(line) {
 /// Puts the DOM caret back where the source caret is, after a re-render. When the
 /// file changed under the caret, it is found again by the text around it, unless
 /// a write is queued: that write then refuses the caret, so no key lands in the
-/// changed file.
+/// changed file. With focus in a field outside the text, the window selection is
+/// left alone.
 function restoreMarkdownCaret() {
   const caret = state.caret;
   if (!caret || caret.path !== state.file?.path || caret.offset == null || state.markdownRaw) return;
@@ -6113,12 +6114,18 @@ function restoreMarkdownCaret() {
     return;
   }
   const node = nodes[place.index];
-  const range = document.createRange();
-  range.setStart(node, place.at);
-  range.collapse(true);
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
+  // Focus in another field (find, a note, the Edit box, the review panel): its selection and focus stay where the
+  // reader is typing. The caret is only kept, for the next time the text has focus.
+  const active = document.activeElement;
+  const elsewhere = active && active !== document.body && active !== document.documentElement && !ui.markdown.contains(active);
+  if (!elsewhere) {
+    const range = document.createRange();
+    range.setStart(node, place.at);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
   state.caret = {
     path: caret.path,
     offset,

@@ -1061,6 +1061,48 @@ const eighteen = await session({ '/d/a.md': raw });
 }
 await eighteen.close();
 
+// ── Session 19: a re-render while the reader types in another field leaves that field's focus and selection alone ──
+const nineteen = await session({ '/d/a.md': raw });
+{
+  const p19 = nineteen.page;
+  const p = await spot('brave', 'end', p19);
+  await p19.mouse.click(p.x, p.y);
+  await p19.waitForTimeout(100);
+  await p19.keyboard.press('Control+f');
+  await p19.waitForTimeout(200);
+  await p19.keyboard.type('abcde');
+  await p19.keyboard.press('ArrowLeft');
+  await p19.keyboard.press('ArrowLeft');
+  const field = () => p19.evaluate(() => {
+    const el = document.activeElement;
+    return { id: el.id, value: el.value, at: el.selectionStart, end: el.selectionEnd };
+  });
+  const typing = await field();
+  await p19.evaluate((external) => {
+    window.__files['/d/a.md'] = external;
+    window.__emit('file-changed', { path: '/d/a.md', kind: 'changed', revision: 9 });
+  }, 'Added line.\n\n' + raw);
+  await p19.waitForTimeout(600);
+  const kept = await field();
+  const outside = await p19.evaluate(() => {
+    const anchor = getSelection().anchorNode;
+    return !anchor || !document.getElementById('markdown').contains(anchor);
+  });
+  ok(typing.id === 'findInput' && typing.value === 'abcde' && typing.at === 3,
+    `The find field has focus with a caret inside its text (${JSON.stringify(typing)})`);
+  ok(JSON.stringify(kept) === JSON.stringify(typing) && outside,
+    `A re-render while typing in the find field keeps its focus, text and caret, and the window selection stays out of the article (${JSON.stringify(kept)})`);
+  // Back in the text, the changed file takes a typed key at the clicked place.
+  const back = await spot('brave', 'end', p19);
+  await p19.mouse.click(back.x, back.y);
+  await p19.waitForTimeout(100);
+  await p19.keyboard.press('Z');
+  await p19.waitForTimeout(400);
+  ok(await p19.evaluate(() => window.__files['/d/a.md']) === ('Added line.\n\n' + raw).replace('brave new', 'braveZ new'),
+    'and a click back into the text types at that place in the changed file');
+}
+await nineteen.close();
+
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({
   '/d/a.md': {
