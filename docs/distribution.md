@@ -122,7 +122,8 @@ A release is started by hand with `gh workflow run tag.yml`. The run first
 runs CI (`.github/workflows/ci.yml`) on that commit. If CI is green, it tags
 the version `v<version>` when that version has no tag yet (the same in
 `package.json`, `tauri.conf.json` and `Cargo.toml`) and dispatches `release.yml`
-on that tag. Bump the version in the release PR before starting the release.
+on that tag. Bump the version in the release PR and merge it first, then run
+`gh workflow run tag.yml --ref main`; a release runs only from `main`.
 
 Each tag submits itself: after the release is published, `release.yml`
 calls `.github/workflows/winget.yml`, which runs `wingetcreate update
