@@ -56,14 +56,22 @@ export const defaultFiles = {
 // the Rust renderer's. `window.__fail[cmd] = 'message'` makes a command reject
 // (sessionStorage `fail`, as JSON, does the same across a reload). A path in
 // `window.__missing` (or sessionStorage `missing`) does not exist.
-function mockTauri({ files, initial, theme, store }) {
+function mockTauri({ files, initial, theme, store, platform }) {
   if (store) window.__store = store;
+  window.__platform = platform || '';
   const render = (raw) => raw.split('\n\n').filter(Boolean).map((block, i) => {
     const line = i ? raw.split('\n\n').slice(0, i).join('\n\n').split('\n').length + 2 : 1;
     return `<p><span class="src" data-line="${line}"></span>${block.replace(/\n$/, '')}</p>`;
   }).join('\n');
   const text = (p) => (typeof files[p] === 'object' ? files[p].raw : files[p]);
   let rev = 1;
+  // A digest of the content, as the Rust command takes it: the same text gives the same digest.
+  const digestOf = (p) => {
+    const s = text(p);
+    let h = 5381;
+    for (let i = 0; i < s.length; i += 1) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return `sha256:${s.length}:${h.toString(16)}`;
+  };
   window.__calls = [];
   window.__files = files;
   window.__fail = JSON.parse(sessionStorage.getItem('fail') || '{}');
@@ -94,7 +102,7 @@ function mockTauri({ files, initial, theme, store }) {
         window.__calls.push([cmd, args]);
         if (window.__fail[cmd]) throw window.__fail[cmd];
         switch (cmd) {
-          case 'launch_options': return { version: '0.0.0-test' };
+          case 'launch_options': return { version: '0.0.0-test', platform: window.__platform };
           case 'initial_file': return !initial || sessionStorage.getItem('noInitial') ? null : info(initial);
           case 'pending_files': return [];
           case 'files_exist': {
@@ -105,18 +113,37 @@ function mockTauri({ files, initial, theme, store }) {
             if ([...(window.__missing || []), ...JSON.parse(sessionStorage.getItem('missing') || '[]')].includes(args.path)) throw `${args.path} does not exist`;
             return info(args.path);
           case 'read_markdown': {
+            // window.__readDelay (ms) holds the next read only; the file is read when the delay ends.
+            if (window.__readDelay) {
+              const ms = window.__readDelay;
+              window.__readDelay = 0;
+              await new Promise((done) => setTimeout(done, ms));
+            }
             const f = files[args.path];
-            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: `sha256:${text(args.path).length}:${rev}` };
+            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: digestOf(args.path) };
           }
           case 'read_json': return text(args.path);
           case 'edit_markdown': {
             const path = args.path ?? '/d/a.md';
+            // window.__editDelay (ms) holds a write in flight before it checks the file, so a test can
+            // change the file or press keys while it runs. The check is the Rust command's: digest, then text.
+            if (window.__editDelay) await new Promise((done) => setTimeout(done, window.__editDelay));
+            // window.__throwOnce (a message) makes the next write throw after its delay, as a crash in the command would.
+            if (window.__throwOnce) {
+              const message = window.__throwOnce;
+              window.__throwOnce = '';
+              throw message;
+            }
+            if (args.expectedDigest === undefined) throw 'edit_markdown needs the digest of the file it was computed on';
+            if (args.expectedDigest !== digestOf(path)) throw 'the file changed on disk';
             const f = text(path);
-            if (f.slice(args.start, args.start + args.expectedText.length) !== args.expectedText) throw 'the file changed on disk';
+            if (f.slice(args.start, args.start + args.expectedText.length) !== args.expectedText) {
+              throw 'the text to edit is not where it was; reload and try again';
+            }
             const s = f.slice(0, args.start) + args.replacement + f.slice(args.start + args.expectedText.length);
             files[path] = s;
             rev += 1;
-            return `sha256:${s.length}:${rev}`;
+            return digestOf(path);
           }
           case 'read_reviews': return window.__store ? copy(window.__store) : null;
           case 'append_review': return write((st) => {
@@ -150,6 +177,10 @@ function mockTauri({ files, initial, theme, store }) {
           case 'os_theme': return theme;
           case 'siblings': return [];
           case 'pick_file': return window.__pick ?? null;
+          // window.__trashDelay (ms) holds the answer to trash_plan, so a write can start while the trash is being planned.
+          case 'trash_plan':
+            if (window.__trashDelay) await new Promise((done) => setTimeout(done, window.__trashDelay));
+            return null;
           default: return null;
         }
       },
@@ -176,13 +207,13 @@ function mockTauri({ files, initial, theme, store }) {
 const tally = { pass: 0, fail: 0, errors: [] };
 
 /** Open the app. `initial` is the launch file, or null for the empty window. */
-export async function start({ files = defaultFiles, initial = '/d/a.md', theme = 'light', store = null, viewport = { width: 1500, height: 900 }, prepare = null } = {}) {
+export async function start({ files = defaultFiles, initial = '/d/a.md', theme = 'light', store = null, viewport = { width: 1500, height: 900 }, prepare = null, platform = '' } = {}) {
   const server = await serve();
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport, colorScheme: theme });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.addInitScript(mockTauri, { files, initial, theme, store });
+  await page.addInitScript(mockTauri, { files, initial, theme, store, platform });
   // The launch update check would reach GitHub and race the status line.
   await page.route('https://api.github.com/**', (route) => route.abort());
   if (process.env.PDF_NEXT_COVERAGE) await page.coverage.startJSCoverage({ resetOnNavigation: false });
