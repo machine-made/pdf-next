@@ -7091,7 +7091,7 @@ ui.markdown.addEventListener('compositionend', (event) => {
   const refusal = composingRefusal;
   composingAt = null;
   composingRefusal = null;
-  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw) return;
+  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw || presentation) return;
   const refuse = (message) => {
     enqueueWrite(async () => {
       setStatus(message, { error: true });
@@ -7642,6 +7642,8 @@ async function startPresentation() {
     scrollTop: ui.markdownStage.scrollTop,
   };
   document.body.classList.add('presenting');
+  // A slide is read, not typed into: the article takes no caret until the presentation ends.
+  ui.markdown.contentEditable = 'false';
   if (state.wrap) setWrap(false);
   if (kind === 'pdf') {
     applyPdfSpread();
@@ -7670,6 +7672,7 @@ async function stopPresentation() {
   if (!saved) return;
   presentation = null;
   document.body.classList.remove('presenting');
+  ui.markdown.contentEditable = 'true';
   const here = () => state.file?.path === saved.path;
   const restore = () => {
     if (!here()) return;
@@ -7711,7 +7714,8 @@ window.addEventListener('resize', () => {
 window.addEventListener('keydown', (event) => {
   if (!presentation || event.ctrlKey || event.metaKey || event.altKey) return;
   // The palette or Settings opened over the slides keeps its keys.
-  if (palette.isOpen || !ui.settingsPanel.hidden || isTextField(event.target)) return;
+  // The article is a text field for the browser, but while presenting its keys are the presentation's.
+  if (palette.isOpen || !ui.settingsPanel.hidden || (isTextField(event.target) && !ui.markdown.contains(event.target))) return;
   const steps = {
     ArrowRight: 1, ArrowDown: 1, PageDown: 1, Enter: 1, n: 1, j: 1, ' ': event.shiftKey ? -1 : 1,
     ArrowLeft: -1, ArrowUp: -1, PageUp: -1, Backspace: -1, p: -1, k: -1, Home: -Infinity, End: Infinity,
@@ -7933,7 +7937,7 @@ window.addEventListener('keydown', (event) => {
   const plainAlt = key.length === 1 && !event.metaKey && (Boolean(event.getModifierState?.('AltGraph')) ||
     (state.platform === 'windows' && event.ctrlKey && event.altKey) ||
     (state.platform === 'macos' && event.altKey && !event.ctrlKey));
-  if (!event.metaKey && (!(event.ctrlKey || event.altKey) || plainAlt) && caretKeyTarget() && handleCaretKey(event)) {
+  if (!presentation && !event.metaKey && (!(event.ctrlKey || event.altKey) || plainAlt) && caretKeyTarget() && handleCaretKey(event)) {
     return;
   }
   // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.

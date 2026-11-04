@@ -1103,6 +1103,103 @@ const nineteen = await session({ '/d/a.md': raw });
 }
 await nineteen.close();
 
+// ── Session 20: a paragraph wrapped over three lines, caret on line 2: typed keys land in order, and the caret is put back ──
+const wrapped = 'First line of the\nsecond line has words\nthird line ends here.\n\nNext paragraph.\n';
+const twenty = await session({ '/d/a.md': wrapped });
+{
+  const p20 = twenty.page;
+  const file20 = () => p20.evaluate(() => { const f = window.__files['/d/a.md']; return typeof f === 'object' ? f.raw : f; });
+  const p = await spot('words', 'end', p20);
+  await p20.mouse.click(p.x, p.y);
+  await p20.waitForTimeout(100);
+  await p20.keyboard.press('x');
+  await p20.waitForTimeout(400);
+  await p20.keyboard.press('y');
+  await p20.waitForTimeout(400);
+  ok(await file20() === wrapped.replace('words', 'wordsxy'), `Two keys typed on line 2 of a wrapped paragraph land in order (${JSON.stringify(await file20())})`);
+  const before = await p20.evaluate(() => {
+    const s = getSelection();
+    return s.anchorNode?.nodeType === 3 ? s.anchorNode.textContent.slice(0, s.anchorOffset).split(/\s+/).slice(-1)[0] : null;
+  });
+  ok(before === 'wordsxy', `and the caret is back after the typed text (${JSON.stringify(before)})`);
+  ok(!(await p20.textContent('#status')).includes('could not be placed'), 'with no caret message');
+}
+{
+  const result = await twenty.page.evaluate(async () => {
+    const m = await import('/caret-edit.mjs');
+    const raw = 'First line of the\nsecond line has words\nthird line ends here.\n\nNext paragraph.\n';
+    const text = 'First line of the second line has words third line ends here.';
+    const out = {};
+    const at2 = raw.indexOf('words') + 'wor'.length;
+    const at3 = raw.indexOf('ends') + 'en'.length;
+    const first = m.nodeAtOffset(raw, 4, [text]);
+    out.line1 = first && first.at;
+    const second = m.nodeAtOffset(raw, at2, [text]);
+    out.line2 = second && [second.index, second.at];
+    const third = m.nodeAtOffset(raw, at3, [text]);
+    out.line3 = third && [third.index, third.at];
+    out.want2 = text.indexOf('words') + 3;
+    out.want3 = text.indexOf('ends') + 2;
+    // A paragraph after a blank line starts its own block.
+    const next = m.nodeAtOffset(raw, raw.indexOf('paragraph') + 3, ['Next paragraph.', text]);
+    out.next = next && [next.index, next.at];
+    return out;
+  });
+  ok(result.line1 === 4 && JSON.stringify(result.line2) === JSON.stringify([0, result.want2]) && JSON.stringify(result.line3) === JSON.stringify([0, result.want3])
+    && JSON.stringify(result.next) === JSON.stringify([0, 'Next paragraph.'.indexOf('paragraph') + 3]),
+  `nodeAtOffset places a caret on line 1, 2 and 3 of a wrapped paragraph, and after a blank line (${JSON.stringify(result)})`);
+}
+await twenty.close();
+
+// ── Session 21: a presentation never edits the file ──
+const longMd = Array.from({ length: 300 }, (_, n) => `Paragraph ${n + 1} has some words in it, enough to fill a line or so of a page.`).join('\n\n') + '\n';
+const twentyone = await session({ '/d/a.md': longMd });
+{
+  const p21 = twentyone.page;
+  const centred = () => p21.evaluate(() => {
+    const stage = document.getElementById('markdownStage').getBoundingClientRect();
+    const middle = stage.top + stage.height / 2;
+    return [...document.querySelectorAll('#markdown > .md-page')].findIndex((s) => { const r = s.getBoundingClientRect(); return r.top <= middle && r.bottom >= middle; });
+  });
+  const writes21 = () => p21.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const p = await spot('Paragraph 1 ', 'end', p21);
+  await p21.mouse.click(p.x, p.y);
+  await p21.waitForTimeout(100);
+  await p21.keyboard.press('F5');
+  await p21.waitForTimeout(500);
+  ok(await p21.evaluate(() => document.body.classList.contains('presenting')), 'F5 presents the Markdown file');
+  // A click in the slide, as a presenter might make, then the stepping keys.
+  const q = await spot('Paragraph 1 ', 'end', p21);
+  await p21.mouse.click(q.x, q.y);
+  await p21.waitForTimeout(100);
+  const start = await centred();
+  const seen = [start];
+  for (const key of ['n', 'j', 'Space', 'Backspace']) {
+    await p21.keyboard.press(key);
+    await p21.waitForTimeout(250);
+    seen.push(await centred());
+  }
+  ok(JSON.stringify(seen) === JSON.stringify([start, start + 1, start + 2, start + 3, start + 2]),
+    `n, j and Space step the slides forward and Backspace back, with the caret in the slide (${JSON.stringify(seen)})`);
+  await p21.keyboard.press('Delete');
+  await p21.waitForTimeout(250);
+  await p21.keyboard.press('x');
+  await p21.waitForTimeout(250);
+  ok(await writes21() === 0 && await p21.evaluate(() => window.__files['/d/a.md']) === longMd, `Presenting writes nothing to the file (${await writes21()} writes)`);
+  await p21.keyboard.press('Escape');
+  await p21.waitForTimeout(400);
+  ok(!(await p21.evaluate(() => document.body.classList.contains('presenting'))) && await p21.$eval('#markdown', (el) => el.isContentEditable),
+    'Esc leaves the presentation and the article takes a caret again');
+  const back = await spot('Paragraph 1 ', 'end', p21);
+  await p21.mouse.click(back.x, back.y);
+  await p21.waitForTimeout(100);
+  await p21.keyboard.press('x');
+  await p21.waitForTimeout(400);
+  ok(await p21.evaluate(() => window.__files['/d/a.md']) === longMd.replace('Paragraph 1 has', 'Paragraph 1 xhas') || await writes21() === 1,
+    'and a typed key writes again after the presentation');
+}
+await twentyone.close();
+
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({
   '/d/a.md': {

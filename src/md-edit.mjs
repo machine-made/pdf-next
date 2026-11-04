@@ -28,6 +28,15 @@ function lineStarts(raw) {
   return starts;
 }
 
+/// The first line of the paragraph that `line` is in: back to the line after the
+/// previous blank line, or to line 1. Lines are 1-based.
+export function blockStartLine(raw, line) {
+  const lines = raw.split('\n');
+  let first = Math.min(Math.max(1, Number(line) || 1), lines.length);
+  for (let guard = 0; first > 1 && guard < 400 && lines[first - 2].trim() !== ''; guard += 1) first -= 1;
+  return first;
+}
+
 /// The source of the block a selection sits in: from its first line to the
 /// end of the paragraph its last line belongs to (the next blank line).
 /// Lines are 1-based, as in a review's `at`.
