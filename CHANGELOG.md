@@ -4,7 +4,6 @@
 
 - Fixed Markdown files opening raw: every file now opens rendered, whether it is new, opened from Open recent, reopened in a tab or restored with the session. Ctrl+U switches only the open file to raw.
 - Changed the raw view to stay per tab and never be saved, so a restart shows the rendered page. A raw choice saved by an older version no longer forces raw.
-- Added browser tests that keep Latin Modern as the default Markdown font, and keep the colour mode, font, size and width global across files, tabs, panes and restarts.
 - Added typing in the rendered Markdown view: a click puts a caret where you click, and typing, Space, Backspace and Delete change the `.md` itself. Typing over a selection replaces it. Math, code, links, tables and figures take no caret.
 - Added Ctrl+Z for typed edits: typing without a pause of half a second or more undoes as one step; each Backspace and each Delete is its own undo step.
 - Added the Delete key to remove the selected text in the rendered Markdown view, with no right-click needed.
