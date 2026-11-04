@@ -6098,7 +6098,7 @@ function restoreMarkdownCaret() {
   let offset = caret.offset;
   if (caret.digest !== state.markdownDigest) {
     if (writeBusy || writeQueue.length) return;
-    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at, caret.offset);
+    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at);
     if (!moved) {
       state.caret = null;
       setStatus('The text around the caret is gone: click where you want to type', { error: true });

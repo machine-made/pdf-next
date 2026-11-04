@@ -1314,8 +1314,10 @@ const twentythree = await session({ '/d/a.md': raw });
     const near = before.length - 1;
     out.moved = m.relocate(after, 'Alpha beta.', 'Alpha beta.'.length, near);
     out.movedFirst = m.relocate(after, 'Alpha beta.', 3, 3);
-    // Nothing moved above the caret: the copy at the old offset is the one.
+    // Nothing moved above the caret, but the copies are still identical: no copy is chosen.
     out.stayed = m.relocate(`${before}Tail.\n`, 'Alpha beta.', 'Alpha beta.'.length, near);
+    // A 13-character line is prepended: the FIRST copy's caret place is now the old offset 16, and it is not the caret's copy.
+    out.prepended = m.relocate('12345678901\n\nAlpha beta.\n\nAlpha beta.\n', 'Alpha beta.', 3, 16);
     // The line added above is 7 characters: the old offset 16 lies inside the first copy's new span, which is not the caret's copy.
     out.shortLine = m.relocate('Short\n\nAlpha beta.\n\nAlpha beta.\n', 'Alpha beta.', 3, 16);
     // One match: the same as before, wherever the old offset was.
@@ -1332,8 +1334,10 @@ const twentythree = await session({ '/d/a.md': raw });
     `and a repeat inside one item is still refused when the run cannot be told apart (${JSON.stringify(result.repeat)}, ${result.repeatNode})`);
   ok(result.moved === null && result.movedFirst === null,
     `relocate returns nothing for two identical copies when the text above them moved (${JSON.stringify([result.moved, result.movedFirst])})`);
-  ok(result.shortLine === null && result.stayed?.offset === 24 && result.single?.offset === 9 && result.gone === null,
-    `relocate still finds the copy at the old offset, a single match anywhere, and nothing for gone text (${JSON.stringify([result.stayed, result.single, result.gone])})`);
+  ok(result.shortLine === null && result.prepended === null && result.stayed === null,
+    `relocate returns nothing for several identical copies, whatever the old offset (${JSON.stringify([result.shortLine, result.prepended, result.stayed])})`);
+  ok(result.single?.offset === 9 && result.gone === null,
+    `and still finds a single match anywhere, and nothing for gone text (${JSON.stringify([result.single, result.gone])})`);
 }
 await twentythree.close();
 {
@@ -1370,9 +1374,9 @@ await twentythree.close();
   await s24.close();
 }
 {
-  // In the page: the same file with a line added below the copies: the caret stays in the second.
+  // In the page: a 13-character line is prepended, so the first copy's caret place equals the old offset (16) of a caret 3 characters into the second.
   const twins = 'Alpha beta.\n\nAlpha beta.\n';
-  const changed = twins + '\nA line added below.\n';
+  const changed = '12345678901\n\n' + twins;
   const s25 = await session({ '/d/a.md': twins });
   const p25 = s25.page;
   const at = await p25.evaluate(() => {
@@ -1380,7 +1384,7 @@ await twentythree.close();
     const nodes = [];
     while (walk.nextNode()) if (walk.currentNode.textContent.includes('Alpha beta.')) nodes.push(walk.currentNode);
     const range = document.createRange();
-    range.setStart(nodes.at(-1), nodes.at(-1).textContent.length);
+    range.setStart(nodes.at(-1), 3);
     range.collapse(true);
     const box = range.getBoundingClientRect();
     return { x: box.left - 1, y: box.top + box.height / 2 };
@@ -1395,8 +1399,8 @@ await twentythree.close();
   await p25.keyboard.press('Z');
   await p25.waitForTimeout(400);
   const after = await p25.evaluate(() => window.__files['/d/a.md']);
-  ok(after === 'Alpha beta.\n\nAlpha beta.Z\n\nA line added below.\n',
-    `A line added below two identical paragraphs leaves the caret in the second (${JSON.stringify(after)})`);
+  ok(after === changed && await p25.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length) === 0,
+    `A prepended line that puts the first copy's caret place on the old offset does not send the key to the first paragraph (${JSON.stringify(after)})`);
   await s25.close();
 }
 

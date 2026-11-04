@@ -3240,12 +3240,14 @@ if (releaseTag) {
   const moved = 'New sentence.\n\nHello brave new world.\n\nSecond paragraph here.\n';
   assert.equal(relocate(moved, 'Second paragraph here.', 6, 0).offset, moved.indexOf('Second') + 6,
     'A caret is found again by the text on each side of it, after a change before it.');
-  assert.equal(relocate('a b. z\n\na b. z\n', 'a b. z', 4, 12).offset, 'a b. z\n\n'.length + 4,
-    'Two matches: the caret goes to the one whose caret place is its old place.');
+  assert.equal(relocate('a b. z\n\na b. z\n', 'a b. z', 4, 12), null,
+    'Two identical copies: no caret is guessed, not even at the old offset.');
   assert.equal(relocate('a b. z\n\na b. z\n', 'a b. z', 4, 14), null,
     'Two matches, neither at the old place: no caret is guessed.');
   assert.equal(relocate('Short\n\nAlpha beta.\n\nAlpha beta.\n', 'Alpha beta.', 3, 16), null,
     'Two matches and an old offset inside the first one after a line was added above: no caret, not the first copy.');
+  assert.equal(relocate('12345678901\n\nAlpha beta.\n\nAlpha beta.\n', 'Alpha beta.', 3, 16), null,
+    'Two matches, and the first one now has its caret place on the old offset: no caret, not the first copy.');
   assert.equal(relocate(moved, 'Gone text.', 4, 0), null, 'Text that is gone leaves no caret.');
   assert.equal(continuesTyping({ typing: true, after: { offset: 3 }, edits: Array(200).fill({ replacement: 'x' }) },
     insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 0), false, 'A coalesced run stops at 200 characters.');

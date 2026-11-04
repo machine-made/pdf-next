@@ -59,25 +59,22 @@ export function offsetInText(raw, line, text, at) {
 
 /// The caret again, after the file changed: the text on each side of it is
 /// searched for in the whole source. One match is the answer. With several
-/// identical copies the caret is never guessed: the match counts only when its
-/// caret place is exactly `near` (the old offset), so the text before it did
-/// not move. Null when that text is gone or the copies cannot be told apart.
-export function relocate(raw, text, at, near) {
+/// identical copies nothing tells which one the caret was in (an equal offset
+/// proves nothing once text was added above), so none is guessed. Null when
+/// that text is gone or appears more than once.
+export function relocate(raw, text, at) {
   if (!text.trim()) return null;
   const pattern = new RegExp(
     `(?<before>${plainPattern(text.slice(0, at))})(?<after>${plainPattern(text.slice(at))})`,
     'gu',
   );
   const found = [...raw.matchAll(pattern)];
-  if (found.length === 0) return null;
-  const best = found.length === 1
-    ? found[0]
-    : found.find((match) => match.index + match.groups.before.length === near);
-  if (!best) return null;
+  if (found.length !== 1) return null;
+  const [match] = found;
   return {
-    offset: best.index + best.groups.before.length,
-    start: best.index,
-    end: best.index + best[0].length,
+    offset: match.index + match.groups.before.length,
+    start: match.index,
+    end: match.index + match[0].length,
   };
 }
 
