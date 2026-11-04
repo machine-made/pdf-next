@@ -3,7 +3,7 @@
 /// one place in the block where the text on either side of it appears exactly
 /// as written. Offsets are UTF-16 indices into the .md text, as Rust splices them.
 
-import { blockSpan, escapeRegExp, lineBlock, SMART, SMART_SOURCE } from './md-edit.mjs';
+import { escapeRegExp, lineBlock, SMART, SMART_SOURCE } from './md-edit.mjs';
 
 /// A pause this long ends a run of typed characters: a run is one undo step.
 const TYPING_PAUSE_MS = 600;
@@ -37,9 +37,11 @@ function plainPattern(text) {
 /// caret must make one exact match in the block; none is refused as markup, more
 /// than one as repeated. `start` and `end` bound the matched run in the source:
 /// the caret may not leave it, because the markup beside it is not plain text.
+/// The block is the paragraph, list item or heading the line belongs to, so an
+/// identical item next to it is not a second match.
 export function offsetInText(raw, line, text, at) {
   if (!text.trim()) return { error: 'empty' };
-  const block = blockSpan(raw, line, line);
+  const block = lineBlock(raw, line);
   const pattern = new RegExp(
     `(?<before>${plainPattern(text.slice(0, at))})(?<after>${plainPattern(text.slice(at))})`,
     'gu',
@@ -56,21 +58,23 @@ export function offsetInText(raw, line, text, at) {
 }
 
 /// The caret again, after the file changed: the text on each side of it is
-/// searched for in the whole source, and the match nearest `near` (the old
-/// offset) wins. Null when that text is gone.
-export function relocate(raw, text, at, near) {
+/// searched for in the whole source. One match is the answer. With several
+/// identical copies nothing tells which one the caret was in (an equal offset
+/// proves nothing once text was added above), so none is guessed. Null when
+/// that text is gone or appears more than once.
+export function relocate(raw, text, at) {
   if (!text.trim()) return null;
   const pattern = new RegExp(
     `(?<before>${plainPattern(text.slice(0, at))})(?<after>${plainPattern(text.slice(at))})`,
     'gu',
   );
   const found = [...raw.matchAll(pattern)];
-  if (found.length === 0) return null;
-  const best = found.reduce((a, b) => (Math.abs(b.index - near) < Math.abs(a.index - near) ? b : a));
+  if (found.length !== 1) return null;
+  const [match] = found;
   return {
-    offset: best.index + best.groups.before.length,
-    start: best.index,
-    end: best.index + best[0].length,
+    offset: match.index + match.groups.before.length,
+    start: match.index,
+    end: match.index + match[0].length,
   };
 }
 

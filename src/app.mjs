@@ -6098,7 +6098,7 @@ function restoreMarkdownCaret() {
   let offset = caret.offset;
   if (caret.digest !== state.markdownDigest) {
     if (writeBusy || writeQueue.length) return;
-    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at, caret.offset);
+    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at);
     if (!moved) {
       state.caret = null;
       setStatus('The text around the caret is gone: click where you want to type', { error: true });
@@ -7620,9 +7620,12 @@ function fitPresentation() {
   showSheet(index);
 }
 
+/// True from the first await of a start until it ends: a second F5, or a tab switch, cannot start another.
+let presentationStarting = false;
+
 async function startPresentation() {
   const kind = state.file?.kind;
-  if (presentation) return;
+  if (presentation || presentationStarting) return;
   if (!(kind === 'pdf' && state.document) && kind !== 'markdown') {
     setStatus('Open a PDF or Markdown file to present');
     return;
@@ -7637,41 +7640,51 @@ async function startPresentation() {
   toggleSettings(false);
   if (!ui.find.hidden) closeFind();
   hideReviewChrome();
-  // A composition in progress is cancelled, not written: the composed text is in the article, not in the file.
-  if (composing) {
-    composing = false;
-    composingAt = null;
-    composingRefusal = null;
-    await refreshRendered();
+  presentationStarting = true;
+  try {
+    const began = state.file.path;
+    // The file shown can change while the start waits: then it leaves without presenting.
+    const same = () => state.file?.path === began && state.file.kind === kind && !presentation;
+    // A composition in progress is cancelled, not written: the composed text is in the article, not in the file.
+    if (composing) {
+      composing = false;
+      composingAt = null;
+      composingRefusal = null;
+      await refreshRendered();
+    }
+    const fullscreen = await isFullscreen().catch(() => false);
+    if (!same()) return;
+    presentation = {
+      kind,
+      path: began,
+      fullscreen,
+      wrap: state.wrap,
+      page: pdfViewer.currentPageNumber,
+      scale: kind === 'pdf' ? pdfViewer.currentScaleValue : state.markdownScale,
+      scrollMode: pdfViewer.scrollMode,
+      view: state.pageViews.md,
+      raw: state.markdownRaw,
+      scrollTop: ui.markdownStage.scrollTop,
+    };
+    document.body.classList.add('presenting');
+    // A slide is read, not typed into: the article takes no caret until the presentation ends.
+    ui.markdown.contentEditable = 'false';
+    if (state.wrap) setWrap(false);
+    if (kind === 'pdf') {
+      applyPdfSpread();
+      pdfViewer.currentScaleValue = 'page-fit';
+      pdfViewer.currentPageNumber = presentation.page;
+    } else {
+      if (state.markdownRaw) setRaw(false);
+      setPageView('single', { persist: false, apply: false });
+      paginateMarkdown();
+      fitPresentation();
+    }
+    holdResize();
+    await setFullscreen(true).catch(() => {});
+  } finally {
+    presentationStarting = false;
   }
-  presentation = {
-    kind,
-    path: state.file.path,
-    fullscreen: await isFullscreen().catch(() => false),
-    wrap: state.wrap,
-    page: pdfViewer.currentPageNumber,
-    scale: kind === 'pdf' ? pdfViewer.currentScaleValue : state.markdownScale,
-    scrollMode: pdfViewer.scrollMode,
-    view: state.pageViews.md,
-    raw: state.markdownRaw,
-    scrollTop: ui.markdownStage.scrollTop,
-  };
-  document.body.classList.add('presenting');
-  // A slide is read, not typed into: the article takes no caret until the presentation ends.
-  ui.markdown.contentEditable = 'false';
-  if (state.wrap) setWrap(false);
-  if (kind === 'pdf') {
-    applyPdfSpread();
-    pdfViewer.currentScaleValue = 'page-fit';
-    pdfViewer.currentPageNumber = presentation.page;
-  } else {
-    if (state.markdownRaw) setRaw(false);
-    setPageView('single', { persist: false, apply: false });
-    paginateMarkdown();
-    fitPresentation();
-  }
-  holdResize();
-  await setFullscreen(true).catch(() => {});
 }
 
 function stepPresentation(delta) {
