@@ -161,10 +161,10 @@ function sourceUnitAfter(raw, offset, ceiling) {
 }
 
 /// Backspace at `caret`: removes the character before it (all of its source
-/// characters), inside the run only, never a line break.
+/// characters), inside the run only, never a line break (\n, \r or either half of \r\n).
 export function backspaceEdit(raw, caret) {
   if (caret.offset <= caret.start) return { error: 'markup' };
-  if (raw[caret.offset - 1] === '\n') return { error: 'paragraph' };
+  if (raw[caret.offset - 1] === '\n' || raw[caret.offset - 1] === '\r') return { error: 'paragraph' };
   const length = sourceUnitBefore(raw, caret.offset, caret.start);
   const offset = caret.offset - length;
   return {
@@ -176,10 +176,10 @@ export function backspaceEdit(raw, caret) {
 }
 
 /// Delete at `caret`: removes the character after it (all of its source
-/// characters), inside the run only, never a line break.
+/// characters), inside the run only, never a line break (\n, \r or either half of \r\n).
 export function forwardDeleteEdit(raw, caret) {
   if (caret.offset >= caret.end) return { error: 'markup' };
-  if (raw[caret.offset] === '\n') return { error: 'paragraph' };
+  if (raw[caret.offset] === '\n' || raw[caret.offset] === '\r') return { error: 'paragraph' };
   const length = sourceUnitAfter(raw, caret.offset, caret.end);
   return {
     start: caret.offset,

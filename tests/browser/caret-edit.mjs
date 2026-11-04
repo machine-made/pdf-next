@@ -957,6 +957,47 @@ const p15 = fifteen.page;
 }
 await fifteen.close();
 
+// ── Session 16: a CRLF file. A soft line break is \r\n; Delete before it and Backspace after it are refused, never half of it ──
+const crlf = 'Hello brave\r\nnew world.\r\n';
+// The page gets the text as the browser parses it: a soft break is one \n in the DOM, \r\n in the file.
+const sixteen = await session({ '/d/a.md': { raw: crlf, html: '<p><span class="src" data-line="1"></span>Hello brave\nnew world.</p>' } });
+const p16 = sixteen.page;
+{
+  const file16 = () => p16.evaluate(() => { const f = window.__files['/d/a.md']; return typeof f === 'object' ? f.raw : f; });
+  const p = await spot('brave', 'end', p16);
+  await p16.mouse.click(p.x, p.y);
+  await p16.waitForTimeout(100);
+  await p16.keyboard.press('Delete');
+  await p16.waitForTimeout(300);
+  const edits = await p16.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  ok(await file16() === crlf && edits === 0, `Delete before a CRLF line break writes nothing (${JSON.stringify(await file16())})`);
+  ok((await p16.textContent('#status')).includes('join two paragraphs'), `and the status says why (${JSON.stringify(await p16.textContent('#status'))})`);
+  await p16.keyboard.press('x');
+  await p16.waitForTimeout(300);
+  ok(await file16() === 'Hello bravex\r\nnew world.\r\n', `A typed key at that caret still lands before the \\r (${JSON.stringify(await file16())})`);
+}
+await sixteen.close();
+{
+  const crlfRaw = 'Hello brave\r\nnew world.\r\n';
+  const result = await one.page.evaluate(async (crlfRaw) => {
+    const m = await import('/caret-edit.mjs');
+    const at = crlfRaw.indexOf('\r');
+    const run = { start: 0, end: crlfRaw.length };
+    return {
+      beforeCr: m.forwardDeleteEdit(crlfRaw, { ...run, offset: at }).error,
+      beforeLf: m.forwardDeleteEdit(crlfRaw, { ...run, offset: at + 1 }).error,
+      afterCr: m.backspaceEdit(crlfRaw, { ...run, offset: at + 1 }).error,
+      afterLf: m.backspaceEdit(crlfRaw, { ...run, offset: at + 2 }).error,
+      letter: m.forwardDeleteEdit(crlfRaw, { ...run, offset: 0 }).expected,
+    };
+  }, crlfRaw);
+  ok(result.beforeCr === 'paragraph' && result.beforeLf === 'paragraph' && result.afterCr === 'paragraph' && result.afterLf === 'paragraph' && result.letter === 'H',
+    `Delete and Backspace refuse either half of a \\r\\n and still delete a letter (${JSON.stringify(result)})`);
+}
+
+// Session 1's page is used by the pure-function checks above; closing it adds its page errors to the run, which fails on any.
+await one.close();
+
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({
   '/d/a.md': {
