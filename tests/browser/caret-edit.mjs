@@ -1668,6 +1668,26 @@ await twentythree.close();
   ok(!offeredIn && !boxAfter && await writesN() === 0, `the palette does not offer the definition while presenting, and no note box opens (${offeredIn}, ${boxAfter})`);
   await sn.close();
 }
+{
+  // A key queued behind a write that is running is not written once a presentation begins; the write already running finishes.
+  const text = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  const sq = await session({ '/d/a.md': text });
+  const pq = sq.page;
+  const writesQ = () => pq.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const fileQ = () => pq.evaluate(() => window.__files['/d/a.md']);
+  const at = await spot('Hello ', 'end', pq);
+  await pq.mouse.click(at.x, at.y);
+  await pq.waitForTimeout(100);
+  await pq.evaluate(() => { window.__editDelay = 600; });
+  await pq.keyboard.press('x');
+  await pq.keyboard.press('y');
+  await pq.keyboard.press('F5');
+  await pq.waitForTimeout(1500);
+  ok(await pq.evaluate(() => document.body.classList.contains('presenting')), 'F5 presents while a write runs and a key is queued');
+  ok(await writesQ() === 1 && await fileQ() === text.replace('Hello ', 'Hello x'),
+    `exactly the key already being written is written; the one queued behind it is not (${await writesQ()} writes, ${JSON.stringify(await fileQ())})`);
+  await sq.close();
+}
 
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({

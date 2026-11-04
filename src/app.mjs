@@ -4158,13 +4158,14 @@ async function saveNote() {
       } catch {
         digest = 'unverified';
       }
-      if (state.file?.path !== path) return;
+      // The digest can take a while: a presentation that began meanwhile saves no review.
+      if (state.file?.path !== path || presentation) return;
       anchor = { ...anchor, documentRevision: digest };
       source = digest.startsWith('sha256:')
         ? await optionalSourceHint(path, anchor.position, digest)
         : null;
       sourceHintUnavailable = !source;
-      if (state.file?.path !== path) return;
+      if (state.file?.path !== path || presentation) return;
     }
     const before = picked.kind === 'markdown' ? passageSource(state.markdownSource, picked.at) : '';
     const review = {
@@ -4182,6 +4183,7 @@ async function saveNote() {
       ...(requests.length ? { requests } : {}),
       ...(before ? { before } : {}),
     };
+    if (presentation) return;
     const store = await invoke('append_review', {
       document: path,
       review,
@@ -4196,7 +4198,8 @@ async function saveNote() {
       ui.noteBox.hidden = true;
       ui.noteText.value = '';
     }
-    await setReviewOpen(true);
+    // A review whose write began before the presentation is kept, but the panel is not opened over a slide.
+    if (!presentation) await setReviewOpen(true);
     const added = store.reviews[store.reviews.length - 1];
     if (added?.id) {
       selectReview(added.id);
@@ -6294,7 +6297,11 @@ async function drainWrites() {
       const task = writeQueue.shift();
       // A task that throws is a refusal: nothing else may be left queued with no drain running.
       let result;
-      if (!task.keep && task.path !== (state.file?.path ?? null)) {
+      if (presentation && !task.keep) {
+        // A slide is read, not edited. The one task already running when the presentation began may finish (it
+        // began before); everything queued behind it is refused here, so a key typed earlier is not written later.
+        result = { refused: 'A presentation does not write the file' };
+      } else if (!task.keep && task.path !== (state.file?.path ?? null)) {
         // Another file is on screen now, perhaps one with the same text and so the same digest.
         result = { refused: 'Another file is shown now, so the change made in the first one was not written' };
       } else {
@@ -6358,6 +6365,8 @@ async function writeNow(edit, label) {
   const { start, expected, replacement } = edit;
   const after = edit.after ?? null;
   const file = state.file;
+  // The last lock: whatever calls this, a presentation writes nothing (the queue runner refuses first).
+  if (presentation) return { refused: 'A presentation does not write the file' };
   if (!file || expected === replacement) return 'skipped';
   const path = file.path;
   const digest = edit.digest ?? state.markdownDigest;
