@@ -3,13 +3,16 @@
 /// one place in the block where the text on either side of it appears exactly
 /// as written. Offsets are UTF-16 indices into the .md text, as Rust splices them.
 
-import { blockSpan, escapeRegExp, SMART } from './md-edit.mjs';
+import { blockSpan, escapeRegExp, SMART, SMART_SOURCE } from './md-edit.mjs';
 
 /// A pause this long ends a run of typed characters: a run is one undo step.
 const TYPING_PAUSE_MS = 600;
 
-/// A run of typed characters is cut here: a longer run is undone in steps of this size.
+/// A run of typed characters is cut here: a longer run is undone in steps of this many characters.
 const TYPED_RUN_LIMIT = 200;
+
+/// What smart punctuation is written as, longest first: a rendered – — … stands for these in the source.
+const SMART_RUNS = Object.values(SMART_SOURCE).sort((a, b) => b.length - a.length);
 
 export const CARET_MESSAGES = {
   skipped: 'Math, code, links, tables and figures are not edited here',
@@ -73,7 +76,9 @@ export function relocate(raw, text, at, near) {
 
 /// How many rendered characters `source` takes up. A run of whitespace in the
 /// source takes up as much of the rendered run as it has characters, so a
-/// source offset inside a run of spaces stays inside it.
+/// source offset inside a run of spaces stays inside it. Smart punctuation
+/// written in ASCII (`--`, `---`, `...`) is one rendered character; an offset
+/// inside it counts only the characters before it.
 function renderedLength(text, source) {
   let i = 0;
   let j = 0;
@@ -87,6 +92,11 @@ function renderedLength(text, source) {
       j += seen;
     } else if (/\s/.test(source[j])) {
       j += 1;
+    } else if (SMART_SOURCE[text[i]] && source.startsWith(SMART_SOURCE[text[i]], j)) {
+      i += 1;
+      j += SMART_SOURCE[text[i - 1]].length;
+    } else if (SMART_SOURCE[text[i]] && SMART_SOURCE[text[i]].startsWith(source.slice(j))) {
+      break;
     } else {
       i += 1;
       j += 1;
@@ -130,37 +140,61 @@ export function insertEdit(caret, text) {
   };
 }
 
-/// Backspace at `caret`: removes the character before it, inside the run only,
-/// never a line break.
+/// How many source characters the character just before `offset` is written as,
+/// no further back than `floor`: a smart-punctuation run (`---`, `--`, `...`), a
+/// surrogate pair, or one UTF-16 unit.
+function sourceUnitBefore(raw, offset, floor) {
+  for (const run of SMART_RUNS) {
+    if (offset - run.length >= floor && raw.startsWith(run, offset - run.length)) return run.length;
+  }
+  const pair = offset - 2 >= floor && /[\uD800-\uDBFF]/.test(raw[offset - 2]) && /[\uDC00-\uDFFF]/.test(raw[offset - 1]);
+  return pair ? 2 : 1;
+}
+
+/// The same for the character just after `offset`, no further on than `ceiling`.
+function sourceUnitAfter(raw, offset, ceiling) {
+  for (const run of SMART_RUNS) {
+    if (offset + run.length <= ceiling && raw.startsWith(run, offset)) return run.length;
+  }
+  const pair = offset + 2 <= ceiling && /[\uD800-\uDBFF]/.test(raw[offset]) && /[\uDC00-\uDFFF]/.test(raw[offset + 1]);
+  return pair ? 2 : 1;
+}
+
+/// Backspace at `caret`: removes the character before it (all of its source
+/// characters), inside the run only, never a line break.
 export function backspaceEdit(raw, caret) {
   if (caret.offset <= caret.start) return { error: 'markup' };
   if (raw[caret.offset - 1] === '\n') return { error: 'paragraph' };
-  const offset = caret.offset - 1;
+  const length = sourceUnitBefore(raw, caret.offset, caret.start);
+  const offset = caret.offset - length;
   return {
     start: offset,
-    expected: raw[offset],
+    expected: raw.slice(offset, caret.offset),
     replacement: '',
-    after: { offset, start: caret.start, end: caret.end - 1 },
+    after: { offset, start: caret.start, end: caret.end - length },
   };
 }
 
-/// Delete at `caret`: removes the character after it, inside the run only,
-/// never a line break.
+/// Delete at `caret`: removes the character after it (all of its source
+/// characters), inside the run only, never a line break.
 export function forwardDeleteEdit(raw, caret) {
   if (caret.offset >= caret.end) return { error: 'markup' };
   if (raw[caret.offset] === '\n') return { error: 'paragraph' };
+  const length = sourceUnitAfter(raw, caret.offset, caret.end);
   return {
     start: caret.offset,
-    expected: raw[caret.offset],
+    expected: raw.slice(caret.offset, caret.offset + length),
     replacement: '',
-    after: { offset: caret.offset, start: caret.start, end: caret.end - 1 },
+    after: { offset: caret.offset, start: caret.start, end: caret.end - length },
   };
 }
 
-/// True when the typed character `edit` continues the run that `last` ends:
-/// the same place, a typed character too, within the pause, and under the run limit.
+/// True when the typed text `edit` continues the run that `last` ends: the same
+/// place, typed text too, within the pause, and the run stays within
+/// TYPED_RUN_LIMIT characters of replacement text.
 export function continuesTyping(last, edit, elapsedMs) {
-  return Boolean(last?.typing) && edit.expected === '' && edit.replacement !== '' &&
-    last.after.offset === edit.start && elapsedMs < TYPING_PAUSE_MS &&
-    (last.edits?.length ?? 0) < TYPED_RUN_LIMIT;
+  if (!last?.typing || edit.expected !== '' || edit.replacement === '' ||
+      last.after.offset !== edit.start || elapsedMs >= TYPING_PAUSE_MS) return false;
+  const typed = (last.edits ?? []).reduce((sum, item) => sum + [...item.replacement].length, 0);
+  return typed + [...edit.replacement].length <= TYPED_RUN_LIMIT;
 }

@@ -186,7 +186,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   Delete say it for you, with an optional note. The Ask buttons (Why?, How?, More info,
   Example, Source?, Derive) mean "this is unclear, rewrite it so it answers this". With the
   panel closed, a selection is just for copying.
-- **The notes live next to the document**, in a hidden folder (`paper.pdf` →
+- **The notes live next to the document**, in a `.pdf-next` folder (`paper.pdf` →
   `.pdf-next/paper.json`): the quote, its page or line and the text around it, a stable ID, the
   request, its status and what was done about it. Beside the document pdf-next also keeps
   `paper_review.txt`, the open notes as plain text: that is the file whoever does the work
@@ -500,7 +500,8 @@ rewrites the quoted text, pdf-next closes the note itself; when the words stay, 
   line names its file only when the store holds notes of more than one file.
 - **Edit the file.** For Markdown, change the text the note points to. pdf-next checks every
   open note against the file when it opens it, when it changes, and at the start of every
-  `pdf-next reviews` command. A note whose quoted text is still there stays open. A note whose
+  `pdf-next reviews` command that is not a dry run (`update --dry-run` and `relocate --dry-run`
+  do not run it). A note whose quoted text is still there stays open. A note whose
   quote was seen in place earlier and is now edited, or gone, becomes `done`, with
   `closed by pdf-next: …` as its resolution; it opens again if the quote comes back unchanged.
   A note it cannot place with certainty (a repeated quote with no context, text it cannot render

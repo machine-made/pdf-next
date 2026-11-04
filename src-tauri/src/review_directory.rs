@@ -203,11 +203,11 @@ impl ReviewPath {
         // physical path stable. Obtain it from the handle, not the admitted
         // pathname, which may have been substituted before the directory opened.
         // Keep the verbatim prefix so UNC paths work with std::fs::rename.
+        // The folder's own handle stays open until the function returns, so the
+        // store folder cannot be replaced between the temp file and the rename.
+        let leaf = self.leaf(true)?;
         let physical_parent = match self.folder {
-            Some(folder) => {
-                self.leaf(true)?;
-                self.physical_parent.join(folder)
-            }
+            Some(_) => physical_directory(&leaf)?,
             None => (*self.physical_parent).clone(),
         };
         let mut temp = tempfile::NamedTempFile::new_in(&physical_parent)?;

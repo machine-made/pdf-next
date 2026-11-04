@@ -89,12 +89,14 @@ await page.keyboard.press('Enter');
 await page.waitForTimeout(300);
 ok((await store()).reviews.find((r) => r.id === 'r3').status === 'open', 'Reopen brings it back');
 
-// A PDF comment without a successful build refuses to close: the reason is in the status line.
-await page.evaluate(() => { window.__fail.patch_review = 'PDF review cannot be marked done without a successful build'; });
+// A save the backend refuses: the reason is in the status line and the comment stays open. This is a generic patch
+// failure; the PDF rule (a PDF comment closes only after a successful build) is the Rust tests' (main.rs) and the
+// mock's patch_review.
+await page.evaluate(() => { window.__fail.patch_review = 'the review store could not be written: disk full'; });
 await row('r3').getByRole('button', { name: 'Done' }).click();
 await page.waitForTimeout(300);
-ok(/without a successful build/.test(await page.textContent('#status')) && await page.$eval('#status', (el) => el.classList.contains('error')),
-  `The build rule is shown as an error (${await page.textContent('#status')})`);
+ok(/disk full/.test(await page.textContent('#status')) && await page.$eval('#status', (el) => el.classList.contains('error')),
+  `A refused save is shown as an error (${await page.textContent('#status')})`);
 ok((await store()).reviews.find((r) => r.id === 'r3').status === 'open', 'and the comment stays open');
 await page.evaluate(() => { window.__fail = {}; });
 
@@ -107,4 +109,17 @@ ok((await page.textContent('#status')) === warning && await page.$eval('#status'
   `The foreign inbox file is named in the status line (${await page.textContent('#status')})`);
 ok((await store()).reviews.find((r) => r.id === 'r3').status === 'done', 'and the save went through');
 await page.evaluate(() => { window.__inboxWarning = null; });
+
+// A comment whose quote was never seen in place (a store from before 0.19) is never closed by pdf-next: it is marked
+// unverifiable and stays open, even though its text is not in the file.
+await page.evaluate(() => {
+  window.__store.reviews.push({
+    id: 'r9', file: 'a.md', kind: 'markdown', at: { line: 1 }, quote: 'a sentence that was never here', comment: '',
+    action: 'improve', status: 'open', resolution: '', color: 1, anchor: { documentRevision: 'sha256:old' },
+  });
+});
+await changeFile(`${wake[1]}\n\nA closing line.\n`);
+const unseen = (await store()).reviews.find((r) => r.id === 'r9');
+ok(unseen.status === 'open' && unseen.unverifiable === true && !unseen.verifiedDigest,
+  `A quote never seen in place is not closed (${unseen.status}, unverifiable ${unseen.unverifiable})`);
 await finish();

@@ -28,7 +28,7 @@ preference, review text size, Markdown font, size and width, interface font,
 figure settings and the in-place editing switch in local browser storage. The open tabs, their
 scroll and zoom positions and the split view are kept there too (key `pdf-next.session`), so they
 reopen on launch; nothing is sent anywhere. Reviews are saved
-beside the document in a hidden folder as `.pdf-next/{stem}.json`, with a
+beside the document in a `.pdf-next` folder as `.pdf-next/{stem}.json`, with a
 transaction `.json.lock` file; no backup copies are written. Source hints and
 agent build results stay in the store. After each change to the reviews, the
 app writes a short text view of the open items beside the document as

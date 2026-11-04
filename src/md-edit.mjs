@@ -52,6 +52,8 @@ export const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };
+// The ASCII source of a smart character that takes more than one character to write.
+export const SMART_SOURCE = { '–': '--', '—': '---', '…': '...' };
 // Latin letters, digits and underscore at an edge make the boundary matter;
 // dashes also count as inside a word ("two-dimensional"). Other scripts run
 // without spaces, so no boundary is checked for them.

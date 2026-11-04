@@ -505,6 +505,49 @@ try {
     annotate('smoke delete key', `exit ${code}; ${onDisk}\n${output}`);
     console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
   }
+  // A store from before 0.19 (`{stem}_review.json` beside the document) moves into
+  // `.pdf-next/{stem}.json` when the file opens, and the old file is removed. The
+  // other fixtures start in the new format, so this is the only run that sees the migration.
+  const legacyFolder = join(copies, 'legacy');
+  mkdirSync(legacyFolder);
+  const legacyDoc = join(legacyFolder, 'legacy-notes.md');
+  const legacyStore = join(legacyFolder, 'legacy-notes_review.json');
+  const migratedStore = join(legacyFolder, '.pdf-next', 'legacy-notes.json');
+  copyFileSync(join(fixtures, 'notes.md'), legacyDoc);
+  writeFileSync(legacyStore, JSON.stringify({
+    format: 3,
+    revision: 4,
+    nextId: 3,
+    reviews: [{
+      id: 'r1', file: 'legacy-notes.md', kind: 'markdown', at: { line: 3 }, quote: 'A heading, a paragraph',
+      comment: 'Legacy smoke comment', action: 'polish', status: 'open', resolution: '', color: 1,
+    }, {
+      id: 'r2', file: 'legacy-notes.md', kind: 'markdown', at: { line: 3 }, quote: 'some math',
+      comment: 'Legacy applied comment', action: 'polish', status: 'applied', resolution: 'done', color: 2,
+    }],
+  }));
+  {
+    const { code, output } = await open(binary, legacyDoc, seconds, { sourceChecks: false });
+    const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';
+    let migrated = null;
+    try {
+      migrated = JSON.parse(readFileSync(migratedStore, 'utf8'));
+    } catch {
+      // Reported below as a missing store.
+    }
+    const comments = (migrated?.reviews ?? []).map((review) => `${review.id}:${review.comment}:${review.status}`).join('|');
+    const detail = `new store ${migrated ? `format ${migrated.format}, ${migrated.reviews.length} reviews` : 'missing'}, old file ${
+      existsSync(legacyStore) ? 'still there' : 'removed'}`;
+    if (code === 0 && verdict.startsWith('smoke: ok') && migrated?.format === 4 && !existsSync(legacyStore) &&
+        comments === 'r1:Legacy smoke comment:open|r2:Legacy applied comment:done') {
+      console.log(`  PASS  legacy store migration\n        ${verdict}; ${detail}`);
+    } else {
+      failed += 1;
+      console.log(`  FAIL  legacy store migration  (exit ${code}); ${detail}; ${comments}`);
+      annotate('smoke legacy store migration', `exit ${code}; ${detail}; ${comments}\n${output}`);
+      console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
+    }
+  }
 } finally {
   rmSync(copies, { recursive: true, force: true });
 }
@@ -520,5 +563,5 @@ for (const [name, value] of [['startup', median(timings.startup)], ['reload', Ma
     timings[name].map((sample) => Math.round(sample)).join(', ') || 'none'})`);
 }
 
-console.log(`\n${files.length + 1 - failed}/${files.length + 1} passed${slow ? `, ${slow} over budget` : ''}`);
+console.log(`\n${files.length + 2 - failed}/${files.length + 2} passed${slow ? `, ${slow} over budget` : ''}`);
 process.exit(failed === 0 && slow === 0 ? 0 : 1);

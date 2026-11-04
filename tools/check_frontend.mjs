@@ -3243,8 +3243,10 @@ if (releaseTag) {
   assert.equal(relocate('a b. z\n\na b. z\n', 'a b. z', 4, 14).offset, 'a b. z\n\n'.length + 4,
     'Two matches: the caret goes to the one nearest its old place.');
   assert.equal(relocate(moved, 'Gone text.', 4, 0), null, 'Text that is gone leaves no caret.');
-  assert.equal(continuesTyping({ typing: true, after: { offset: 3 }, edits: Array(200).fill({}) },
+  assert.equal(continuesTyping({ typing: true, after: { offset: 3 }, edits: Array(200).fill({ replacement: 'x' }) },
     insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 0), false, 'A coalesced run stops at 200 characters.');
+  assert.equal(continuesTyping({ typing: true, after: { offset: 3 }, edits: [{ replacement: 'x'.repeat(199) }] },
+    insertEdit({ offset: 3, start: 0, end: 3 }, 'xy'), 0), false, 'A multi-character commit counts its characters against the 200.');
   assert.match(app, /function enqueueWrite\(/, 'Every write goes through one queue.');
   assert.match(app, /async function drainWrites\(/, 'The queue is drained one task at a time.');
   assert.doesNotMatch(app, /editBusy|editQueue/, 'The queue has one name.');

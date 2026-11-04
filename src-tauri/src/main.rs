@@ -11863,6 +11863,29 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
     }
 
     #[test]
+    fn inbox_quote_left_only_in_alt_text_closes() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_alt_text");
+        let document = md.to_str().unwrap();
+        // The paragraph becomes an image: its words are the alt text, which the
+        // page does not show. They are not raw HTML, so the comment is not held open.
+        let image = RELOCATE_BASE.replace(
+            "A global mode analysis then gives the growth rate of each perturbation.\nThe leading eigenvalue crosses the axis at the critical Reynolds number.",
+            "![A global mode analysis then gives the growth rate of each perturbation. The leading eigenvalue crosses the axis at the critical Reynolds number.](figure.png)",
+        );
+        assert_ne!(image, RELOCATE_BASE);
+        edit(&md, &image);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r4"),
+            "done",
+            "the words are not on the page"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn inbox_future_mtime_does_not_block_settle() {
         let (dir, md, allowed, doc) = verified_tree("inbox_future_mtime");
         std::fs::write(&md, DELETED).unwrap();

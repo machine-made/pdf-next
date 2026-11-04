@@ -65,13 +65,12 @@ function mockTauri({ files, initial, theme, store, platform }) {
   }).join('\n');
   const text = (p) => (typeof files[p] === 'object' ? files[p].raw : files[p]);
   let rev = 1;
-  // A digest of the content, as the Rust command takes it: the same text gives the same digest.
-  const digestOf = (p) => {
-    const s = text(p);
-    let h = 5381;
-    for (let i = 0; i < s.length; i += 1) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
-    return `sha256:${s.length}:${h.toString(16)}`;
+  // The digest of a text, as the Rust command takes it: `sha256:` and 64 lower-case hex digits over the UTF-8 bytes.
+  const sha = async (content) => {
+    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content)));
+    return `sha256:${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
   };
+  const digestOf = (p) => sha(text(p));
   window.__calls = [];
   window.__files = files;
   window.__fail = JSON.parse(sessionStorage.getItem('fail') || '{}');
@@ -92,26 +91,43 @@ function mockTauri({ files, initial, theme, store, platform }) {
     if (!review) throw new Error('review not found');
     return review;
   };
-  // What the Rust side does before it announces a changed Markdown file
-  // (settle): an open comment whose quoted text is gone from the file, or was
-  // edited between its old neighbours, is closed by pdf-next; one still found
-  // stays open. It uses the page's own resolver, the same rules as Rust's.
+  // A simplified model of what the Rust side does before it announces a changed Markdown file (`settle_reviews`
+  // in main.rs). Modelled: a comment is closed by pdf-next only when its quote was seen in place at some earlier
+  // digest (`verifiedDigest`) and is now edited or gone; a comment never seen in place is marked `unverifiable`
+  // and stays open; one still found stays open and is verified. The mock has no Markdown renderer, so a file's
+  // paragraphs are its text, and the page's own resolver (review-label.mjs) stands in for review_locate.rs.
+  // Not modelled, and covered by the Rust tests `inbox_*` in main.rs and the tests in review_locate.rs: the
+  // two-second quiet period after a write, a reopened comment held on its text, a comment closed by pdf-next
+  // that opens again when its quote returns, raw HTML, and the renderer's own text rules.
+  const plainText = (path) => text(path).split('\n\n').filter(Boolean).map((block) => block.replace(/\n$/, '')).join(' ');
+  const locate = async (path, review) => {
+    const { resolveMarkdownReview } = await import('/review-label.mjs');
+    return resolveMarkdownReview(plainText(path), review);
+  };
   const settleStore = async (path) => {
     const open = (window.__store?.reviews || []).filter((r) => r.kind === 'markdown' && (r.status || 'open') === 'open');
     if (!open.length || typeof files[path] === 'undefined') return;
-    const { resolveMarkdownReview } = await import('/review-label.mjs');
-    const plain = text(path).split('\n\n').filter(Boolean).map((block) => block.replace(/\n$/, '')).join(' ');
+    const digest = await digestOf(path);
     let closed = false;
     for (const review of open) {
-      if (review.anchor?.documentRevision === digestOf(path)) continue;
-      const found = resolveMarkdownReview(plain, review);
-      if (found.status === 'located' || found.status === 'ambiguous') continue;
-      review.status = 'done';
-      review.closedBy = 'pdf-next';
-      review.resolution = found.status === 'changed'
-        ? 'closed by pdf-next: the quoted text was edited'
-        : 'closed by pdf-next: the quoted text was removed';
-      closed = true;
+      if (review.anchor?.documentRevision === digest && (review.verifiedDigest || review.unverifiable)) continue;
+      const found = await locate(path, review);
+      // The place cannot be told: left as it is.
+      if (found.status === 'ambiguous') continue;
+      review.anchor = { ...review.anchor, documentRevision: digest };
+      if (found.status === 'located') {
+        review.verifiedDigest = digest;
+        delete review.unverifiable;
+      } else if (!review.verifiedDigest) {
+        review.unverifiable = true;
+      } else {
+        review.status = 'done';
+        review.closedBy = 'pdf-next';
+        review.resolution = found.status === 'changed'
+          ? 'closed by pdf-next: quoted text edited'
+          : 'closed by pdf-next: quoted text removed';
+        closed = true;
+      }
     }
     if (closed) window.__store.revision += 1;
   };
@@ -145,7 +161,7 @@ function mockTauri({ files, initial, theme, store, platform }) {
               await new Promise((done) => setTimeout(done, ms));
             }
             const f = files[args.path];
-            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: digestOf(args.path) };
+            return { html: typeof f === 'object' ? f.html : render(f), raw: text(args.path), digest: await digestOf(args.path) };
           }
           case 'read_json': return text(args.path);
           case 'edit_markdown': {
@@ -160,21 +176,28 @@ function mockTauri({ files, initial, theme, store, platform }) {
               throw message;
             }
             if (args.expectedDigest === undefined) throw 'edit_markdown needs the digest of the file it was computed on';
-            if (args.expectedDigest !== digestOf(path)) throw 'the file changed on disk';
             const f = text(path);
+            if (args.expectedDigest !== await sha(f)) throw 'the file changed on disk';
             if (f.slice(args.start, args.start + args.expectedText.length) !== args.expectedText) {
               throw 'the text to edit is not where it was; reload and try again';
             }
             const s = f.slice(0, args.start) + args.replacement + f.slice(args.start + args.expectedText.length);
             files[path] = s;
             rev += 1;
-            return digestOf(path);
+            return sha(s);
           }
           case 'read_reviews': return window.__store ? copy(window.__store) : null;
-          case 'append_review': return write((st) => {
-            st.reviews.push({ ...args.review, id: `r${st.nextId}` });
-            st.nextId += 1;
-          });
+          case 'append_review': {
+            // As the Rust command: a Markdown comment whose quote stands in the file it was made on is verified.
+            const made = args.review;
+            const path = args.document;
+            const verified = made.kind === 'markdown' && typeof files[path] !== 'undefined'
+              && made.anchor?.documentRevision === await digestOf(path) && (await locate(path, made)).status === 'located';
+            return write((st) => {
+              st.reviews.push({ ...made, id: `r${st.nextId}`, ...(verified ? { verifiedDigest: made.anchor.documentRevision } : {}) });
+              st.nextId += 1;
+            });
+          }
           case 'update_review': return write(() => {
             const review = find(args.id);
             if ((review.comment || '') !== args.expectedComment) throw new Error('review conflict: comment changed on disk');

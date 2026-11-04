@@ -3,6 +3,7 @@
 // undoes typing as steps, writes run one at a time through a queue, math, code,
 // links and tables are skipped, and the right-click delete is named apart from
 // the request to the agent.
+import { createHash } from 'node:crypto';
 import { start } from './harness.mjs';
 
 const raw = 'Hello brave new world.\n\nSecond paragraph here.\n\nSame sentence. Same sentence.\n';
@@ -636,13 +637,31 @@ const file7 = () => p7.evaluate(() => { const f = window.__files['/d/a.md']; ret
   await p7.evaluate(() => { getSelection().removeAllRanges(); document.activeElement?.blur(); });
   await p7.keyboard.press('Delete');
   await p7.waitForTimeout(100);
-  await p7.evaluate(() => document.getElementById('markdown').focus());
+  // Put a real text caret back, after brave: focusing the article alone would leave the browser to choose one.
+  await p7.evaluate(() => {
+    const article = document.getElementById('markdown');
+    const walk = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+    while (walk.nextNode() && !walk.currentNode.textContent.includes('brave'));
+    const node = walk.currentNode;
+    const range = document.createRange();
+    range.setStart(node, node.textContent.indexOf('brave') + 'brave'.length);
+    range.collapse(true);
+    article.focus();
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await p7.waitForTimeout(100);
   await p7.keyboard.press('a');
-  await p7.waitForTimeout(1600);
+  await p7.waitForTimeout(100);
+  // The competing write must have begun while the trash was still being planned (trash_plan answers at 600 ms).
+  const started = await p7.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  await p7.waitForTimeout(1500);
   await p7.evaluate(() => { window.__trashDelay = 0; window.__editDelay = 0; });
   const trashed = await p7.evaluate(() => window.__calls.some(([cmd]) => cmd === 'trash_document'));
   // The trash was being planned (trash_plan was called), so the no-question result is the guard's, not a Delete that went elsewhere.
   const planned = await p7.evaluate(() => window.__calls.some(([cmd]) => cmd === 'trash_plan'));
+  ok(started === 1 && await file7() === raw.replace('brave', 'bravea'),
+    `The competing write started while the trash was planned, and landed after brave (${started} writes; ${JSON.stringify((await file7()).split('\n')[0])})`);
   ok(dialogs === 0 && !trashed && planned, 'A write started while the trash is being planned: no trash question opens, nothing is trashed');
 }
 await seven.close();
@@ -754,6 +773,153 @@ const p12 = twelve.page;
     `A dropped Edit box save is named in the status, and the box keeps its text (${JSON.stringify(status)}, box hidden ${box.hidden}, writes ${writes})`);
 }
 await twelve.close();
+
+// ── Session 13: a write queued in one file is not applied to another file with the same text ──
+// Both files hold the same text, so they have the same digest. A delete queued behind a slow write in a.md
+// carries a.md's digest from before that write; b.md, shown meanwhile, still has it.
+const thirteen = await session({ '/d/a.md': raw, '/d/b.md': raw });
+const p13 = thirteen.page;
+const text13 = (name) => p13.evaluate((name) => window.__files[`/d/${name}.md`], name);
+{
+  await p13.evaluate(() => window.__emit('open-files', ['/d/b.md']));
+  await p13.waitForTimeout(300);
+  await p13.keyboard.press('Control+1');
+  await p13.waitForTimeout(300);
+  const p = await spot('brave', 'end', p13);
+  await p13.mouse.click(p.x, p.y);
+  await p13.waitForTimeout(100);
+  await p13.evaluate(() => { window.__editDelay = 500; });
+  await p13.keyboard.press('x');
+  await p13.waitForTimeout(50);
+  await thirteen.selectText('#markdown', 'Second paragraph here.');
+  await p13.evaluate(() => document.getElementById('reviewMenuDelete').click());
+  await p13.waitForTimeout(50);
+  await p13.keyboard.press('Control+2');
+  await p13.waitForTimeout(1500);
+  await p13.evaluate(() => { window.__editDelay = 0; });
+  const shown13 = await p13.$eval('#tabs .tab[aria-selected="true"]', (tab) => tab.textContent);
+  const written = await p13.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').map(([, args]) => args.path));
+  ok(shown13 === 'b.md', `The other file was shown while the delete waited (${shown13})`);
+  ok(await text13('b') === raw && !written.includes('/d/b.md'),
+    `A delete queued in a.md is not written into b.md, which has the same text (writes: ${JSON.stringify(written)})`);
+  ok(await text13('a') === raw.replace('brave', 'bravex'), 'and a.md has only the first key');
+  ok((await p13.textContent('#status')).includes('not written'), `and the status says it was not written (${JSON.stringify(await p13.textContent('#status'))})`);
+  // The mock's digest is the backend's: sha256 of the UTF-8 text, as `sha256:` and 64 hex digits.
+  const read = await p13.evaluate(() => window.__TAURI__.core.invoke('read_markdown', { path: '/d/b.md' }));
+  ok(read.digest === `sha256:${createHash('sha256').update(raw, 'utf8').digest('hex')}`, `The mock digest is the real SHA-256 (${read.digest})`);
+}
+await thirteen.close();
+
+// ── Session 14: with Direct edits off and the Review panel open, Delete and Backspace on a selection make a delete review ──
+const fourteen = await start({
+  files: { '/d/a.md': raw },
+  prepare: (page) => page.addInitScript(() => localStorage.setItem('pdf-next.direct-edits', '0')),
+});
+const p14 = fourteen.page;
+for (const key of ['Delete', 'Backspace']) {
+  await p14.reload();
+  await p14.waitForSelector('#markdown p');
+  if (await p14.$eval('#reviewPane', (el) => el.hidden).catch(() => true)) {
+    await p14.keyboard.press('Control+Shift+R');
+    await p14.waitForTimeout(200);
+  }
+  await fourteen.selectText('#markdown', 'Second paragraph here.');
+  await p14.keyboard.press(key);
+  await p14.waitForTimeout(300);
+  const note = await p14.evaluate(() => ({ hidden: document.getElementById('noteBox').hidden, action: document.getElementById('noteAction').value }));
+  ok(!note.hidden && note.action === 'delete', `${key} on a selection, Direct edits off, Review panel open: the note box opens as a delete review (${JSON.stringify(note)})`);
+  await p14.keyboard.press('Escape');
+  await p14.waitForTimeout(100);
+  await fourteen.selectText('#markdown', 'Second paragraph here.');
+  await p14.keyboard.press('x');
+  await p14.waitForTimeout(300);
+  const writes14 = await p14.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  ok(writes14 === 0 && await p14.evaluate(() => window.__files['/d/a.md']) === raw, `A letter over the selection still writes nothing with Direct edits off (after ${key})`);
+}
+await fourteen.close();
+
+// ── Pure functions of caret-edit.mjs: characters, smart punctuation, the run limit ──
+{
+  const unit = await one.page.evaluate(async () => {
+    const m = await import('/caret-edit.mjs');
+    const raw = 'Wait... then 😀 go -- end --- x.\n';
+    const out = {};
+    const at = (text) => raw.indexOf(text);
+    const back = (offset) => {
+      const e = m.backspaceEdit(raw, { offset, start: 0, end: raw.length });
+      return [e.start, e.expected, e.replacement, e.after.offset, e.after.end];
+    };
+    const forward = (offset) => {
+      const e = m.forwardDeleteEdit(raw, { offset, start: 0, end: raw.length });
+      return [e.start, e.expected, e.replacement, e.after.offset, e.after.end];
+    };
+    out.backEllipsis = back(at('...') + 3);
+    out.backEmoji = back(at('😀') + 2);
+    out.backEn = back(at('--') + 2);
+    out.backEm = back(at('---') + 3);
+    out.backLetter = back(at('Wait') + 4);
+    out.forwardEllipsis = forward(at('...'));
+    out.forwardEmoji = forward(at('😀'));
+    out.forwardEn = forward(at(' -- ') + 1);
+    out.forwardEm = forward(at('---'));
+    out.length = raw.length;
+    return out;
+  });
+  const L = unit.length;
+  const raw13 = 'Wait... then 😀 go -- end --- x.\n';
+  const idx = (t) => raw13.indexOf(t);
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  ok(eq(unit.backEllipsis, [idx('...'), '...', '', idx('...'), L - 3]), `Backspace after ... removes all three source characters (${JSON.stringify(unit.backEllipsis)})`);
+  ok(eq(unit.backEmoji, [idx('😀'), '😀', '', idx('😀'), L - 2]), `Backspace after an emoji removes both UTF-16 units (${JSON.stringify(unit.backEmoji)})`);
+  ok(eq(unit.backEn, [idx(' -- ') + 1, '--', '', idx(' -- ') + 1, L - 2]), `Backspace after -- removes both (${JSON.stringify(unit.backEn)})`);
+  ok(eq(unit.backEm, [idx('---'), '---', '', idx('---'), L - 3]), `Backspace after --- removes all three (${JSON.stringify(unit.backEm)})`);
+  ok(eq(unit.backLetter, [idx('Wait') + 3, 't', '', idx('Wait') + 3, L - 1]), `Backspace after a letter still removes one character (${JSON.stringify(unit.backLetter)})`);
+  ok(eq(unit.forwardEllipsis, [idx('...'), '...', '', idx('...'), L - 3]), `Delete before ... removes all three (${JSON.stringify(unit.forwardEllipsis)})`);
+  ok(eq(unit.forwardEmoji, [idx('😀'), '😀', '', idx('😀'), L - 2]), `Delete before an emoji removes both units (${JSON.stringify(unit.forwardEmoji)})`);
+  ok(eq(unit.forwardEn, [idx(' -- ') + 1, '--', '', idx(' -- ') + 1, L - 2]), `Delete before -- removes both (${JSON.stringify(unit.forwardEn)})`);
+  ok(eq(unit.forwardEm, [idx('---'), '---', '', idx('---'), L - 3]), `Delete before --- removes all three (${JSON.stringify(unit.forwardEm)})`);
+}
+{
+  // The caret after smart punctuation, put back into the DOM text after a re-render: rendered offset <-> source offset.
+  const result = await one.page.evaluate(async () => {
+    const m = await import('/caret-edit.mjs');
+    const raw = 'Wait... then a---b and c--d, e…f.\n';
+    const rendered = 'Wait… then a—b and c–d, e…f.';
+    const rows = [];
+    for (const [label, source, at] of [
+      ['after the ellipsis', 'Wait...', 'Wait…'.length],
+      ['after the em dash', 'Wait... then a---', 'Wait… then a—'.length],
+      ['after the en dash', 'Wait... then a---b and c--', 'Wait… then a—b and c–'.length],
+      ['after a literal ellipsis', 'Wait... then a---b and c--d, e…', 'Wait… then a—b and c–d, e…'.length],
+    ]) {
+      const offset = source.length;
+      const place = m.nodeAtOffset(raw, offset, [rendered]);
+      const back = m.offsetInText(raw, 1, rendered, at);
+      rows.push({ label, at: place?.at, wanted: at, offset: back.offset, offsetWanted: offset });
+    }
+    return rows;
+  });
+  for (const row of result) {
+    ok(row.at === row.wanted && row.offset === row.offsetWanted,
+      `The caret ${row.label} maps both ways (DOM offset ${row.at} of ${row.wanted}; source ${row.offset} of ${row.offsetWanted})`);
+  }
+}
+{
+  const run = await one.page.evaluate(async () => {
+    const { continuesTyping } = await import('/caret-edit.mjs');
+    const last = (length) => ({ typing: true, after: { offset: 10 }, edits: [{ replacement: 'x'.repeat(length) }] });
+    const edit = (text) => ({ start: 10, expected: '', replacement: text });
+    return {
+      oneMoreOk: continuesTyping(last(199), edit('a'), 10),
+      oneMoreOver: continuesTyping(last(200), edit('a'), 10),
+      commitOver: continuesTyping(last(199), edit('abc'), 10),
+      commitFits: continuesTyping(last(150), edit('x'.repeat(50)), 10),
+      commitTooLong: continuesTyping(last(150), edit('x'.repeat(51)), 10),
+    };
+  });
+  ok(run.oneMoreOk && !run.oneMoreOver, `One more typed character joins a run of 199 characters, not one of 200 (${JSON.stringify(run)})`);
+  ok(run.commitFits && !run.commitTooLong && !run.commitOver, `A multi-character commit counts its characters against the 200 limit (${JSON.stringify(run)})`);
+}
 
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({

@@ -6175,7 +6175,12 @@ function handleCaretKey(event) {
   if (!busy && selection && !selection.isCollapsed) {
     event.preventDefault();
     if (!directEditsEnabled()) {
-      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+      // Ordinary text stays off, but deleting a selection can still be asked of the agent as a review.
+      if ((key === 'Backspace' || key === 'Delete') && state.reviewOpen && reviewFromSelection()) {
+        void deleteSelectionNow();
+      } else {
+        setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+      }
     } else if (key === 'Backspace' || key === 'Delete') {
       void deleteSelectionNow({ keys: 1 });
     } else {
@@ -6254,8 +6259,10 @@ async function applySelectionKey(snapshot, key) {
 /// dropped task is told so (its `drop` is called, so an awaited edit resolves), and
 /// the status line says how many typed keys and which other edits were dropped. A
 /// task with `keep` is run anyway (a re-render that must happen after a refusal).
+/// A task is refused, too, when the file on screen is no longer the one it was queued in.
 function enqueueWrite(run, keys = 0, options = {}) {
-  writeQueue.push({ run, keys, ...options });
+  // The file on screen when the change was made: the task runs only while that file is still the one shown.
+  writeQueue.push({ run, keys, path: state.file?.path ?? null, ...options });
   void drainWrites();
 }
 
@@ -6267,10 +6274,15 @@ async function drainWrites() {
       const task = writeQueue.shift();
       // A task that throws is a refusal: nothing else may be left queued with no drain running.
       let result;
-      try {
-        result = await task.run();
-      } catch (error) {
-        result = { refused: `Could not edit the file: ${String(error)}` };
+      if (!task.keep && task.path !== (state.file?.path ?? null)) {
+        // Another file is on screen now, perhaps one with the same text and so the same digest.
+        result = { refused: 'Another file is shown now, so the change made in the first one was not written' };
+      } else {
+        try {
+          result = await task.run();
+        } catch (error) {
+          result = { refused: `Could not edit the file: ${String(error)}` };
+        }
       }
       if (result?.refused) {
         const kept = writeQueue.filter((item) => item.keep);

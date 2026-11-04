@@ -5,14 +5,14 @@
 - Fixed Markdown files opening raw: every file now opens rendered, whether it is new, opened from Open recent, reopened in a tab or restored with the session. Ctrl+U switches only the open file to raw.
 - Changed the raw view to stay per tab and never be saved, so a restart shows the rendered page. A raw choice saved by an older version no longer forces raw.
 - Added typing in the rendered Markdown view: a click puts a caret where you click, and typing, Space, Backspace and Delete change the `.md` itself. Typing over a selection replaces it. Math, code, links, tables and figures take no caret.
-- Added Ctrl+Z for typed edits: typing without a pause of half a second or more undoes as one step; each Backspace and each Delete is its own undo step.
+- Added Ctrl+Z for typed edits: a typed run is one undo step, and a pause of 0.6 seconds or a run of 200 characters starts a new step; each Backspace and each Delete is its own undo step.
 - Added the Delete key to remove the selected text in the rendered Markdown view, with no right-click needed.
 - Changed the right-click item that deleted at once to "Remove the selection from the file". Asking the agent to delete is unchanged.
 - Added one inbox file per document, `<name>_review.txt` next to it, listing the open comments for the agent. The agent reads it, edits the source and asks in its terminal. pdf-next marks a Markdown comment done when its quoted text is edited or deleted.
-- Changed comments to two statuses, open and done. For 50 comments (36 open) in a Markdown file, the agent's reading now costs 4 125 characters in one read of the inbox file, against 5 052 characters in 37 calls before.
+- Changed comments to two statuses, open and done. The agent now reads the open comments of a document in one file read of the inbox file.
 - Added a Done button to each open comment in the Review panel.
 - Removed the question and reply flow and `pdf-next reviews ask`, which now exits with an error. Questions go in the agent's terminal.
-- Changed the review store to a hidden `.pdf-next/` folder. Old `_review.json` and `_review.agent.txt` stores are migrated, and the old files are removed only after the new store is written and read back.
+- Changed the review store to a `.pdf-next/` folder. Old `_review.json` and `_review.agent.txt` stores are migrated, and the old files are removed only after the new store is written and read back.
 - Removed the `.bak` and `.pre-v3.bak` backup files and the `_review.done` files. Undo stays in memory for the session.
 
 ## 0.18.2
