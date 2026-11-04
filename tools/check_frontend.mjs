@@ -3247,9 +3247,19 @@ if (releaseTag) {
     'A caret write sends the digest its caret was computed against, and is refused when the file has moved on since.');
   assert.match(app, /const pinned = \{ \.\.\.edit, digest: edit\.digest \?\? state\.markdownDigest \};/,
     'writeMarkdownEdit keeps the digest taken when the edit was queued; replacing it by edit.digest alone is a bug.');
-  assert.match(app, /const caretAtStart = state\.caret;/, 'A write notes the caret it began with.');
-  assert.match(app, /if \(state\.caret === caretAtStart\) state\.caret = /,
-    'A write sets the caret after it only when no click changed it while the write ran.');
+  assert.match(app, /const caretVersionAtStart = caretVersion;/, 'A write notes the caret count it began with.');
+  assert.match(app, /function setUserCaret\(caret\) \{\s*caretVersion \+= 1;\s*state\.caret = caret;\s*\}/,
+    'Every caret change a user makes counts: a click that leaves the caret null is still a change.');
+  assert.match(app, /if \(caretVersion === caretVersionAtStart\) state\.caret = /,
+    'A write sets the caret after it only when no user caret change happened while the write ran.');
+  assert.doesNotMatch(app, /state\.caret = caretFromDom\(\)|state\.caret = null;\s*setStatus\(CARET_MESSAGES\.skipped\)/,
+    'User caret changes go through setUserCaret, so they are counted.');
+  assert.match(app, /const at = composingAt;[\s\S]{0,900}?if \(!at\) \{\s*refuse\(refusal/,
+    'compositionend writes only when composingAt is set; without it the composition is refused.');
+  assert.match(app, /if \(!at\) \{\s*refuse\(/, 'A composition with no caret is refused, not written.');
+  assert.match(app, /item\.drop\?\.\(result\.refused\)/, 'A dropped queued task is told it was dropped, so an awaited edit resolves.');
+  assert.match(app, /const kept = writeQueue\.filter\(\(item\) => item\.keep\);/, 'A task marked keep survives a refusal (the composition re-render).');
+  assert.match(app, /composingAt = QUEUED;/, 'A composition over text while a write runs is queued behind it, not refused.');
   assert.match(app, /A write may have started while the plan was being made: check again before asking\.\s*if \(writeBusy \|\| writeQueue\.length\)/,
     'The trash is checked again after the plan, before the question.');
   assert.match(app, /try \{\s*result = await task\.run\(\);\s*\} catch \(error\) \{\s*result = \{ refused: `Could not edit the file: \$\{String\(error\)\}` \};/,

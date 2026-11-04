@@ -538,7 +538,10 @@ const dom6 = () => p6.evaluate(() => document.getElementById('markdown').textCon
     el.dispatchEvent(new CompositionEvent('compositionend', { data: 'é', bubbles: true }));
   });
   await p6.waitForTimeout(400);
-  ok(await rtext6() === rich.raw && await edits6() === 0, 'A composition after a click in a code block: the file is unchanged, no write');
+  // The status is the skipped message: a composition in code is not refused for lack of a selection.
+  const status = await p6.textContent('#status');
+  ok(await rtext6() === rich.raw && await edits6() === 0 && status.includes('Math, code, links, tables and figures are not edited here'),
+    `A composition after a click in a code block: the file is unchanged, no write, the skipped message (${JSON.stringify(status)})`);
 }
 {
   // Item 1: a composition that starts with a selection (not a caret) takes no text, even though an earlier click left a caret.
@@ -671,6 +674,86 @@ const nine = await session({ '/d/a.md': raw }, '/d/a.md', 'macos');
     'On macOS, Option+@ (altKey only) is typed once');
 }
 await nine.close();
+
+// ── Session 10: a click during a slow write is kept even when the caret was already null (item 2) ──
+const ten = await session({ '/d/a.md': rich });
+const p10 = ten.page;
+const rtext10 = () => p10.evaluate(() => { const f = window.__files['/d/a.md']; return typeof f === 'object' ? f.raw : f; });
+{
+  // A selection write (caret null), slowed. The click in the code block sets the caret to null again: no caret was set before either.
+  await ten.selectText('#markdown', 'brave new');
+  await p10.waitForTimeout(100);
+  await p10.evaluate(() => { window.__editDelay = 600; });
+  await p10.keyboard.press('x');
+  await p10.waitForTimeout(100);
+  const box = await p10.locator('#markdown pre').first().boundingBox();
+  await p10.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await p10.waitForTimeout(50);
+  await p10.keyboard.press('y');
+  await p10.waitForTimeout(1000);
+  await p10.evaluate(() => { window.__editDelay = 0; });
+  const status = await p10.textContent('#status');
+  ok(await rtext10() === rich.raw.replace('brave new', 'x') && status.includes('Click in the text to place the caret'),
+    `A click in code during a slow write, then a key: the key is not written at the write's caret (${JSON.stringify(status)})`);
+}
+await ten.close();
+
+// ── Session 11: a dead key typed while a write runs is written after that write, in order (item 3) ──
+const eleven = await session({ '/d/a.md': raw });
+const p11 = eleven.page;
+{
+  const p = await spot('brave', 'end', p11);
+  await p11.mouse.click(p.x, p.y);
+  await p11.waitForTimeout(100);
+  await p11.evaluate(() => { window.__editDelay = 400; });
+  await p11.keyboard.press('a');
+  await p11.waitForTimeout(100);
+  await p11.evaluate(() => {
+    const el = document.getElementById('markdown');
+    el.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    el.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'é', bubbles: true }));
+    el.dispatchEvent(new CompositionEvent('compositionend', { data: 'é', bubbles: true }));
+  });
+  await p11.waitForTimeout(900);
+  await p11.evaluate(() => { window.__editDelay = 0; });
+  const file = await p11.evaluate(() => window.__files['/d/a.md']);
+  const status = await p11.textContent('#status');
+  ok(file === raw.replace('brave new', 'braveaé new'),
+    `A dead key typed during a write is written after it, in order: "aé" (status ${JSON.stringify(status)})`);
+}
+await eleven.close();
+
+// ── Session 12: an Edit box save whose write is dropped resolves, is named in the status, and keeps its text (item 1) ──
+const twelve = await session({ '/d/a.md': raw });
+const p12 = twelve.page;
+{
+  const p = await spot('brave', 'end', p12);
+  await p12.mouse.click(p.x, p.y);
+  await p12.waitForTimeout(100);
+  await p12.evaluate(() => { window.__editDelay = 700; });
+  await p12.keyboard.press('x');
+  await p12.waitForTimeout(100);
+  await twelve.selectText('#markdown', 'Second paragraph here.');
+  await p12.waitForTimeout(50);
+  await p12.keyboard.press('Control+e');
+  await p12.waitForTimeout(100);
+  await p12.fill('#editText', 'Second paragraph changed.');
+  await p12.click('#editSave');
+  // The file changes on disk while the key's write is in flight: that write is refused, and the Save queued behind it is dropped.
+  await p12.waitForTimeout(100);
+  await p12.evaluate((external) => {
+    window.__files['/d/a.md'] = external;
+    window.__emit('file-changed', { path: '/d/a.md', kind: 'changed', revision: 9 });
+  }, 'External line.\n\n' + raw);
+  await p12.waitForTimeout(1200);
+  await p12.evaluate(() => { window.__editDelay = 0; });
+  const status = await p12.textContent('#status');
+  const box = await p12.evaluate(() => ({ hidden: document.getElementById('editBox').hidden, text: document.getElementById('editText').value }));
+  const writes = await p12.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  ok(status.includes('an edit from the Edit box was not written') && !box.hidden && box.text === 'Second paragraph changed.' && writes === 1,
+    `A dropped Edit box save is named in the status, and the box keeps its text (${JSON.stringify(status)}, box hidden ${box.hidden}, writes ${writes})`);
+}
+await twelve.close();
 
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({

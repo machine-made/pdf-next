@@ -6035,7 +6035,14 @@ async function saveEditBox() {
   }
   const replacement = ui.editText.value;
   closeEditBox();
-  await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
+  const result = await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit',
+    'an edit from the Edit box was not written');
+  // A write that was not made keeps the text in the box, so the save can be tried again.
+  if (result?.refused && state.file?.path === pending.path) {
+    state.pendingEdit = pending;
+    ui.editText.value = replacement;
+    ui.editBox.hidden = false;
+  }
 }
 
 // ── Typing in the rendered Markdown ───────────────────────────────────────
@@ -6050,6 +6057,13 @@ const CARET_SKIP = 'math, pre, code, a[href], table, .md-figure, img[data-doc]';
 const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 const writeQueue = [];
 let writeBusy = false;
+// Counts the caret changes a user makes (a click, a selection, a key that moves or types). A write that runs while
+// the user clicks keeps the click's caret: it sets its own caret after itself only when this count has not moved.
+let caretVersion = 0;
+function setUserCaret(caret) {
+  caretVersion += 1;
+  state.caret = caret;
+}
 
 function skippedAt(node) {
   const el = node?.nodeType === 3 ? node.parentElement : node;
@@ -6228,7 +6242,7 @@ function handleCaretKey(event) {
   }
   // Idle: the DOM is current, so the caret is read from it. Busy: the queue's
   // own caret is ahead of the DOM, and it stays the one in use.
-  if (!busy) state.caret = caretFromDom();
+  if (!busy) setUserCaret(caretFromDom());
   enqueueWrite(() => applyCaretKey(key), 1);
   return true;
 }
@@ -6279,11 +6293,13 @@ async function applySelectionKey(snapshot, key) {
 }
 
 /// Runs queued tasks one at a time, in order. A task returns { refused: message }
-/// when its write was not made. The keys still queued are then dropped, because
-/// the caret they were typed against is no longer known, and the status line says
-/// how many were dropped.
-function enqueueWrite(run, keys = 0) {
-  writeQueue.push({ run, keys });
+/// when its write was not made. The tasks still queued behind it are then dropped,
+/// because the caret or the offsets they were queued with are no longer known: each
+/// dropped task is told so (its `drop` is called, so an awaited edit resolves), and
+/// the status line says how many typed keys and which other edits were dropped. A
+/// task with `keep` is run anyway (a re-render that must happen after a refusal).
+function enqueueWrite(run, keys = 0, options = {}) {
+  writeQueue.push({ run, keys, ...options });
   void drainWrites();
 }
 
@@ -6301,11 +6317,21 @@ async function drainWrites() {
         result = { refused: `Could not edit the file: ${String(error)}` };
       }
       if (result?.refused) {
-        const dropped = writeQueue.splice(0);
-        const keys = task.keys + dropped.reduce((sum, item) => sum + item.keys, 0);
-        setStatus(keys
-          ? `${result.refused}; ${keys} typed ${keys === 1 ? 'key was' : 'keys were'} not written`
-          : result.refused, { error: true });
+        const kept = writeQueue.filter((item) => item.keep);
+        const dropped = writeQueue.filter((item) => !item.keep);
+        writeQueue.length = 0;
+        writeQueue.push(...kept);
+        let keys = task.keys;
+        const notWritten = [];
+        for (const item of dropped) {
+          keys += item.keys;
+          if (!item.keys) notWritten.push(item.notWritten ?? 'an edit was not written');
+          item.drop?.(result.refused);
+        }
+        const parts = [result.refused];
+        if (keys) parts.push(`${keys} typed ${keys === 1 ? 'key was' : 'keys were'} not written`);
+        parts.push(...notWritten);
+        setStatus(parts.join('; '), { error: true });
       }
     }
   } finally {
@@ -6315,8 +6341,9 @@ async function drainWrites() {
 
 /// Queues one edit of the file; resolves with its result (see drainWrites). The
 /// digest is taken now, with the offsets the caller computed: a write queued
-/// behind another one must not be applied to a file that has changed since.
-function writeMarkdownEdit(edit, label) {
+/// behind another one must not be applied to a file that has changed since. A
+/// dropped edit resolves with the refusal; `notWritten` says what it was in the status.
+function writeMarkdownEdit(edit, label, notWritten = `an edit (${label}) was not written`) {
   const pinned = { ...edit, digest: edit.digest ?? state.markdownDigest };
   return new Promise((resolve) => {
     enqueueWrite(async () => {
@@ -6328,7 +6355,7 @@ function writeMarkdownEdit(edit, label) {
       }
       resolve(result);
       return result;
-    });
+    }, 0, { notWritten, drop: (message) => resolve({ refused: message }) });
   });
 }
 
@@ -6347,8 +6374,8 @@ async function writeNow(edit, label) {
   const path = file.path;
   const digest = edit.digest ?? state.markdownDigest;
   if (digest !== state.markdownDigest) return { refused: 'The file changed on disk, so the change was not written' };
-  // The caret as it was when the write began. A click during the write replaces it, and the click's caret is kept.
-  const caretAtStart = state.caret;
+  // The caret count as it was when the write began. A click during the write moves it, and the click's caret is kept.
+  const caretVersionAtStart = caretVersion;
   try {
     const next = await invoke('edit_markdown', {
       path, expectedDigest: digest, start, expectedText: expected, replacement,
@@ -6386,7 +6413,7 @@ async function writeNow(edit, label) {
       pushUndo(entry);
     }
     if (state.file?.path === path) {
-      if (state.caret === caretAtStart) state.caret = after === null ? null : { path, ...after, digest: next };
+      if (caretVersion === caretVersionAtStart) state.caret = after === null ? null : { path, ...after, digest: next };
       await openFile(state.file, { preserveView: true });
     }
     setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void requestUndo() } });
@@ -7047,43 +7074,56 @@ ui.markdown.addEventListener('beforeinput', (event) => {
   if (event.isComposing || String(event.inputType).startsWith('insertCompositionText')) return;
   event.preventDefault();
 });
-// Composed text (an accent from a dead key, say) is one insert, taken when the composition ends. It goes only where
-// a text caret was when the composition began. The browser has already put the composing text in the DOM, so a
-// refused composition shows the file again from its own text.
+// Composed text (an accent from a dead key, say) is one insert, taken when the composition ends. It is written at
+// the text caret read when the composition began (composingAt). A composition that begins while a write runs and
+// over text takes the queue's caret instead (QUEUED): its insert waits behind that write, so the order holds. A
+// refusal is queued too, as a task that is never dropped, so a write's status cannot replace it. The browser has put
+// the composing text in the DOM, so every refusal shows the file again from its own text.
+const QUEUED = { queued: true };
 let composing = false;
 let composingAt = null;
+let composingRefusal = null;
 ui.markdown.addEventListener('compositionstart', () => {
   composing = true;
   composingAt = null;
-  if (writeBusy || writeQueue.length) return;
+  composingRefusal = null;
+  const selection = window.getSelection();
+  // A click in math, code, a link or a table leaves the caret on the article itself: the skipped case.
+  const skipped = Boolean(selection?.isCollapsed && selection.anchorNode === ui.markdown);
+  if (writeBusy || writeQueue.length) {
+    if (domCaret()) composingAt = QUEUED;
+    else composingRefusal = skipped ? CARET_MESSAGES.skipped : 'Wait for the write to end, then type again';
+    return;
+  }
   if (domCaret()) {
-    state.caret = caretFromDom();
+    setUserCaret(caretFromDom());
     composingAt = state.caret;
   }
+  if (!composingAt) composingRefusal = skipped ? CARET_MESSAGES.skipped : 'Select no text and click where you want to type';
 });
 ui.markdown.addEventListener('compositionend', (event) => {
   composing = false;
   const at = composingAt;
+  const refusal = composingRefusal;
   composingAt = null;
+  composingRefusal = null;
   if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw) return;
   const refuse = (message) => {
-    setStatus(message, { error: true });
     enqueueWrite(async () => {
+      setStatus(message, { error: true });
       await refreshRendered();
       return 'ok';
-    });
+    }, 0, { keep: true });
   };
   if (!directEditsEnabled()) {
     refuse('Editing the Markdown file is off in Settings; add a review instead');
     return;
   }
   if (!at) {
-    refuse(writeBusy || writeQueue.length
-      ? 'Wait for the write to end, then type again'
-      : 'Select no text and click where you want to type');
+    refuse(refusal ?? 'Select no text and click where you want to type');
     return;
   }
-  if (at.offset == null) {
+  if (at !== QUEUED && at.offset == null) {
     refuse(CARET_MESSAGES[at.error] ?? CARET_MESSAGES.markup);
     return;
   }
@@ -7108,7 +7148,7 @@ ui.markdown.addEventListener('mousedown', (event) => {
     // Focus puts the caret at the start of the text; a caret on the article itself (no text node) keeps keys out of the text.
     ui.markdown.focus({ preventScroll: true });
     window.getSelection()?.collapse(ui.markdown, 0);
-    state.caret = null;
+    setUserCaret(null);
     setStatus(CARET_MESSAGES.skipped);
     return;
   }
@@ -7123,13 +7163,13 @@ ui.markdown.addEventListener('mousedown', (event) => {
 });
 // A click anywhere else leaves the caret where it was, not in the file.
 document.addEventListener('pointerdown', (event) => {
-  if (!(event.target instanceof Node) || !ui.markdown.contains(event.target)) state.caret = null;
+  if (!(event.target instanceof Node) || !ui.markdown.contains(event.target)) setUserCaret(null);
 }, true);
 // The source caret follows the DOM caret while no edit is being written, so a
 // reload (or a re-render) puts the caret back where the reader left it.
 document.addEventListener('selectionchange', () => {
   // During a composition the browser has put the composed text in the DOM: the caret is read at its start.
-  if (!composing && !writeBusy && writeQueue.length === 0 && domCaret()) state.caret = caretFromDom();
+  if (!composing && !writeBusy && writeQueue.length === 0 && domCaret()) setUserCaret(caretFromDom());
 });
 
 // Single-click selects a figure in Markdown for drag-resizing; double-click
