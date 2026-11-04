@@ -3,7 +3,7 @@
 /// one place in the block where the text on either side of it appears exactly
 /// as written. Offsets are UTF-16 indices into the .md text, as Rust splices them.
 
-import { blockSpan, blockStartLine, escapeRegExp, SMART, SMART_SOURCE } from './md-edit.mjs';
+import { blockSpan, escapeRegExp, lineBlock, SMART, SMART_SOURCE } from './md-edit.mjs';
 
 /// A pause this long ends a run of typed characters: a run is one undo step.
 const TYPING_PAUSE_MS = 600;
@@ -111,9 +111,8 @@ function renderedLength(text, source) {
 /// source exactly once in the block and spans the offset. An offset inside markup
 /// goes to the end of the node before it.
 export function nodeAtOffset(raw, offset, texts) {
-  // The caret may be on any line of a wrapped paragraph: the block starts at the paragraph's first line.
-  const line = raw.slice(0, offset).split('\n').length;
-  const block = blockSpan(raw, blockStartLine(raw, line), line);
+  // The caret may be on any line of a wrapped paragraph or list item: the block is that paragraph, item or heading alone.
+  const block = lineBlock(raw, raw.slice(0, offset).split('\n').length);
   const region = raw.slice(block.start, block.end);
   let before = null;
   for (const [index, text] of texts.entries()) {

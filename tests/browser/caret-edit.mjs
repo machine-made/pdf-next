@@ -1195,10 +1195,122 @@ const twentyone = await session({ '/d/a.md': longMd });
   await p21.waitForTimeout(100);
   await p21.keyboard.press('x');
   await p21.waitForTimeout(400);
-  ok(await p21.evaluate(() => window.__files['/d/a.md']) === longMd.replace('Paragraph 1 has', 'Paragraph 1 xhas') || await writes21() === 1,
+  // The harness counts an edit_markdown call even when the command rejects it: the file must hold the key as well.
+  ok(await p21.evaluate(() => window.__files['/d/a.md']) === longMd.replace('Paragraph 1 has', 'Paragraph 1 xhas') && await writes21() === 1,
     'and a typed key writes again after the presentation');
+  // A composition that starts before the presentation and ends in it writes nothing, shows the file as it is, and
+  // leaves no composing state behind: a dead-key composition after the presentation writes once.
+  const fileNow = await p21.evaluate(() => window.__files['/d/a.md']);
+  const writesBefore = await writes21();
+  const q2 = await spot('Paragraph 2 ', 'end', p21);
+  await p21.mouse.click(q2.x, q2.y);
+  await p21.waitForTimeout(100);
+  await p21.evaluate(() => {
+    const el = document.getElementById('markdown');
+    el.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    // The browser draws the composing text in the article.
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let node;
+    while (walk.nextNode()) if (walk.currentNode.textContent.includes('Paragraph 2 has')) { node = walk.currentNode; break; }
+    node.textContent = node.textContent.replace('Paragraph 2 has', 'Paragraph 2 éhas');
+  });
+  await p21.keyboard.press('F5');
+  await p21.waitForTimeout(500);
+  await p21.evaluate(() => document.getElementById('markdown').dispatchEvent(new CompositionEvent('compositionend', { data: 'é', bubbles: true })));
+  await p21.waitForTimeout(400);
+  ok(await writes21() === writesBefore && await p21.evaluate(() => window.__files['/d/a.md']) === fileNow,
+    `A composition that ends in the presentation writes nothing (${await writes21() - writesBefore} writes)`);
+  ok(await p21.evaluate(() => !document.getElementById('markdown').textContent.includes('Paragraph 2 éhas')),
+    'and the composed text is not left in the article');
+  await p21.keyboard.press('Escape');
+  await p21.waitForTimeout(400);
+  const back2 = await spot('Paragraph 2 ', 'end', p21);
+  await p21.mouse.click(back2.x, back2.y);
+  await p21.waitForTimeout(100);
+  const dead = await p21.evaluate(() => {
+    const el = document.getElementById('markdown');
+    const e = new KeyboardEvent('keydown', { key: 'Dead', bubbles: true, cancelable: true });
+    el.dispatchEvent(e);
+    el.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    el.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'é', bubbles: true }));
+    el.dispatchEvent(new CompositionEvent('compositionend', { data: 'é', bubbles: true }));
+    return e.defaultPrevented;
+  });
+  await p21.waitForTimeout(400);
+  ok(dead === false && await writes21() === writesBefore + 1
+    && await p21.evaluate(() => window.__files['/d/a.md']) === fileNow.replace('Paragraph 2 has', 'Paragraph 2 éhas'),
+  `A dead key and its composition work outside the presentation: one write (${await writes21() - writesBefore})`);
 }
 await twentyone.close();
+
+// ── Session 22: the block around a caret is its own paragraph, list item or heading, however long ──
+const twentytwo = await session({ '/d/a.md': raw });
+{
+  const result = await twentytwo.page.evaluate(async () => {
+    const m = await import('/caret-edit.mjs');
+    const out = {};
+    // A paragraph of 450 lines (more than the 400 lines the scan once stopped at), the caret on its last line and on its first.
+    const lines = Array.from({ length: 450 }, (_, n) => `line ${n + 1} of the long paragraph`);
+    const long = `${lines.join('\n')}\n\nNext one.\n`;
+    const text = lines.join(' ');
+    const last = long.indexOf('line 450') + 'line 45'.length;
+    const lastNode = m.nodeAtOffset(long, last, [text]);
+    out.last = lastNode && [lastNode.index, lastNode.at];
+    out.wantLast = text.indexOf('line 450') + 'line 45'.length;
+    const firstNode = m.nodeAtOffset(long, 3, [text]);
+    out.first = firstNode && [firstNode.index, firstNode.at];
+    // Two adjacent list items with the same text: the caret in the second belongs to the second.
+    const list = '- same words\n- same words\n';
+    const second = list.indexOf('- same words', 1) + '- same wo'.length;
+    const inSecond = m.nodeAtOffset(list, second, ['same words']);
+    out.second = inSecond && [inSecond.index, inSecond.at, inSecond.start, inSecond.end];
+    out.wantSecond = [0, 'same wo'.length, list.indexOf('same words', 5), list.indexOf('same words', 5) + 'same words'.length];
+    const inFirst = m.nodeAtOffset(list, 5, ['same words']);
+    out.firstItem = inFirst && [inFirst.index, inFirst.at, inFirst.start];
+    // A heading and the line under it, with the same text: each is its own block.
+    const head = '# Same\nSame\n';
+    const under = m.nodeAtOffset(head, head.lastIndexOf('Same') + 2, ['Same']);
+    out.under = under && [under.index, under.at, under.start];
+    const over = m.nodeAtOffset(head, 4, ['Same']);
+    out.over = over && [over.index, over.at, over.start];
+    // A list item wrapped over two lines is one block; so is a numbered one.
+    const wrapped = '1. first part\n   second part\n2. first part second part\n';
+    const onWrap = m.nodeAtOffset(wrapped, wrapped.indexOf('second') + 3, ['first part second part']);
+    out.wrap = onWrap && [onWrap.index, onWrap.at];
+    out.wantWrap = 'first part '.length + 3;
+    return out;
+  });
+  ok(JSON.stringify(result.last) === JSON.stringify([0, result.wantLast]) && JSON.stringify(result.first) === JSON.stringify([0, 3]),
+    `nodeAtOffset places a caret on the first and the last line of a 450-line paragraph (${JSON.stringify(result)})`);
+  ok(JSON.stringify(result.second) === JSON.stringify(result.wantSecond) && JSON.stringify(result.firstItem) === JSON.stringify([0, 3, 2]),
+    `a caret in the second of two identical list items belongs to the second, and one in the first to the first (${JSON.stringify(result)})`);
+  ok(JSON.stringify(result.under) === JSON.stringify([0, 2, 7]) && JSON.stringify(result.over) === JSON.stringify([0, 2, 2])
+    && JSON.stringify(result.wrap) === JSON.stringify([0, result.wantWrap]),
+  `a heading and the line under it are separate blocks, and a wrapped list item is one (${JSON.stringify(result)})`);
+}
+await twentytwo.close();
+{
+  // In the page: a key typed at the end of the 450-line paragraph lands there.
+  const longRaw = `${Array.from({ length: 450 }, (_, n) => `line ${n + 1} of the long paragraph`).join('\n')}\n\nNext one.\n`;
+  const big = await session({ '/d/a.md': longRaw });
+  const pg = big.page;
+  await pg.evaluate(() => {
+    const walk = document.createTreeWalker(document.querySelector('#markdown'), NodeFilter.SHOW_TEXT);
+    let node;
+    while (walk.nextNode()) if (walk.currentNode.textContent.includes('line 450')) { node = walk.currentNode; break; }
+    node.parentElement.scrollIntoView({ block: 'end' });
+  });
+  await pg.waitForTimeout(200);
+  const at = await spot('line 450 of the long paragraph', 'end', pg);
+  await pg.mouse.click(at.x, at.y);
+  await pg.waitForTimeout(100);
+  await pg.keyboard.press('x');
+  await pg.waitForTimeout(400);
+  const writes = await pg.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  ok(writes === 1 && await pg.evaluate(() => window.__files['/d/a.md']) === longRaw.replace('line 450 of the long paragraph', 'line 450 of the long paragraphx'),
+    `A key typed at the end of a 450-line paragraph lands there (${writes} writes)`);
+  await big.close();
+}
 
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({

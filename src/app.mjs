@@ -7091,7 +7091,15 @@ ui.markdown.addEventListener('compositionend', (event) => {
   const refusal = composingRefusal;
   composingAt = null;
   composingRefusal = null;
-  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw || presentation) return;
+  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw) return;
+  // A composition that began before the presentation is cancelled, not written: show the file again from its own text.
+  if (presentation) {
+    enqueueWrite(async () => {
+      await refreshRendered();
+      return 'ok';
+    }, 0, { keep: true });
+    return;
+  }
   const refuse = (message) => {
     enqueueWrite(async () => {
       setStatus(message, { error: true });
@@ -7629,6 +7637,13 @@ async function startPresentation() {
   toggleSettings(false);
   if (!ui.find.hidden) closeFind();
   hideReviewChrome();
+  // A composition in progress is cancelled, not written: the composed text is in the article, not in the file.
+  if (composing) {
+    composing = false;
+    composingAt = null;
+    composingRefusal = null;
+    await refreshRendered();
+  }
   presentation = {
     kind,
     path: state.file.path,
