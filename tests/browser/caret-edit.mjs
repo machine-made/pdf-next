@@ -921,6 +921,42 @@ await fourteen.close();
   ok(run.commitFits && !run.commitTooLong && !run.commitOver, `A multi-character commit counts its characters against the 200 limit (${JSON.stringify(run)})`);
 }
 
+// ── Session 15: with several tabs open, the arrow keys move the caret in the text and step tabs elsewhere ──
+const fifteen = await session({ '/d/a.md': raw, '/d/b.md': raw });
+const p15 = fifteen.page;
+{
+  await p15.evaluate(() => window.__emit('open-files', ['/d/b.md']));
+  await p15.waitForTimeout(300);
+  await p15.keyboard.press('Control+1');
+  await p15.waitForTimeout(300);
+  const tab = () => p15.$eval('#tabs .tab[aria-selected="true"]', (t) => t.textContent);
+  const p = await spot('brave', 'start', p15);
+  await p15.mouse.click(p.x, p.y);
+  await p15.waitForTimeout(100);
+  for (const [key, typed, expected] of [['ArrowRight', 'x', 'Hello bxrave new world.'], ['Shift+ArrowRight', 'y', null]]) {
+    await p15.keyboard.press(key);
+    await p15.waitForTimeout(100);
+    if (!expected) {
+      ok(await tab() === 'a.md', `${key} with the caret in the text does not change tab (${await tab()})`);
+      continue;
+    }
+    ok(await tab() === 'a.md', `${key} with the caret in the text does not change tab (${await tab()})`);
+    await p15.keyboard.press(typed);
+    await p15.waitForTimeout(400);
+    const line = (await p15.evaluate(() => window.__files['/d/a.md'])).split('\n')[0];
+    ok(line === expected, `and the caret moved one character: the typed key lands there (${JSON.stringify(line)})`);
+  }
+  await p15.keyboard.press('ArrowLeft');
+  await p15.waitForTimeout(150);
+  ok(await tab() === 'a.md', `ArrowLeft with the caret in the text does not change tab (${await tab()})`);
+  // Focus outside the text: the arrows step tabs as before.
+  await p15.evaluate(() => { getSelection().removeAllRanges(); document.activeElement?.blur(); });
+  await p15.keyboard.press('ArrowRight');
+  await p15.waitForTimeout(300);
+  ok(await tab() === 'b.md', `ArrowRight with no caret in the text still steps to the next tab (${await tab()})`);
+}
+await fifteen.close();
+
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({
   '/d/a.md': {

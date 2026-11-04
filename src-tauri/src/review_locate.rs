@@ -215,22 +215,31 @@ pub(crate) fn count_exact(text: &[char], quote: &str) -> usize {
     count
 }
 
-/// The raw HTML of `source` as the parser finds it: HTML blocks and inline
-/// tags. Words in an image's alt text, a link's destination or a code block are
-/// not part of it.
-fn raw_html(source: &str) -> String {
+/// The raw HTML blocks of `source` as the parser finds them, one string per
+/// block (its lines run together). Words in an image's alt text, a link's
+/// destination or a code block are not part of any. Separate blocks stay
+/// separate, so words from two of them never read as one run.
+fn raw_html_blocks(source: &str) -> Vec<String> {
     use pulldown_cmark::{Event, Parser};
-    let mut html = String::new();
+    let mut blocks = Vec::new();
+    let mut open = false;
     for event in Parser::new_ext(source, parser_options()) {
-        if let Event::Html(text) | Event::InlineHtml(text) = event {
-            html.push_str(&text);
-            html.push('\n');
+        if let Event::Html(text) = event {
+            if !open {
+                blocks.push(String::new());
+                open = true;
+            }
+            if let Some(block) = blocks.last_mut() {
+                block.push_str(&text);
+            }
+        } else {
+            open = false;
         }
     }
-    html
+    blocks
 }
 
-/// Whether the quote stands in the raw HTML of the source once HTML tags and
+/// Whether the quote stands in one raw HTML block of the source once HTML tags and
 /// Markdown emphasis marks (`*`, `_`, `` ` ``, `~`) are taken out of both. For
 /// text the renderer does not show: the inside of a raw HTML block.
 pub(crate) fn quote_in_raw(source: &str, quote: &str) -> bool {
@@ -263,11 +272,11 @@ pub(crate) fn quote_in_raw(source: &str, quote: &str) -> bool {
     if want.is_empty() {
         return false;
     }
-    let html = raw_html(source);
+    let blocks = raw_html_blocks(source);
     // A tag may or may not stand for a space between words.
     ["", " "]
         .iter()
-        .any(|gap| strip(&html, gap).contains(&want))
+        .any(|gap| blocks.iter().any(|block| strip(block, gap).contains(&want)))
 }
 
 fn find_from(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
@@ -615,6 +624,13 @@ mod tests {
             "a fenced block is code, not raw HTML"
         );
         assert!(!quote_in_raw(html, ""));
+        // Two separate raw HTML blocks are not one run of text.
+        let blocks = "<div>ends with these words</div>\n\n<div>of the other block</div>\n";
+        assert!(quote_in_raw(blocks, "these words"));
+        assert!(
+            !quote_in_raw(blocks, "words of the other"),
+            "words of two blocks are not contiguous"
+        );
     }
 
     #[test]

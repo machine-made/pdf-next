@@ -189,7 +189,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 - **The notes live next to the document**, in a `.pdf-next` folder (`paper.pdf` →
   `.pdf-next/paper.json`): the quote, its page or line and the text around it, a stable ID, the
   request, its status and what was done about it. Beside the document pdf-next also keeps
-  `paper_review.txt`, the open notes as plain text: that is the file whoever does the work
+  `{stem}_review.txt` (`paper_review.txt`), the open notes as plain text: that is the file whoever does the work
   reads. Saving a note never changes the PDF or its source; Delete means "remove this passage
   from the source". Whoever edits the source (you, a co-author, or an agent) works through the
   list. pdf-next closes a Markdown note itself once its quoted text, which it has seen in place,
@@ -532,8 +532,12 @@ rewrites the quoted text, pdf-next closes the note itself; when the words stay, 
 Agents never write the JSON store directly: a full rewrite races with the reader adding items in
 the app. `done`, `add`, `relocate` and `update` take the store's lock. Stores and files from
 0.18 and earlier (`{stem}_review.json`, `{stem}_review.agent.txt`, `{stem}_review.done`, the
-`.bak` backups) are read once: pdf-next writes the new store and inbox, reads the new store back
-and compares it, and only then removes the old files. If a step fails, the old files stay. A
+`.bak` backups) are read once: pdf-next writes the new store, reads it back and compares the
+note IDs, and only then removes the old files. If the store cannot be written or does not read
+back the same, the new store is removed and the old files stay for the next try. The inbox is
+written after that: if it fails, the old files are still removed and the failure is shown as a
+warning, because the store is already saved. A `_review.done` with lines not yet applied, and a
+`_review.json` that also holds notes of other documents, stay. A
 question (status `question`) becomes an open note with the question and the answer added to its
 comment; `applied` and `resolved` become `done`.
 

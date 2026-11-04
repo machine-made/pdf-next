@@ -33,6 +33,8 @@ await page.keyboard.press('Control+9');
 await settle();
 ok(await both('b.md'), 'Ctrl+9 past the last tab changes nothing');
 await page.click('#markdown', { position: { x: 5, y: 5 } });
+// A click in the text puts a caret there, and the arrows move it (see caret-edit.mjs). Focus outside the text steps tabs.
+await page.evaluate(() => { getSelection().removeAllRanges(); document.activeElement?.blur(); });
 await page.keyboard.press('ArrowRight');
 await settle();
 ok(await both('c.md'), 'Right arrow steps through tabs');

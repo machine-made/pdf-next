@@ -6141,6 +6141,12 @@ function caretKeyTarget() {
   return Boolean(anchor && ui.markdown.contains(anchor));
 }
 
+/// True when the caret, or a selection, is in a text node of the rendered Markdown and keys go there.
+function caretInText() {
+  const anchor = window.getSelection()?.anchorNode;
+  return caretKeyTarget() && anchor?.nodeType === 3 && ui.markdown.contains(anchor);
+}
+
 /// Takes a key for the rendered text: true when it is taken. Changes to the text
 /// are queued and written in order; keys wait while a write runs. Delete is never
 /// left to the window while a write is in flight, so it cannot reach the trash.
@@ -7970,8 +7976,8 @@ window.addEventListener('keydown', (event) => {
   // Left and Right step through the tabs whenever there are tabs to step
   // through. With a single file open there is nothing to switch to, so they go
   // back to walking the folder — which is what they are for in a folder of
-  // figures opened one at a time.
-  if (state.tabs.length > 1 && (key === 'arrowright' || key === 'arrowleft')) {
+  // figures opened one at a time. With the caret in the rendered text they move the caret instead.
+  if (state.tabs.length > 1 && (key === 'arrowright' || key === 'arrowleft') && !caretInText()) {
     event.preventDefault();
     cycleTab(key === 'arrowright' ? 1 : -1);
     return;
