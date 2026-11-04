@@ -6202,6 +6202,8 @@ function handleCaretKey(event) {
     return true;
   }
   if (!busy && !domCaret()) return false;
+  // With editing off, a printable key is not text: it is left to the window's reading shortcuts (+, -, Space, j, k, g).
+  if (!busy && !directEditsEnabled() && key.length === 1) return false;
   event.preventDefault();
   if (!directEditsEnabled()) {
     setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
