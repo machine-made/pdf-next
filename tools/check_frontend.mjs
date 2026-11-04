@@ -1238,6 +1238,7 @@ for (const pauseAt of ['save', 'close']) {
   let statusMessage = '';
   const save = appFunction('saveNote', 'async function optionalSourceHint(', { REVIEW_ACTIONS, reviewRequests,
     state,
+    presentation: null,
     noteSaveInFlight: false,
     structuredClone: (value) => JSON.parse(JSON.stringify(value)),
     REVIEW_TINTS: 16,
@@ -1265,6 +1266,40 @@ for (const pauseAt of ['save', 'close']) {
   finish({ reviews: [{ id: 'r1', file: 'a.pdf' }] });
   await saving;
   assert.equal(applied, false, 'A late new-review save must not change another file’s panel.');
+}
+
+{
+  // A presentation that begins while the PDF digest is awaited: the note is not saved and the panel not opened.
+  let digest;
+  let appended = false;
+  let opened = false;
+  const context = {
+    REVIEW_ACTIONS, reviewRequests,
+    state: {
+      file: { path: 'a.pdf' }, generation: 1,
+      pendingNote: { file: 'a.pdf', kind: 'pdf', at: { page: 1 }, quote: 'text', anchor: { position: { page: 1, x: 20, y: 30 } } },
+      pendingNotePdf: { path: 'a.pdf', document: {}, digestPromise: new Promise((resolve) => { digest = resolve; }) },
+    },
+    presentation: null,
+    noteSaveInFlight: false,
+    structuredClone: (value) => JSON.parse(JSON.stringify(value)),
+    REVIEW_TINTS: 16,
+    ui: { noteText: { value: 'comment' }, noteAction: { value: 'improve' }, noteSave: {}, noteBox: {}, noteQuote: {}, noteRef: {} },
+    pdfDocumentDigest: async () => 'sha256:x',
+    optionalSourceHint: async () => null,
+    invoke: async (command) => { if (command === 'append_review') { appended = true; return { reviews: [] }; } return null; },
+    applyReviewStore() {},
+    setReviewOpen() { opened = true; },
+    selectReview() {},
+    setStatus() {},
+  };
+  const save = appFunction('saveNote', 'async function optionalSourceHint(', context);
+  const saving = save();
+  context.presentation = { kind: 'pdf' };
+  digest('sha256:original');
+  await saving;
+  assert.equal(appended, false, 'A note whose digest arrives after a presentation began writes no review.');
+  assert.equal(opened, false, 'and opens no review panel over the slide.');
 }
 
 {
@@ -3301,9 +3336,9 @@ if (releaseTag) {
 
 // Round 3: the busy guards, the queue for undo, the messages the review listed, dead keys and AltGr.
 {
-  assert.match(app, /function requestUndo\(\) \{\s*enqueueWrite\(/, 'requestUndo queues the undo behind the writes.');
+  assert.match(app, /function requestUndo\(\) \{[^}]*?enqueueWrite\(/, 'requestUndo queues the undo behind the writes.');
   assert.match(app, /key === 'z'\) \{\s*event\.preventDefault\(\);\s*requestUndo\(\)/, 'Ctrl+Z calls requestUndo.');
-  assert.match(app, /label: 'Undo', group: 'File', shortcut: 'Ctrl\+Z', run: requestUndo/, 'The palette Undo calls requestUndo.');
+  assert.match(app, /label: 'Undo', group: 'File', shortcut: 'Ctrl\+Z',[^}]*?run: requestUndo/, 'The palette Undo calls requestUndo.');
   assert.match(app, /A new paragraph is not typed in the rendered view: edit the raw text \(Ctrl\+U\)/,
     'Enter in the rendered view is refused with this message.');
   assert.match(app, /Wait for the write to end, then select again/, 'A selection made while a write runs is refused with this message.');
@@ -3687,7 +3722,7 @@ assert.match(nsisTemplate, /ReadRegStr \$4 SHCTX "Software\\Ricardo Frantz\\\$\{
   assert.equal(reviewStatus({ status: 'question' }), 'open', 'question is not a status.');
   assert.match(page, /<option value="done">Done<\/option>/, 'The status filter has Done.');
   assert.doesNotMatch(page, /<option value="(question|applied|resolved)"/, 'The status filter has no question, applied or resolved.');
-  assert.match(app, /const before = picked\.kind === 'markdown' \? passageSource\(state\.markdownSource, picked\.at\) : '';[\s\S]*?\.\.\.\(before \? \{ before \} : \{\}\),\s*\};\s*const store = await invoke\('append_review'/,
+  assert.match(app, /const before = picked\.kind === 'markdown' \? passageSource\(state\.markdownSource, picked\.at\) : '';[\s\S]*?\.\.\.\(before \? \{ before \} : \{\}\),\s*\};\s*(?:if \(presentation\) return;\s*)?const store = await invoke\('append_review'/,
     'A new Markdown review saves its passage as before.');
   assert.match(REQUEST_GROUPS[0].hint, /unclear[\s\S]*rewrites it so it answers/, 'The Ask row says Ask means rewrite.');
   assert.doesNotMatch(app, /sendReviewReply|appendReviewQuestion|review-question|review-reply/,

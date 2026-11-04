@@ -14,6 +14,7 @@
 - Removed the question and reply flow and `pdf-next reviews ask`, which now exits with an error. Questions go in the agent's terminal.
 - Changed the review store to a `.pdf-next/` folder. Old `_review.json` and `_review.agent.txt` stores are migrated, and the old files are removed only after the new store is written and read back.
 - Removed the `.bak` and `.pre-v3.bak` backup files and the `_review.done` files. Undo stays in memory for the session.
+- Fixed a presentation writing to the file: Delete over a selected passage removed it from the `.md`, and a figure resize, Undo, a queued write, an Edit box or a note box left open could also change it. A presentation now writes nothing, and Delete, Undo, trash and Reduce PDF are not offered in it.
 
 ## 0.18.2
 

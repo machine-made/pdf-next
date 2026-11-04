@@ -1461,6 +1461,234 @@ await twentythree.close();
   await big.close();
 }
 
+// ── Session 27: Delete over a mouse selection while presenting writes nothing; it still removes the text afterwards ──
+{
+  const text27 = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  dialogs = 0;
+  const s27 = await session({ '/d/a.md': text27 });
+  const p27 = s27.page;
+  const writes27 = () => p27.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const file27 = () => p27.evaluate(() => window.__files['/d/a.md']);
+  const drag27 = async (word) => {
+    const a = await spot(word, 'start', p27);
+    const b = await spot(word, 'end', p27);
+    await p27.mouse.move(a.x, a.y);
+    await p27.mouse.down();
+    await p27.mouse.move(b.x, b.y, { steps: 5 });
+    await p27.mouse.up();
+    await p27.waitForTimeout(100);
+    return p27.evaluate(() => getSelection().toString());
+  };
+  await p27.keyboard.press('F5');
+  await p27.waitForTimeout(500);
+  const picked = await drag27('brave');
+  ok(picked === 'brave', `a mouse drag in the slide selects the word (${JSON.stringify(picked)})`);
+  await p27.keyboard.press('Delete');
+  await p27.waitForTimeout(400);
+  ok(await writes27() === 0 && await file27() === text27 && !dialogs,
+    `Delete over a selection while presenting writes nothing and asks nothing (${await writes27()} writes, ${dialogs} dialogs)`);
+  // The other ways to act on the same selection: format and edit shortcuts, the right-click menu, the palette.
+  await p27.keyboard.press('Control+b');
+  await p27.keyboard.press('Control+e');
+  await p27.waitForTimeout(300);
+  const at27 = await spot('brave', 'mid', p27);
+  await p27.mouse.click(at27.x, at27.y, { button: 'right' });
+  await p27.waitForTimeout(200);
+  ok(await p27.evaluate(() => document.getElementById('reviewMenu').hidden && document.getElementById('editBox').hidden),
+    'no edit box or right-click menu over the selection while presenting');
+  await drag27('brave');
+  await p27.keyboard.press('Control+k');
+  await p27.keyboard.type('Remove the selection');
+  const listed = await p27.evaluate(() => [...document.querySelectorAll('.palette-item .palette-label')].some((l) => l.textContent.includes('Remove the selection from the file')));
+  await p27.keyboard.press('Enter');
+  await p27.waitForTimeout(400);
+  ok(!listed && await writes27() === 0 && await file27() === text27 && !dialogs,
+    `the palette does not offer "Remove the selection" while presenting, and the file is unchanged (${await writes27()} writes)`);
+  // The first Esc closes the palette (nothing matched), the second leaves the presentation.
+  await p27.keyboard.press('Escape');
+  await p27.waitForTimeout(200);
+  await p27.keyboard.press('Escape');
+  await p27.waitForTimeout(400);
+  ok(!(await p27.evaluate(() => document.body.classList.contains('presenting'))), 'Esc leaves the presentation');
+  // The normal path is intact.
+  await drag27('brave');
+  await p27.keyboard.press('Delete');
+  await p27.waitForTimeout(400);
+  ok(await writes27() === 1 && await file27() === 'Hello new world.\n\nSecond paragraph here.\n',
+    `after the presentation, Delete over a selection removes it (${await writes27()} writes, ${JSON.stringify(await file27())})`);
+  await s27.close();
+}
+
+// Session 27, round 2: the other writes a slide could reach. A figure click, Undo, an Edit box left open.
+{
+  // A figure picked in a slide shows no resizer, and a drag on the grip writes no width; outside the slide both work.
+  const figure = {
+    raw: '![A swatch](swatch.png)\n\nText below.\n',
+    html: '<p><span class="src" data-line="1"></span><img data-doc="/d/swatch.png" alt="A swatch"></p>\n<p><span class="src" data-line="3"></span>Text below.</p>',
+  };
+  const sf = await session({ '/d/a.md': figure });
+  const pf = sf.page;
+  await pf.waitForFunction(() => [...document.querySelectorAll('#markdown img')].every((i) => i.complete && i.naturalWidth > 0), null, { timeout: 5000 }).catch(() => {});
+  const writesF = () => pf.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const resizerShown = () => pf.evaluate(() => !document.getElementById('figureResizer').hidden);
+  // The grip is not clickable in a slide (the stylesheet hides it): the drag is sent as events.
+  const dragGrip = () => pf.evaluate(async () => {
+    const grip = document.getElementById('figureResizerGrip');
+    grip.setPointerCapture = () => {};
+    const fire = (type, x) => grip.dispatchEvent(new PointerEvent(type, { button: 0, clientX: x, pointerId: 1, bubbles: true }));
+    fire('pointerdown', 100);
+    fire('pointermove', 180);
+    fire('pointerup', 180);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+  await pf.keyboard.press('F5');
+  await pf.waitForTimeout(500);
+  const fig = await pf.$eval('#markdown img', (img) => { const r = img.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await pf.mouse.click(fig.x, fig.y);
+  await pf.waitForTimeout(200);
+  const shownIn = await resizerShown();
+  await dragGrip();
+  ok(!shownIn && await writesF() === 0,
+    `a click on a figure while presenting shows no resizer, and a drag on the grip writes no width (shown ${shownIn}, ${await writesF()} writes)`);
+  await pf.keyboard.press('Escape');
+  await pf.waitForTimeout(400);
+  const fig2 = await pf.$eval('#markdown img', (img) => { const r = img.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await pf.mouse.click(fig2.x, fig2.y);
+  await pf.waitForTimeout(200);
+  const shownOut = await resizerShown();
+  await dragGrip();
+  ok(shownOut && await writesF() === 1, `after the presentation, a figure click shows the resizer and a drag writes the width (shown ${shownOut}, ${await writesF()} writes)`);
+  await sf.close();
+}
+{
+  // Undo (Ctrl+Z, the palette) does nothing in a slide and is not offered; after Esc it undoes.
+  const text = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  const su = await session({ '/d/a.md': text });
+  const pu = su.page;
+  const writesU = () => pu.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const fileU = () => pu.evaluate(() => window.__files['/d/a.md']);
+  const typed = text.replace('Hello ', 'Hello x');
+  const at = await spot('Hello ', 'end', pu);
+  await pu.mouse.click(at.x, at.y);
+  await pu.waitForTimeout(100);
+  await pu.keyboard.press('x');
+  await pu.waitForTimeout(500);
+  ok(await fileU() === typed && await writesU() === 1, `a typed key is written, and can be undone (${await writesU()} writes)`);
+  // Control: the palette offers Undo outside a slide.
+  await pu.keyboard.press('Control+k');
+  await pu.keyboard.type('Undo');
+  ok(await pu.evaluate(() => [...document.querySelectorAll('.palette-item .palette-label')].some((l) => l.textContent.trim() === 'Undo')),
+    'the palette offers Undo outside a presentation');
+  await pu.keyboard.press('Escape');
+  await pu.waitForTimeout(200);
+  await pu.keyboard.press('F5');
+  await pu.waitForTimeout(500);
+  await pu.keyboard.press('Control+z');
+  await pu.waitForTimeout(500);
+  ok(await writesU() === 1 && await fileU() === typed, `Ctrl+Z while presenting writes nothing (${await writesU()} writes)`);
+  await pu.keyboard.press('Control+k');
+  await pu.keyboard.type('Undo');
+  const offered = await pu.evaluate(() => [...document.querySelectorAll('.palette-item .palette-label')].some((l) => l.textContent.trim() === 'Undo'));
+  await pu.keyboard.press('Enter');
+  await pu.waitForTimeout(400);
+  ok(!offered && await writesU() === 1 && await fileU() === typed, `the palette does not offer Undo while presenting (offered ${offered}, ${await writesU()} writes)`);
+  await pu.keyboard.press('Escape');
+  await pu.waitForTimeout(200);
+  await pu.keyboard.press('Escape');
+  await pu.waitForTimeout(400);
+  await pu.keyboard.press('Control+z');
+  await pu.waitForTimeout(500);
+  ok(await fileU() === text, `after the presentation, Ctrl+Z undoes the typed key (${JSON.stringify(await fileU())})`);
+  await su.close();
+}
+{
+  // An Edit box left open when F5 is pressed is closed, and its save writes nothing.
+  const text = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  const se = await session({ '/d/a.md': text });
+  const pe = se.page;
+  const writesE = () => pe.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const a = await spot('brave', 'start', pe);
+  const b = await spot('brave', 'end', pe);
+  await pe.mouse.move(a.x, a.y);
+  await pe.mouse.down();
+  await pe.mouse.move(b.x, b.y, { steps: 5 });
+  await pe.mouse.up();
+  await pe.keyboard.press('Control+e');
+  await pe.waitForTimeout(200);
+  ok(await pe.evaluate(() => !document.getElementById('editBox').hidden), 'Ctrl+E opens the Edit box');
+  await pe.fill('#editText', 'bold');
+  await pe.keyboard.press('F5');
+  await pe.waitForTimeout(500);
+  const open = await pe.evaluate(() => !document.getElementById('editBox').hidden);
+  await pe.evaluate(() => document.getElementById('editSave').click());
+  await pe.waitForTimeout(400);
+  ok(!open && await writesE() === 0 && await pe.evaluate(() => window.__files['/d/a.md']) === text,
+    `an Edit box open at F5 is closed and its save writes nothing (open ${open}, ${await writesE()} writes)`);
+  await se.close();
+}
+{
+  // The review note box can insert a parenthetical into the file: it is not offered in a slide, and one left open at F5 is closed.
+  const text = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  const sn = await session({ '/d/a.md': text });
+  const pn = sn.page;
+  const writesN = () => pn.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const fileN = () => pn.evaluate(() => window.__files['/d/a.md']);
+  const dragN = async () => {
+    const a = await spot('brave', 'start', pn);
+    const b = await spot('brave', 'end', pn);
+    await pn.mouse.move(a.x, a.y);
+    await pn.mouse.down();
+    await pn.mouse.move(b.x, b.y, { steps: 5 });
+    await pn.mouse.up();
+    await pn.waitForTimeout(100);
+  };
+  const offeredN = () => pn.evaluate(() => [...document.querySelectorAll('.palette-item .palette-label')].some((l) => l.textContent.includes('Parenthetical definition')));
+  await dragN();
+  await pn.keyboard.press('Control+k');
+  await pn.keyboard.type('Parenthetical');
+  const offeredOut = await offeredN();
+  await pn.keyboard.press('Enter');
+  await pn.waitForTimeout(300);
+  const boxOut = await pn.evaluate(() => !document.getElementById('noteBox').hidden);
+  ok(offeredOut && boxOut, `outside a presentation the palette offers the definition and opens the note box (${offeredOut}, ${boxOut})`);
+  await pn.fill('#noteText', 'a bold one');
+  await pn.keyboard.press('F5');
+  await pn.waitForTimeout(500);
+  const boxIn = await pn.evaluate(() => !document.getElementById('noteBox').hidden);
+  await pn.evaluate(() => document.getElementById('noteInsert').click());
+  await pn.waitForTimeout(400);
+  ok(!boxIn && await writesN() === 0 && await fileN() === text, `a note box open at F5 is closed and inserts nothing (open ${boxIn}, ${await writesN()} writes)`);
+  await dragN();
+  await pn.keyboard.press('Control+k');
+  await pn.keyboard.type('Parenthetical');
+  const offeredIn = await offeredN();
+  await pn.keyboard.press('Enter');
+  await pn.waitForTimeout(300);
+  const boxAfter = await pn.evaluate(() => !document.getElementById('noteBox').hidden);
+  ok(!offeredIn && !boxAfter && await writesN() === 0, `the palette does not offer the definition while presenting, and no note box opens (${offeredIn}, ${boxAfter})`);
+  await sn.close();
+}
+{
+  // A key queued behind a write that is running is not written once a presentation begins; the write already running finishes.
+  const text = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  const sq = await session({ '/d/a.md': text });
+  const pq = sq.page;
+  const writesQ = () => pq.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const fileQ = () => pq.evaluate(() => window.__files['/d/a.md']);
+  const at = await spot('Hello ', 'end', pq);
+  await pq.mouse.click(at.x, at.y);
+  await pq.waitForTimeout(100);
+  await pq.evaluate(() => { window.__editDelay = 600; });
+  await pq.keyboard.press('x');
+  await pq.keyboard.press('y');
+  await pq.keyboard.press('F5');
+  await pq.waitForTimeout(1500);
+  ok(await pq.evaluate(() => document.body.classList.contains('presenting')), 'F5 presents while a write runs and a key is queued');
+  ok(await writesQ() === 1 && await fileQ() === text.replace('Hello ', 'Hello x'),
+    `exactly the key already being written is written; the one queued behind it is not (${await writesQ()} writes, ${JSON.stringify(await fileQ())})`);
+  await sq.close();
+}
+
 // ── Session 5: a text run beside markup that repeats in its block (a *b* a *b* a) is refused, and nothing is written ──
 const five = await session({
   '/d/a.md': {
