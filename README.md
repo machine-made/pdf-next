@@ -789,8 +789,10 @@ every machine, so a change to them is a change someone made. The one exception i
 `navigate.pdf`, a short paper with an outline and links, made by pdflatex from `navigate.tex`
 beside it (the file says how).
 
-All three run on Windows, macOS and Linux for every push, and a release stays a draft until
-each platform's bundle has opened a document.
+All three run on Windows, macOS and Linux when CI runs, and a release stays a draft until
+each platform's bundle has opened a document. CI does not run on pushes or pull requests. It can be started by hand
+(`gh workflow run ci.yml --ref <branch>` runs it on a named branch; without `--ref` it runs on
+the default branch), and it runs once at the start of every release (`gh workflow run tag.yml`).
 
 ## What it is built with
 

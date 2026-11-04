@@ -1,13 +1,12 @@
 name: Tag release
 
-# A merge to main that carries a new version tags it and starts the release
-# build. A tag pushed with GITHUB_TOKEN starts no workflow on its own, so the
-# release is dispatched on the new tag; workflow_dispatch is the one event
-# GITHUB_TOKEN may start.
+# A release is started by hand (gh workflow run tag.yml). The run first runs
+# CI on that commit. If CI is green it tags the version in package.json (when
+# the version has no tag yet) and starts the release build. A tag pushed with
+# GITHUB_TOKEN starts no workflow on its own, so the release is dispatched on
+# the new tag; workflow_dispatch is the one event GITHUB_TOKEN may start.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +17,15 @@ concurrency:
   group: tag-release
   cancel-in-progress: false
 
+# Only main may release. A run on any other ref does nothing.
 jobs:
+  ci:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
   tag:
+    if: github.ref == 'refs/heads/main'
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

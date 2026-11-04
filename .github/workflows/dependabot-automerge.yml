@@ -1,3 +1,4 @@
+# Runs only when ci.yml is dispatched on a Dependabot branch (CI has no automatic trigger).
 name: Dependabot auto-merge
 # zizmor: workflow_run is required here. It runs with a write token after CI,
 # checks out no PR code, and acts only on dependabot/ branches.
