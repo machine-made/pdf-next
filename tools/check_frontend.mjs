@@ -11,6 +11,7 @@ import { REQUEST_GROUPS, REVIEW_REQUESTS, reviewRequests, requestsLabel, toggleR
 import { findAllSpans, findNormalizedSpan, normalizeReviewText, reviewLabel, resolveReviewAnchor, reviewAction, reviewStatus, reviewColor, sameReviewQuote, reattachedReviewAnchor, resolveMarkdownReview, selectionContext, madeOnOlderVersion, contextAt, ACTION_LABELS, REVIEW_ACTIONS, REVIEW_STATUSES } from '../src/review-label.mjs';
 import { paginate, validPageView } from '../src/md-pages.mjs';
 import { blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from '../src/md-edit.mjs';
+import { CARET_MESSAGES, backspaceEdit, continuesTyping, forwardDeleteEdit, insertEdit, nodeAtOffset, offsetInText, relocate } from '../src/caret-edit.mjs';
 import { BLOCK_LIMIT, DOCUMENT_LIMIT, TAGS, colourCode } from '../src/code-colour.mjs';
 import { BEFORE_LIMIT, diffView, passageSource, passageText, wordDiff } from '../src/review-diff.mjs';
 import { createHash } from 'node:crypto';
@@ -441,7 +442,7 @@ function appFunction(name, next, context, source = app) {
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new' }),
     embedMarkdownImages() {}, colourCode() {},
-    setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
+    setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {}, restoreMarkdownCaret() {},
     markdownBlocks: () => texts.map((text) => ({ text })),
     changedIndices: diff,
     highlightChangedBlocks() { assert.fail('An over-budget reload must skip highlighting.'); },
@@ -808,6 +809,7 @@ for (const kind of ['markdown', 'pdf']) {
     releaseDocument: async () => {},
     invoke: async () => ({ html: '<p>new</p>', raw: 'new', digest: 'sha256:aa' }),
     embedMarkdownImages() {}, colourCode() {}, setRaw() {}, setMarkdownScale() {}, paginateMarkdown() {},
+    restoreMarkdownCaret() {},
     markdownBlocks: () => [], changedIndices() {}, highlightChangedBlocks() {},
     MARKDOWN_WINDOW_WIDTH: 780,
     reviewPaintSignature, reviewIdNum: () => 1, renderReviewList() {},
@@ -936,10 +938,12 @@ for (const kind of ['markdown', 'pdf']) {
 {
   // Delete moves the file on screen to the trash, then shows its neighbour.
   const run = async ({ path = 'b.png', siblings = ['a.png', 'b.png', 'c.png'], platform = 'windows',
-    confirm = true, fails = false, plan = 'trash' } = {}) => {
+    confirm = true, fails = false, plan = 'trash', busy = false } = {}) => {
     const calls = [];
     let question = '';
     await appFunction('trashShownFile', 'function ', {
+      writeBusy: busy,
+      writeQueue: [],
       state: { file: { path, name: path, kind: siblings.length ? 'image' : 'pdf' }, siblings: [], platform,
         active: 0 },
       window: { confirm: (text) => { question = text; return confirm; } },
@@ -956,6 +960,10 @@ for (const kind of ['markdown', 'pdf']) {
     return { calls, question };
   };
   assert.deepEqual((await run({ confirm: false })).calls, [], 'Nothing is deleted without confirmation.');
+  const busy = await run({ busy: true });
+  assert.deepEqual(busy.calls, [['status', 'Wait for the write to end']],
+    'A file being written is not trashed: the trash waits for the write.');
+  assert.equal(busy.question, '', 'No trash question is asked while a write runs.');
   const middle = await run();
   assert.equal(middle.question, 'Move b.png to the Recycle Bin?');
   assert.deepEqual(middle.calls.slice(0, 2), [['trash_document', 'b.png', false], ['show', 'c.png']],
@@ -3168,6 +3176,123 @@ if (releaseTag) {
     'Only open reviews are healed; applied and resolved ones keep their record.');
 }
 
+// A caret in the rendered view maps to a source offset only where its text is
+// exact, and every typed key is one edit of the source.
+{
+  const raw = 'Hello brave new world.\n\nSecond paragraph here.\n';
+  assert.equal(offsetInText(raw, 1, 'Hello brave new world.', 11).offset, 11, 'A caret after a word maps to its place in the source.');
+  assert.equal(offsetInText('See [the link](x.md) now.\n', 1, ' now.', 0).offset, 20,
+    'The text after a link maps past the link markup.');
+  assert.equal(offsetInText('a *b* c\n', 1, 'b c', 1).error, 'markup', 'A caret whose text crosses emphasis is refused.');
+  assert.equal(offsetInText('x y. x y.\n', 1, 'x y.', 4).error, 'repeated', 'A caret whose text repeats in its paragraph is refused.');
+  assert.equal(nodeAtOffset('Hello brave  new\n', 12, ['Hello brave  new']).at, 12,
+    'A source offset inside a run of spaces stays inside it.');
+  assert.equal(nodeAtOffset('Hello brave x new\n', 13, ['Hello brave x new']).at, 13, 'A typed character is placed after the caret.');
+  assert.deepEqual(insertEdit({ offset: 4, start: 0, end: 9 }, 'x'), {
+    start: 4, expected: '', replacement: 'x', after: { offset: 5, start: 0, end: 10 },
+  });
+  assert.equal(backspaceEdit('a\n\nb', { offset: 2, start: 0, end: 3 }).error, 'paragraph',
+    'Backspace at the start of a paragraph is refused: it would join two.');
+  assert.equal(forwardDeleteEdit('a\nb', { offset: 1, start: 0, end: 3 }).error, 'paragraph', 'Delete at the end of a paragraph is refused.');
+  assert.equal(backspaceEdit('abc', { offset: 2, start: 0, end: 3 }).replacement, '', 'Backspace removes one character before the caret.');
+  const link = 'See [the link](x.md) now.\n';
+  assert.deepEqual([offsetInText(link, 1, ' now.', 0).start, offsetInText(link, 1, ' now.', 0).end], [20, 25],
+    'The run after a link is bounded by the link.');
+  assert.equal(backspaceEdit(link, { offset: 20, start: 20, end: 25 }).error, 'markup',
+    'Backspace at the start of a text run does not reach into the link markup.');
+  assert.equal(forwardDeleteEdit(link, { offset: 4, start: 0, end: 4 }).error, 'markup',
+    'Delete at the end of a text run does not reach into the markup after it.');
+  assert.equal(backspaceEdit('# Title\n', { offset: 2, start: 2, end: 7 }).error, 'markup', 'A heading keeps its marker.');
+  assert.equal(continuesTyping({ typing: true, after: { offset: 3 } }, insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 599), true,
+    'Typing within the pause joins one undo step.');
+  assert.equal(continuesTyping({ typing: true, after: { offset: 3 } }, insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 600), false,
+    'A pause of 600 ms or more starts a new step.');
+  assert.equal(continuesTyping({ typing: false, after: { offset: 3 } }, insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 0), false,
+    'A Delete never joins typing.');
+  assert.match(page, /<article id="markdown" contenteditable="true"/, 'The rendered article takes the caret.');
+  assert.match(page, /id="reviewMenuDelete"[^>]*>Remove the selection from the file/,
+    'The right-click item that deletes at once is named apart from the request to the agent.');
+  assert.doesNotMatch(page, /id="reviewMenuDelete"[^>]*>[^<]*Delete/, 'That item does not say Delete.');
+  assert.match(app, /ui\.markdown\.addEventListener\('beforeinput', \(event\) => \{\s*if \(event\.isComposing \|\| String\(event\.inputType\)\.startsWith\('insertCompositionText'\)\) return;\s*event\.preventDefault\(\);\s*\}\)/,
+    'The browser never changes the text of the article itself, except while a composition (dead key, IME) is being typed.');
+  assert.ok(app.indexOf('handleCaretKey(event)') < app.indexOf('// Ctrl+Z (Cmd+Z) undoes the last change'),
+    'Typed keys reach the caret before the undo and Delete shortcuts.');
+  assert.match(app, /restoreMarkdownCaret\(\);\n\s*\n?\s*\/\/ Measured/, 'The caret comes back after a re-render.');
+}
+
+// Round 2 of the caret: one queue for every write, undo included; the caret carries the digest it was read at;
+// a caret found again after a change elsewhere is found by its text; the run cap; one name for the queue.
+{
+  assert.deepEqual(Object.keys(CARET_MESSAGES).sort(), ['empty', 'markup', 'paragraph', 'repeated', 'skipped'],
+    'Each refusal the caret can give has its own message.');
+  assert.equal(nodeAtOffset('Hello brave new\n', 5, ['Hello brave new']).start, 0, 'A placed caret reports the bounds of its text run.');
+  assert.equal(nodeAtOffset('Hello brave new\n', 5, ['Hello brave new']).end, 15, 'The run ends where its text ends.');
+  const moved = 'New sentence.\n\nHello brave new world.\n\nSecond paragraph here.\n';
+  assert.equal(relocate(moved, 'Second paragraph here.', 6, 0).offset, moved.indexOf('Second') + 6,
+    'A caret is found again by the text on each side of it, after a change before it.');
+  assert.equal(relocate('a b. z\n\na b. z\n', 'a b. z', 4, 14).offset, 'a b. z\n\n'.length + 4,
+    'Two matches: the caret goes to the one nearest its old place.');
+  assert.equal(relocate(moved, 'Gone text.', 4, 0), null, 'Text that is gone leaves no caret.');
+  assert.equal(continuesTyping({ typing: true, after: { offset: 3 }, edits: Array(200).fill({}) },
+    insertEdit({ offset: 3, start: 0, end: 3 }, 'x'), 0), false, 'A coalesced run stops at 200 characters.');
+  assert.match(app, /function enqueueWrite\(/, 'Every write goes through one queue.');
+  assert.match(app, /async function drainWrites\(/, 'The queue is drained one task at a time.');
+  assert.doesNotMatch(app, /editBusy|editQueue/, 'The queue has one name.');
+  assert.match(app, /writeBusy \|\| writeQueue\.length/,
+    'Keys wait while a write runs or waits, so Delete never reaches the trash in between.');
+  assert.match(app, /enqueueWrite\(\(\) => applySelectionKey\(/, 'A typed or deleted selection is a queued write, like a typed key.');
+  assert.match(app, /function requestUndo\(/, 'Ctrl+Z waits for the queue.');
+  assert.match(app, /digest: state\.markdownDigest/, 'The caret stores the digest it was computed against.');
+  assert.match(app, /const digest = edit\.digest \?\? state\.markdownDigest;\s*if \(digest !== state\.markdownDigest\) return \{ refused:[^}]*\};[\s\S]{0,300}?try \{\s*const next = await invoke\('edit_markdown', \{\s*path, expectedDigest: digest,/,
+    'A caret write sends the digest its caret was computed against, and is refused when the file has moved on since.');
+  assert.match(app, /const pinned = \{ \.\.\.edit, digest: edit\.digest \?\? state\.markdownDigest \};/,
+    'writeMarkdownEdit keeps the digest taken when the edit was queued; replacing it by edit.digest alone is a bug.');
+  assert.match(app, /const caretAtStart = state\.caret;/, 'A write notes the caret it began with.');
+  assert.match(app, /if \(state\.caret === caretAtStart\) state\.caret = /,
+    'A write sets the caret after it only when no click changed it while the write ran.');
+  assert.match(app, /A write may have started while the plan was being made: check again before asking\.\s*if \(writeBusy \|\| writeQueue\.length\)/,
+    'The trash is checked again after the plan, before the question.');
+  assert.match(app, /try \{\s*result = await task\.run\(\);\s*\} catch \(error\) \{\s*result = \{ refused: `Could not edit the file: \$\{String\(error\)\}` \};/,
+    'A queued task that throws is a refusal, so the queue keeps draining.');
+  assert.match(app, /\(state\.platform === 'macos' && event\.altKey && !event\.ctrlKey\)/,
+    'On macOS an Option character (alt alone) is text.');
+  assert.match(app, /\(state\.platform === 'windows' && event\.ctrlKey && event\.altKey\)/,
+    'On Windows AltGr (ctrl and alt) is text; on other platforms ctrl+alt stays a shortcut.');
+  assert.match(app, /let composingAt = null;/, 'A composition takes its caret when it starts, not the last click.');
+  assert.match(app, /not written/, 'A refused write says how many keys were not written.');
+  assert.match(app, /relocate\(/, 'A caret moved by a change elsewhere is found again by its text.');
+  assert.match(app, /const CARET_SKIP = 'math, pre, code, a\[href\], table, \.md-figure, img\[data-doc\]';/,
+    'The skip list covers math, code, links, tables and figures.');
+  assert.match(app, /ui\.markdown\.addEventListener\('mousedown', \(event\) => \{[\s\S]*?closest\(CARET_SKIP\)[\s\S]*?preventDefault\(\)/,
+    'A mousedown on a skipped element takes no caret.');
+  assert.match(app, /label: 'Remove the selection from the file'/, 'The palette and the menu name the direct delete the same way.');
+  const caretSource = await readFile('src/caret-edit.mjs', 'utf8');
+  assert.doesNotMatch(caretSource, /export const TYPING_PAUSE_MS|export function plainPattern/,
+    'Helpers used only inside the module are not exported.');
+}
+
+// Round 3: the busy guards, the queue for undo, the messages the review listed, dead keys and AltGr.
+{
+  assert.match(app, /function requestUndo\(\) \{\s*enqueueWrite\(/, 'requestUndo queues the undo behind the writes.');
+  assert.match(app, /key === 'z'\) \{\s*event\.preventDefault\(\);\s*requestUndo\(\)/, 'Ctrl+Z calls requestUndo.');
+  assert.match(app, /label: 'Undo', group: 'File', shortcut: 'Ctrl\+Z', run: requestUndo/, 'The palette Undo calls requestUndo.');
+  assert.match(app, /A new paragraph is not typed in the rendered view: edit the raw text \(Ctrl\+U\)/,
+    'Enter in the rendered view is refused with this message.');
+  assert.match(app, /Wait for the write to end, then select again/, 'A selection made while a write runs is refused with this message.');
+  assert.match(app, /The text around the caret is gone: click where you want to type/, 'A caret that cannot be found again says so.');
+  assert.match(app, /The caret could not be placed after the edit: click in the text to continue/, 'A caret that cannot be placed says so.');
+  assert.match(app, /The file changed on disk; click where you want to type/, 'A caret whose file changed says so.');
+  assert.match(app, /Select text in the rendered Markdown to replace it/, 'A key with no selection to replace says so.');
+  assert.match(app, /async function trashShownFile\(\) \{[^}]*?if \(writeBusy \|\| writeQueue\.length\)/,
+    'The trash is not offered while a write is in flight or queued.');
+  assert.match(app, /function selectionSnapshot\(target\) \{\s*return \{[^}]*digest: state\.markdownDigest/,
+    'A queued selection carries the digest it was read at.');
+  assert.match(app, /event\.isComposing \|\| event\.keyCode === 229 \|\| key === 'Dead' \|\| key === 'Process'/,
+    'Composition and dead keys are left to the browser.');
+  assert.match(app, /addEventListener\('compositionend'/, 'The composed text is taken at compositionend.');
+  assert.match(app, /getModifierState\?\.\('AltGraph'\)/, 'AltGr is a character, not a shortcut.');
+}
+
 // Direct edits map a rendered selection back to its Markdown source.
 {
   const raw = '# Title\r\n\r\nThe wake is long and the\r\nwake is slow.\r\n\r\nA [link to the wake](x.md) here.\r\n';
@@ -3234,8 +3359,9 @@ if (releaseTag) {
     'obrigado (thank you)', 'A parenthetical definition stays on one line.');
 }
 assert.match(app, /if \(key === 'escape' && !ui\.editBox\.hidden\)/, 'Esc closes the edit box.');
-assert.match(app, /expectedDigest: next, start, expectedText: replacement, replacement: expected/,
-  'Undoing a direct edit writes the inverse against the digest the edit produced.');
+assert.match(app, /digest: next,/, 'A direct edit records the digest its write produced.');
+assert.match(app, /let digest = entry\.digest;[\s\S]*digest = await invoke\('edit_markdown'[\s\S]*expectedDigest: digest, start: step\.start, expectedText: step\.replacement, replacement: step\.expected/,
+  'Undoing a direct edit writes the inverse against the digest the edit produced, and each inverse write hands on the digest it returned.');
 
 // Every review action the agent can read is offered in the menus.
 for (const action of REVIEW_ACTIONS) {
@@ -3598,8 +3724,8 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
   assert.deepEqual(selectChoices(select, { id: 'x', label: 'Thing', when: () => false })(), []);
 
   assert.match(app, /import \{ createPalette, isTextField, selectChoices \} from '\.\/palette\.mjs';/);
-  assert.match(app, /key === 'k' && !isTextField\(event\.target\)\) \{\s*event\.preventDefault\(\);\s*palette\.toggle\(\);/,
-    'Ctrl+K toggles the palette, but not while typing in a text field.');
+  assert.match(app, /key === 'k' &&\s+\(!isTextField\(event\.target\) \|\| ui\.markdown\.contains\(event\.target\)\)\) \{\s*event\.preventDefault\(\);\s*palette\.toggle\(\);/,
+    'Ctrl+K toggles the palette, but not while typing in a text field; the rendered article stays a place for the palette.');
   for (const call of ["splitPane('right')", 'setRaw(true)', 'toggleReviewPanel', 'printDocument', 'openFind', 'activateTab(index)',
     "dockTo('center')", 'movePaneFocus(direction)', 'applyDirectFormat(format)', 'toggleSettings(true)']) {
     assert.ok(app.slice(app.indexOf('const palette = createPalette'), app.indexOf("window.addEventListener('keydown'")).includes(call),

@@ -44,11 +44,11 @@ export function blockSpan(raw, line, end = line) {
   return { start: starts[first - 1], end: stop, line: first, endLine: last };
 }
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /// The renderer's smart punctuation turns source quotes and dashes into
 /// typographic ones; a rendered character matches either form.
-const SMART = {
+export const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };

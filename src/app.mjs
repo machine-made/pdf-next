@@ -11,6 +11,7 @@ import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } 
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
+import { CARET_MESSAGES, backspaceEdit, continuesTyping, forwardDeleteEdit, insertEdit, nodeAtOffset, offsetInText, relocate } from './caret-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
 import { createNavigator } from './navigate.mjs';
@@ -236,6 +237,8 @@ const state = {
   mdFind: null,
   // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
   markdownDigest: null,
+  // The caret in the rendered Markdown: { path, offset } with the offset in the source, or null.
+  caret: null,
   pendingNote: null,
   pendingRequests: [],
   pendingNotePdf: null,
@@ -1233,6 +1236,8 @@ function paginateMarkdown({ keepPosition = true } = {}) {
     });
     article.replaceChildren(...(pages.length ? pages : nodes));
   }
+  // Moving the text nodes drops the caret: put it back in the same place.
+  restoreMarkdownCaret();
 
   if (held) {
     const edge = stage.getBoundingClientRect().top;
@@ -1396,6 +1401,8 @@ async function showMarkdown(file, view, generation, fit, place = null) {
   if (state.mdFind && !reviewed) {
     buildMarkdownFind(true);
   }
+  // Marks, find and pages move the text nodes, so the caret goes back last.
+  restoreMarkdownCaret();
   // Measured with the content laid out; used by undock as well as the fit.
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -1809,6 +1816,11 @@ async function showInActiveTab(path) {
 /// any other file closes its tab.
 async function trashShownFile() {
   const file = state.file;
+  // The file is being written: trashing it now would race the write.
+  if (writeBusy || writeQueue.length) {
+    setStatus('Wait for the write to end', { error: true });
+    return;
+  }
   if (!file) {
     return;
   }
@@ -1818,6 +1830,11 @@ async function trashShownFile() {
     permanent = (await invoke('trash_plan', { path: file.path })) === 'permanent';
   } catch (error) {
     setStatus(`Could not delete ${file.name}: ${error}`, { error: true });
+    return;
+  }
+  // A write may have started while the plan was being made: check again before asking.
+  if (writeBusy || writeQueue.length) {
+    setStatus('Wait for the write to end', { error: true });
     return;
   }
   const question = permanent
@@ -4191,7 +4208,7 @@ async function saveNote() {
         },
       });
       setStatus(`Marked for deletion · ${id}`, {
-        action: { label: 'Undo', run: () => void undoLast() },
+        action: { label: 'Undo', run: () => void requestUndo() },
       });
     } else {
       setStatus(sourceHintUnavailable
@@ -5038,7 +5055,7 @@ async function deleteReview(id) {
       });
     }
     setStatus(`Review ${id} removed`, {
-      action: expectedRecord ? { label: 'Undo', run: () => void undoLast() } : null,
+      action: expectedRecord ? { label: 'Undo', run: () => void requestUndo() } : null,
     });
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
@@ -5967,41 +5984,6 @@ async function applyDirectFormat(format) {
   await writeMarkdownEdit(edit, `${FORMAT_LABELS[format]}${edit.removed ? ' removed' : ''}`);
 }
 
-/// Write one edit, then show the file as it now is. Undo writes the inverse,
-/// against the digest this edit produced, so it never undoes over a change
-/// made since.
-async function writeMarkdownEdit({ start, expected, replacement }, label) {
-  const file = state.file;
-  if (!file || expected === replacement) return;
-  const path = file.path;
-  try {
-    const next = await invoke('edit_markdown', {
-      path, expectedDigest: state.markdownDigest, start, expectedText: expected, replacement,
-    });
-    pushUndo({
-      path,
-      label: label.toLowerCase(),
-      run: async () => {
-        await invoke('edit_markdown', {
-          path, expectedDigest: next, start, expectedText: replacement, replacement: expected,
-        });
-        if (state.file?.path === path) {
-          await openFile(state.file, { preserveView: true });
-          setStatus(`Undone: ${label}`);
-        }
-      },
-    });
-    if (state.file?.path === path) {
-      await openFile(state.file, { preserveView: true });
-    }
-    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void undoLast() } });
-  } catch (error) {
-    if (state.file?.path === path) {
-      setStatus(`Could not edit the file: ${String(error)}`, { error: true });
-    }
-  }
-}
-
 /// Edit text: the source of the selection, or of its whole paragraph when the
 /// selection crosses markup, in a small editor.
 function openEditBox() {
@@ -6056,20 +6038,418 @@ async function saveEditBox() {
   await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
 }
 
-/// Right-click Delete: in rendered Markdown with direct edits on, deletes the
-/// selected text immediately and pushes an Undo entry; otherwise creates a
-/// 1-click delete review with Undo.
-async function deleteSelectionNow() {
+// ── Typing in the rendered Markdown ───────────────────────────────────────
+// The article is contenteditable, so the browser draws the caret and moves it
+// with the mouse and the arrows. The browser never changes the text: beforeinput
+// is cancelled, and each change becomes one edit of the .md, written by Rust and
+// shown by a re-render. The caret is kept as a source offset, with the digest of
+// the file it was read at, so it survives a re-render. Every write, undo
+// included, goes through one queue, one at a time, in order.
+
+const CARET_SKIP = 'math, pre, code, a[href], table, .md-figure, img[data-doc]';
+const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+const writeQueue = [];
+let writeBusy = false;
+
+function skippedAt(node) {
+  const el = node?.nodeType === 3 ? node.parentElement : node;
+  return Boolean(el?.closest?.(CARET_SKIP));
+}
+
+/// The collapsed selection as a text node and a place in it, or null. A caret
+/// on an element (a click on the padding) is no caret.
+function domCaret() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !selection.isCollapsed) return null;
+  const { anchorNode, anchorOffset } = selection;
+  if (!anchorNode || anchorNode.nodeType !== 3 || !ui.markdown.contains(anchorNode)) return null;
+  return { node: anchorNode, at: anchorOffset };
+}
+
+/// The DOM caret as a source caret, read against the file on screen:
+/// { path, digest, offset, start, end, text, at }, or { offset: null, error }.
+/// `start`/`end` bound the plain-text run the caret sits in.
+function caretFromDom() {
+  const dom = domCaret();
+  if (!dom || state.file?.kind !== 'markdown' || typeof state.markdownSource !== 'string') return null;
+  const path = state.file.path;
+  const digest = state.markdownDigest;
+  if (skippedAt(dom.node)) return { path, digest, offset: null, error: 'skipped' };
+  const line = lineNear(dom.node, ui.markdown);
+  const mapped = line
+    ? offsetInText(state.markdownSource, line, dom.node.textContent, dom.at)
+    : { error: 'markup' };
+  return {
+    path,
+    digest,
+    offset: mapped.offset ?? null,
+    start: mapped.start,
+    end: mapped.end,
+    text: dom.node.textContent,
+    at: dom.at,
+    error: mapped.error,
+  };
+}
+
+/// The rendered text nodes of the block at source `line`, outside math, code,
+/// links, tables and figures, in reading order.
+function blockTextNodes(line) {
+  let start = null;
+  let stop = null;
+  for (const marker of ui.markdown.querySelectorAll('[data-line]')) {
+    if (Number(marker.dataset.line) <= line) {
+      start = marker;
+    } else {
+      stop = marker;
+      break;
+    }
+  }
+  if (!start) return [];
+  const walker = document.createTreeWalker(ui.markdown, NodeFilter.SHOW_TEXT);
+  walker.currentNode = start;
+  const nodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (stop && stop.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) break;
+    if (node.textContent.trim() && !skippedAt(node)) nodes.push(node);
+  }
+  return nodes;
+}
+
+/// Puts the DOM caret back where the source caret is, after a re-render. When the
+/// file changed under the caret, it is found again by the text around it, unless
+/// a write is queued: that write then refuses the caret, so no key lands in the
+/// changed file.
+function restoreMarkdownCaret() {
+  const caret = state.caret;
+  if (!caret || caret.path !== state.file?.path || caret.offset == null || state.markdownRaw) return;
+  const raw = state.markdownSource;
+  let offset = caret.offset;
+  if (caret.digest !== state.markdownDigest) {
+    if (writeBusy || writeQueue.length) return;
+    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at, caret.offset);
+    if (!moved) {
+      state.caret = null;
+      setStatus('The text around the caret is gone: click where you want to type', { error: true });
+      return;
+    }
+    offset = moved.offset;
+  }
+  const nodes = blockTextNodes(raw.slice(0, offset).split('\n').length);
+  const place = nodeAtOffset(raw, offset, nodes.map((node) => node.textContent));
+  if (!place) {
+    state.caret = null;
+    setStatus('The caret could not be placed after the edit: click in the text to continue', { error: true });
+    return;
+  }
+  const node = nodes[place.index];
+  const range = document.createRange();
+  range.setStart(node, place.at);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  state.caret = {
+    path: caret.path,
+    offset,
+    start: place.start,
+    end: place.end,
+    digest: state.markdownDigest,
+    text: node.textContent,
+    at: place.at,
+  };
+}
+
+/// Keys go to the caret when focus is in the rendered Markdown, or when nothing
+/// has focus and the selection is in it.
+function caretKeyTarget() {
+  if (state.file?.kind !== 'markdown' || state.markdownRaw || typeof state.markdownSource !== 'string') return false;
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== document.documentElement) {
+    return ui.markdown.contains(active);
+  }
+  const anchor = window.getSelection()?.anchorNode;
+  return Boolean(anchor && ui.markdown.contains(anchor));
+}
+
+/// Takes a key for the rendered text: true when it is taken. Changes to the text
+/// are queued and written in order; keys wait while a write runs. Delete is never
+/// left to the window while a write is in flight, so it cannot reach the trash.
+/// False leaves the key to the window's own shortcuts (Delete with no caret in the
+/// text still asks about the trash).
+function handleCaretKey(event) {
+  const key = event.key;
+  // Composition and dead keys belong to the browser; the composed text comes at compositionend.
+  if (event.isComposing || event.keyCode === 229 || key === 'Dead' || key === 'Process') return false;
+  const busy = writeBusy || writeQueue.length > 0;
+  const editing = key.length === 1 || key === 'Backspace' || key === 'Delete' || key === 'Enter';
+  if (!editing) {
+    if (busy && MOVE_KEYS.has(key)) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
+  if (key === 'Enter') {
+    if (!busy && !domCaret()) return false;
+    event.preventDefault();
+    setStatus('A new paragraph is not typed in the rendered view: edit the raw text (Ctrl+U)', { error: true });
+    return true;
+  }
+  const selection = window.getSelection();
+  // A selection made while a write runs is not acted on at the caret the write is moving away from.
+  if (busy && selection && !selection.isCollapsed) {
+    event.preventDefault();
+    setStatus('Wait for the write to end, then select again', { error: true });
+    return true;
+  }
+  if (!busy && selection && !selection.isCollapsed) {
+    event.preventDefault();
+    if (!directEditsEnabled()) {
+      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+    } else if (key === 'Backspace' || key === 'Delete') {
+      void deleteSelectionNow({ keys: 1 });
+    } else {
+      const target = markdownEditTarget();
+      if (!target) {
+        setStatus('Select text in the rendered Markdown to replace it', { error: true });
+      } else if (skippedAt(target.range.commonAncestorContainer)) {
+        setStatus(CARET_MESSAGES.skipped, { error: true });
+      } else {
+        enqueueSelection(selectionSnapshot(target), key, 1);
+      }
+    }
+    return true;
+  }
+  if (!busy && !domCaret()) return false;
+  event.preventDefault();
+  if (!directEditsEnabled()) {
+    setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+    return true;
+  }
+  // Idle: the DOM is current, so the caret is read from it. Busy: the queue's
+  // own caret is ahead of the DOM, and it stays the one in use.
+  if (!busy) state.caret = caretFromDom();
+  enqueueWrite(() => applyCaretKey(key), 1);
+  return true;
+}
+
+/// The picked selection as the source of a queued write: its line, its end and its quote.
+function selectionSnapshot(target) {
+  return {
+    line: target.picked.at.line,
+    end: target.picked.at.end,
+    quote: target.picked.quote,
+    digest: state.markdownDigest,
+  };
+}
+
+function enqueueSelection(snapshot, key, keys) {
+  window.getSelection()?.removeAllRanges();
+  enqueueWrite(() => applySelectionKey(snapshot, key), keys);
+}
+
+/// A key typed over, or deleting, the selection as it was when the key came.
+async function applySelectionKey(snapshot, key) {
+  if (state.file?.kind !== 'markdown') return { refused: 'The file on screen is not Markdown' };
+  // The selection was read at snapshot.digest; if the file has been read again since, its offsets are not this file's.
+  if (snapshot.digest !== state.markdownDigest) {
+    return { refused: 'The file changed on disk, so the selection was not written' };
+  }
+  const raw = state.markdownSource;
+  const span = sourceSpan(raw, snapshot.line, snapshot.end, snapshot.quote);
+  if (span.error) {
+    return {
+      refused: span.error === 'repeated'
+        ? 'That text appears more than once in its paragraph: select a longer passage'
+        : 'The selection crosses formatting or a link: use Edit text… (Ctrl+E)',
+    };
+  }
+  if (key === 'Backspace' || key === 'Delete') {
+    const removed = deleteEdit(raw, span);
+    return writeNow({ ...removed, digest: snapshot.digest, after: { offset: removed.start } }, 'Delete');
+  }
+  // The bounds are the typed text; the run they belong to is read again when the file is shown.
+  return writeNow({
+    start: span.start,
+    expected: raw.slice(span.start, span.end),
+    replacement: key,
+    digest: snapshot.digest,
+    after: { offset: span.start + key.length, start: span.start, end: span.start + key.length },
+  }, 'Typing');
+}
+
+/// Runs queued tasks one at a time, in order. A task returns { refused: message }
+/// when its write was not made. The keys still queued are then dropped, because
+/// the caret they were typed against is no longer known, and the status line says
+/// how many were dropped.
+function enqueueWrite(run, keys = 0) {
+  writeQueue.push({ run, keys });
+  void drainWrites();
+}
+
+async function drainWrites() {
+  if (writeBusy) return;
+  writeBusy = true;
+  try {
+    while (writeQueue.length) {
+      const task = writeQueue.shift();
+      // A task that throws is a refusal: nothing else may be left queued with no drain running.
+      let result;
+      try {
+        result = await task.run();
+      } catch (error) {
+        result = { refused: `Could not edit the file: ${String(error)}` };
+      }
+      if (result?.refused) {
+        const dropped = writeQueue.splice(0);
+        const keys = task.keys + dropped.reduce((sum, item) => sum + item.keys, 0);
+        setStatus(keys
+          ? `${result.refused}; ${keys} typed ${keys === 1 ? 'key was' : 'keys were'} not written`
+          : result.refused, { error: true });
+      }
+    }
+  } finally {
+    writeBusy = false;
+  }
+}
+
+/// Queues one edit of the file; resolves with its result (see drainWrites). The
+/// digest is taken now, with the offsets the caller computed: a write queued
+/// behind another one must not be applied to a file that has changed since.
+function writeMarkdownEdit(edit, label) {
+  const pinned = { ...edit, digest: edit.digest ?? state.markdownDigest };
+  return new Promise((resolve) => {
+    enqueueWrite(async () => {
+      let result;
+      try {
+        result = await writeNow(pinned, label);
+      } catch (error) {
+        result = { refused: `Could not edit the file: ${String(error)}` };
+      }
+      resolve(result);
+      return result;
+    });
+  });
+}
+
+/// Writes one edit now. Only the queue calls it. Undo writes the inverse, against
+/// the digest each write returned, so it never undoes over a change made since.
+/// `edit.after`, when there is one, is the caret once the file is shown again.
+/// `edit.digest` is the file the caret was read at; Rust refuses a write against
+/// any other file. Typed characters at one place in quick succession join one
+/// undo entry, up to a run limit (see continuesTyping). Resolves 'ok', 'skipped',
+/// or { refused: message }.
+async function writeNow(edit, label) {
+  const { start, expected, replacement } = edit;
+  const after = edit.after ?? null;
+  const file = state.file;
+  if (!file || expected === replacement) return 'skipped';
+  const path = file.path;
+  const digest = edit.digest ?? state.markdownDigest;
+  if (digest !== state.markdownDigest) return { refused: 'The file changed on disk, so the change was not written' };
+  // The caret as it was when the write began. A click during the write replaces it, and the click's caret is kept.
+  const caretAtStart = state.caret;
+  try {
+    const next = await invoke('edit_markdown', {
+      path, expectedDigest: digest, start, expectedText: expected, replacement,
+    });
+    const now = performance.now();
+    const top = undoStack.at(-1);
+    if (top?.path === path && continuesTyping(top, edit, now - top.at)) {
+      top.edits.push(edit);
+      top.digest = next;
+      top.after = after;
+      top.at = now;
+    } else {
+      const entry = {
+        path,
+        label: label.toLowerCase(),
+        typing: after !== null && expected === '' && replacement !== '',
+        edits: [edit],
+        digest: next,
+        after,
+        at: now,
+        run: async () => {
+          let digest = entry.digest;
+          for (const step of [...entry.edits].reverse()) {
+            digest = await invoke('edit_markdown', {
+              path, expectedDigest: digest, start: step.start, expectedText: step.replacement, replacement: step.expected,
+            });
+          }
+          if (state.file?.path === path) {
+            state.caret = null;
+            await openFile(state.file, { preserveView: true });
+            setStatus(`Undone: ${label}`);
+          }
+        },
+      };
+      pushUndo(entry);
+    }
+    if (state.file?.path === path) {
+      if (state.caret === caretAtStart) state.caret = after === null ? null : { path, ...after, digest: next };
+      await openFile(state.file, { preserveView: true });
+    }
+    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void requestUndo() } });
+    return 'ok';
+  } catch (error) {
+    const text = String(error);
+    return { refused: `Could not edit the file: ${/changed/i.test(text) ? 'the file changed on disk' : text}` };
+  }
+}
+
+/// Ctrl+Z and the Undo buttons: the undo waits for the queued writes, then runs.
+function requestUndo() {
+  enqueueWrite(async () => {
+    if (!(await undoLast())) setStatus('Nothing to undo');
+    return 'ok';
+  });
+}
+
+/// A key for the caret, queued with the caret it is typed at (see restoreMarkdownCaret).
+async function applyCaretKey(key) {
+  const caret = state.caret;
+  if (!caret || caret.path !== state.file?.path) return { refused: CARET_MESSAGES.empty };
+  if (caret.offset == null) return { refused: CARET_MESSAGES[caret.error] ?? CARET_MESSAGES.markup };
+  if (caret.digest !== state.markdownDigest) {
+    state.caret = null;
+    return { refused: 'The file changed on disk; click where you want to type' };
+  }
+  const raw = state.markdownSource;
+  let edit;
+  let label;
+  if (key === 'Backspace') {
+    edit = backspaceEdit(raw, caret);
+    label = 'Backspace';
+  } else if (key === 'Delete') {
+    edit = forwardDeleteEdit(raw, caret);
+    label = 'Delete';
+  } else {
+    edit = insertEdit(caret, key);
+    label = 'Typing';
+  }
+  if (edit.error) return { refused: CARET_MESSAGES[edit.error] };
+  edit.digest = caret.digest;
+  return writeNow(edit, label);
+}
+
+/// Right-click Delete, the palette, and Delete or Backspace on a selection: removes
+/// the selected text from the file. With review on, a selection that cannot be
+/// traced to the source asks for a delete review instead.
+async function deleteSelectionNow(options) {
   hideReviewChrome();
+  const keys = options?.keys ?? 0;
   const target = markdownEditTarget();
+  if (target && skippedAt(target.range.commonAncestorContainer)) {
+    setStatus(CARET_MESSAGES.skipped, { error: true });
+    return;
+  }
   if (target) {
-    const raw = state.markdownSource;
-    const { line, end } = target.picked.at;
-    const span = sourceSpan(raw, line, end, target.picked.quote);
-    if (!span.error) {
-      const edit = deleteEdit(raw, span);
-      window.getSelection()?.removeAllRanges();
-      await writeMarkdownEdit(edit, 'Delete');
+    const idle = !writeBusy && writeQueue.length === 0;
+    const span = idle
+      ? sourceSpan(state.markdownSource, target.picked.at.line, target.picked.at.end, target.picked.quote)
+      : null;
+    if (!span?.error) {
+      enqueueSelection(selectionSnapshot(target), 'Delete', keys);
       return;
     }
     if (!state.reviewOpen) {
@@ -6660,6 +7040,98 @@ document.addEventListener('pointerdown', (event) => {
   }
 });
 
+// The browser may draw the caret in the article, but it never changes the
+// text: every typed change goes through handleCaretKey. Composition is the
+// exception: the browser draws it, and the composed text is written at compositionend.
+ui.markdown.addEventListener('beforeinput', (event) => {
+  if (event.isComposing || String(event.inputType).startsWith('insertCompositionText')) return;
+  event.preventDefault();
+});
+// Composed text (an accent from a dead key, say) is one insert, taken when the composition ends. It goes only where
+// a text caret was when the composition began. The browser has already put the composing text in the DOM, so a
+// refused composition shows the file again from its own text.
+let composing = false;
+let composingAt = null;
+ui.markdown.addEventListener('compositionstart', () => {
+  composing = true;
+  composingAt = null;
+  if (writeBusy || writeQueue.length) return;
+  if (domCaret()) {
+    state.caret = caretFromDom();
+    composingAt = state.caret;
+  }
+});
+ui.markdown.addEventListener('compositionend', (event) => {
+  composing = false;
+  const at = composingAt;
+  composingAt = null;
+  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw) return;
+  const refuse = (message) => {
+    setStatus(message, { error: true });
+    enqueueWrite(async () => {
+      await refreshRendered();
+      return 'ok';
+    });
+  };
+  if (!directEditsEnabled()) {
+    refuse('Editing the Markdown file is off in Settings; add a review instead');
+    return;
+  }
+  if (!at) {
+    refuse(writeBusy || writeQueue.length
+      ? 'Wait for the write to end, then type again'
+      : 'Select no text and click where you want to type');
+    return;
+  }
+  if (at.offset == null) {
+    refuse(CARET_MESSAGES[at.error] ?? CARET_MESSAGES.markup);
+    return;
+  }
+  enqueueWrite(async () => {
+    const result = await applyCaretKey(event.data);
+    if (result?.refused) await refreshRendered();
+    return result;
+  }, 1);
+});
+/// Shows the open Markdown file again from its own text: a refused composition leaves its accent in the rendered text.
+async function refreshRendered() {
+  const file = state.file;
+  if (file?.kind === 'markdown' && !state.markdownRaw) await openFile(file, { preserveView: true });
+}
+// A click on math, code, a link or a table puts no caret there. A double-click
+// puts one where it is and selects no word. The article takes focus, so that a
+// Delete now is a Delete in the text (and does nothing there).
+ui.markdown.addEventListener('mousedown', (event) => {
+  if (event.button !== 0 || state.markdownRaw || state.file?.kind !== 'markdown') return;
+  if (event.target instanceof Element && event.target.closest(CARET_SKIP)) {
+    event.preventDefault();
+    // Focus puts the caret at the start of the text; a caret on the article itself (no text node) keeps keys out of the text.
+    ui.markdown.focus({ preventScroll: true });
+    window.getSelection()?.collapse(ui.markdown, 0);
+    state.caret = null;
+    setStatus(CARET_MESSAGES.skipped);
+    return;
+  }
+  if (event.detail < 2) return;
+  const point = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+  if (!point || !ui.markdown.contains(point.startContainer)) return;
+  event.preventDefault();
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(point);
+  ui.markdown.focus({ preventScroll: true });
+});
+// A click anywhere else leaves the caret where it was, not in the file.
+document.addEventListener('pointerdown', (event) => {
+  if (!(event.target instanceof Node) || !ui.markdown.contains(event.target)) state.caret = null;
+}, true);
+// The source caret follows the DOM caret while no edit is being written, so a
+// reload (or a re-render) puts the caret back where the reader left it.
+document.addEventListener('selectionchange', () => {
+  // During a composition the browser has put the composed text in the DOM: the caret is read at its start.
+  if (!composing && !writeBusy && writeQueue.length === 0 && domCaret()) state.caret = caretFromDom();
+});
+
 // Single-click selects a figure in Markdown for drag-resizing; double-click
 // (or Ctrl/Cmd-click) opens the figure full size in a tab of its own.
 ui.markdown.addEventListener('click', (event) => {
@@ -6939,7 +7411,7 @@ const palette = createPalette({
     { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
     { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf', run: reduceOpenPdf },
     { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: hasFile, run: trashShownFile },
-    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: () => undoLast().then((done) => done || setStatus('Nothing to undo')) },
+    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: requestUndo },
     { label: 'Check for updates', group: 'File', icon: '#i-update', run: () => checkForUpdates() },
     { label: 'Find', group: 'View', shortcut: 'Ctrl+F', icon: '#i-find', when: reviewable, run: openFind },
     { label: 'Zoom in', group: 'View', shortcut: '+', icon: '#i-zoom-in', when: hasFile, run: () => stepZoom(1) },
@@ -6971,7 +7443,7 @@ const palette = createPalette({
       label: `${FORMAT_LABELS[format]} the selection`, group: 'Markdown', shortcut, when: editable, run: () => applyDirectFormat(format),
     })),
     { label: 'Edit the selected text…', group: 'Markdown', shortcut: 'Ctrl+E', when: editable, run: openEditBox },
-    { label: 'Delete the selection', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
+    { label: 'Remove the selection from the file', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
     { label: 'Open the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => reviewable() && !state.reviewOpen, run: toggleReviewPanel },
     { label: 'Close the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => state.reviewOpen, run: toggleReviewPanel },
     { label: 'Add a review of the selection', group: 'Review', shortcut: 'Ctrl+Shift+N', icon: '#i-add-review', when: reviewSelection, run: () => openNoteBox() },
@@ -7243,7 +7715,9 @@ window.addEventListener('keydown', (event) => {
     closeNoteBox();
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' && !isTextField(event.target)) {
+  // The rendered article is a text field for the browser, but Ctrl+K stays the palette there.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' &&
+      (!isTextField(event.target) || ui.markdown.contains(event.target))) {
     event.preventDefault();
     palette.toggle();
     return;
@@ -7428,13 +7902,21 @@ window.addEventListener('keydown', (event) => {
   if (typing) {
     return;
   }
+  // Typing in the rendered Markdown edits the file (see Typing in the rendered Markdown).
+  // AltGr reaches the page as ctrl+alt on Windows: a one-character key is a character, not a shortcut.
+  // A character made with AltGr (ctrl+alt on Windows, the AltGraph state elsewhere) or with Option on macOS (alt
+  // alone) is text, not a shortcut. Other ctrl+alt and alt keys stay shortcuts.
+  const plainAlt = key.length === 1 && !event.metaKey && (Boolean(event.getModifierState?.('AltGraph')) ||
+    (state.platform === 'windows' && event.ctrlKey && event.altKey) ||
+    (state.platform === 'macos' && event.altKey && !event.ctrlKey));
+  if (!event.metaKey && (!(event.ctrlKey || event.altKey) || plainAlt) && caretKeyTarget() && handleCaretKey(event)) {
+    return;
+  }
   // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.
   // In a text field it stays the field's own undo, by the return above.
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'z') {
     event.preventDefault();
-    void undoLast().then((done) => {
-      if (!done) setStatus('Nothing to undo');
-    });
+    requestUndo();
     return;
   }
   // Delete on an active selection deletes the selected text (or marks it for
@@ -7443,8 +7925,14 @@ window.addEventListener('keydown', (event) => {
   if ((key === 'delete' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) ||
       (state.platform === 'macos' && event.metaKey && key === 'backspace')) {
     event.preventDefault();
-    if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
+    if (writeBusy || writeQueue.length) {
+      setStatus('Wait for the write to end', { error: true });
+    } else if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
       void deleteSelectionNow();
+    } else if (state.file?.kind === 'markdown' && !state.markdownRaw && ui.markdown.contains(document.activeElement)) {
+      // Focus is in the text and there is no caret or selection to delete (a click in math, code, a link or a table):
+      // the trash is for Delete when focus is elsewhere.
+      setStatus(CARET_MESSAGES.skipped);
     } else {
       void trashShownFile();
     }

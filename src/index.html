@@ -417,7 +417,7 @@
         </div>
       </div>
       <div id="markdownStage">
-        <article id="markdown"></article>
+        <article id="markdown" contenteditable="true" spellcheck="false" role="textbox" aria-multiline="true" aria-label="Markdown text"></article>
         <pre id="markdownRaw" hidden></pre>
         <div id="figureResizer" hidden aria-hidden="true">
           <span id="figureResizerLabel" class="figure-resizer-label"></span>
@@ -601,7 +601,7 @@
         <svg class="icon"><use href="#i-add-review"/></svg>
       </button>
       <div id="reviewMenu" hidden role="menu">
-        <button id="reviewMenuDelete" type="button" role="menuitem">Delete <kbd>Del</kbd></button>
+        <button id="reviewMenuDelete" type="button" role="menuitem">Remove the selection from the file <kbd>Del</kbd></button>
         <button id="reviewMenuCopy" type="button" role="menuitem">Copy</button>
         <div id="reviewMenuReview" class="menu-group">
           <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>
