@@ -197,8 +197,8 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   expand, a request) stays open until `pdf-next reviews done` closes it, and so does a PDF note,
   which closes only with a successful build. A note follows its text as
   the file changes, even after nearby edits; a quote that was itself reworded is marked with a
-  dashed line between its old neighbours. Reattach pins a note to other text. Done closes an open note yourself (a PDF note
-  needs a successful build first); Reopen sends it back. Remove review
+  dashed line between its old neighbours. Reattach pins a note to other text. You press Done to close an open note yourself.
+  A PDF note closes only after a successful build. You press Reopen to send a closed note back. Remove review
   shows Undo for ten seconds, and `Ctrl+Z` brings it back with the same ID. Esc, the × or Cancel
   closes the review box without saving. − and + in the panel head change the text size. Not
   available for images.

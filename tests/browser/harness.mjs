@@ -240,7 +240,15 @@ function mockTauri({ files, initial, theme, store, platform }) {
     },
     window: {
       getCurrentWindow: () => ({
-        isFullscreen: async () => Boolean(window.__fullscreen),
+        // window.__fullscreenDelay (ms) holds the next answer only: the start of a presentation waits on it.
+        isFullscreen: async () => {
+          if (window.__fullscreenDelay) {
+            const ms = window.__fullscreenDelay;
+            window.__fullscreenDelay = 0;
+            await new Promise((done) => setTimeout(done, ms));
+          }
+          return Boolean(window.__fullscreen);
+        },
         setFullscreen: async (on) => {
           window.__calls.push(['setFullscreen', { on }]);
           window.__fullscreen = on;

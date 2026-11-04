@@ -1289,6 +1289,151 @@ const twentytwo = await session({ '/d/a.md': raw });
   `a heading and the line under it are separate blocks, and a wrapped list item is one (${JSON.stringify(result)})`);
 }
 await twentytwo.close();
+
+// ── Session 23: identical neighbours: a click in the first of two identical list items, a file changed under two identical paragraphs ──
+const twentythree = await session({ '/d/a.md': raw });
+{
+  const result = await twentythree.page.evaluate(async () => {
+    const m = await import('/caret-edit.mjs');
+    const out = {};
+    // Two adjacent list items with identical text: a click in each is placed in that item.
+    const list = '- same words\n- same words\n';
+    out.first = m.offsetInText(list, 1, 'same words', 4);
+    out.second = m.offsetInText(list, 2, 'same words', 4);
+    // The same for a numbered list, and for a heading over a line of identical text.
+    const numbered = '1. same\n2. same\n';
+    out.numbered = [m.offsetInText(numbered, 1, 'same', 2).offset, m.offsetInText(numbered, 2, 'same', 2).offset];
+    const head = '# Same\nSame\n';
+    out.head = [m.offsetInText(head, 1, 'Same', 2).offset, m.offsetInText(head, 2, 'Same', 2).offset];
+    // Text that repeats inside one item is still refused.
+    out.repeat = m.offsetInText('- a b a b\n', 1, 'a b a b', 1).offset;
+    out.repeatNode = m.offsetInText('- go on, go\n', 1, 'go', 1).error;
+    // relocate: two identical paragraphs and a line added above; the caret was at the end of the second.
+    const before = 'Alpha beta.\n\nAlpha beta.\n';
+    const after = 'A long new line added above.\n\nAlpha beta.\n\nAlpha beta.\n';
+    const near = before.length - 1;
+    out.moved = m.relocate(after, 'Alpha beta.', 'Alpha beta.'.length, near);
+    out.movedFirst = m.relocate(after, 'Alpha beta.', 3, 3);
+    // Nothing moved above the caret: the copy at the old offset is the one.
+    out.stayed = m.relocate(`${before}Tail.\n`, 'Alpha beta.', 'Alpha beta.'.length, near);
+    // The line added above is 7 characters: the old offset 16 lies inside the first copy's new span, which is not the caret's copy.
+    out.shortLine = m.relocate('Short\n\nAlpha beta.\n\nAlpha beta.\n', 'Alpha beta.', 3, 16);
+    // One match: the same as before, wherever the old offset was.
+    out.single = m.relocate('New.\n\nAlpha beta.\n', 'Alpha beta.', 3, 0);
+    out.gone = m.relocate('Nothing here.\n', 'Alpha beta.', 3, 0);
+    return out;
+  });
+  ok(result.first.offset === 6 && result.first.start === 2 && result.first.end === 12
+    && result.second.offset === 19 && result.second.start === 15 && result.second.end === 25,
+  `a click in the first of two identical list items is placed there, and one in the second in the second (${JSON.stringify(result)})`);
+  ok(JSON.stringify(result.numbered) === JSON.stringify([5, 13]) && JSON.stringify(result.head) === JSON.stringify([4, 9]),
+    `the same holds for numbered items and for a heading over identical text (${JSON.stringify(result)})`);
+  ok(result.repeat === 3 && result.repeatNode === 'repeated',
+    `and a repeat inside one item is still refused when the run cannot be told apart (${JSON.stringify(result.repeat)}, ${result.repeatNode})`);
+  ok(result.moved === null && result.movedFirst === null,
+    `relocate returns nothing for two identical copies when the text above them moved (${JSON.stringify([result.moved, result.movedFirst])})`);
+  ok(result.shortLine === null && result.stayed?.offset === 24 && result.single?.offset === 9 && result.gone === null,
+    `relocate still finds the copy at the old offset, a single match anywhere, and nothing for gone text (${JSON.stringify([result.stayed, result.single, result.gone])})`);
+}
+await twentythree.close();
+{
+  // In the page: two identical paragraphs, the file changes on disk with a line added above, the caret was in the second.
+  const twins = 'Alpha beta.\n\nAlpha beta.\n';
+  const changed = 'A long new line added above.\n\n' + twins;
+  const s24 = await session({ '/d/a.md': twins });
+  const p24 = s24.page;
+  const secondEnd = () => p24.evaluate(() => {
+    const walk = document.createTreeWalker(document.querySelector('#markdown'), NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walk.nextNode()) if (walk.currentNode.textContent.includes('Alpha beta.')) nodes.push(walk.currentNode);
+    const range = document.createRange();
+    range.setStart(nodes.at(-1), nodes.at(-1).textContent.length);
+    range.collapse(true);
+    const box = range.getBoundingClientRect();
+    return { x: box.left - 1, y: box.top + box.height / 2 };
+  });
+  const at = await secondEnd();
+  await p24.mouse.click(at.x, at.y);
+  await p24.waitForTimeout(150);
+  await p24.evaluate((external) => {
+    window.__files['/d/a.md'] = external;
+    window.__emit('file-changed', { path: '/d/a.md', kind: 'changed', revision: 9 });
+  }, changed);
+  await p24.waitForTimeout(600);
+  await p24.keyboard.press('Z');
+  await p24.waitForTimeout(400);
+  const after = await p24.evaluate(() => window.__files['/d/a.md']);
+  ok(after === changed || after === changed.replace(/Alpha beta\.\n$/, 'Alpha beta.Z\n'),
+    `A key typed after the file changed under two identical paragraphs lands in the second or nowhere, never in the first (${JSON.stringify(after)})`);
+  ok(after === changed && await p24.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length) === 0,
+    'and with the copies told apart by nothing, no write is sent');
+  await s24.close();
+}
+{
+  // In the page: the same file with a line added below the copies: the caret stays in the second.
+  const twins = 'Alpha beta.\n\nAlpha beta.\n';
+  const changed = twins + '\nA line added below.\n';
+  const s25 = await session({ '/d/a.md': twins });
+  const p25 = s25.page;
+  const at = await p25.evaluate(() => {
+    const walk = document.createTreeWalker(document.querySelector('#markdown'), NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walk.nextNode()) if (walk.currentNode.textContent.includes('Alpha beta.')) nodes.push(walk.currentNode);
+    const range = document.createRange();
+    range.setStart(nodes.at(-1), nodes.at(-1).textContent.length);
+    range.collapse(true);
+    const box = range.getBoundingClientRect();
+    return { x: box.left - 1, y: box.top + box.height / 2 };
+  });
+  await p25.mouse.click(at.x, at.y);
+  await p25.waitForTimeout(150);
+  await p25.evaluate((external) => {
+    window.__files['/d/a.md'] = external;
+    window.__emit('file-changed', { path: '/d/a.md', kind: 'changed', revision: 9 });
+  }, changed);
+  await p25.waitForTimeout(600);
+  await p25.keyboard.press('Z');
+  await p25.waitForTimeout(400);
+  const after = await p25.evaluate(() => window.__files['/d/a.md']);
+  ok(after === 'Alpha beta.\n\nAlpha beta.Z\n\nA line added below.\n',
+    `A line added below two identical paragraphs leaves the caret in the second (${JSON.stringify(after)})`);
+  await s25.close();
+}
+
+// ── Session 26: F5 twice, or F5 and a tab switch, before the start ends: one presentation, of the file shown at the first F5 ──
+{
+  const s26 = await session({ '/d/a.md': 'File a text.\n\nMore of a.\n', '/d/b.md': 'File b text.\n\nMore of b.\n' });
+  const p26 = s26.page;
+  await p26.evaluate(() => window.__emit('open-files', ['/d/b.md']));
+  await p26.waitForTimeout(500);
+  await p26.keyboard.press('Control+1');
+  await p26.waitForTimeout(400);
+  const full = () => p26.evaluate(() => window.__calls.filter(([cmd, args]) => cmd === 'setFullscreen' && args.on).length);
+  const presenting = () => p26.evaluate(() => document.body.classList.contains('presenting'));
+  const shown = () => p26.$eval('#markdown p', (p) => p.textContent.trim());
+  await p26.evaluate(() => { window.__fullscreenDelay = 600; });
+  await p26.keyboard.press('F5');
+  await p26.keyboard.press('F5');
+  await p26.waitForTimeout(1000);
+  ok(await presenting() && await full() === 1 && (await shown()).startsWith('File a'),
+    `F5 twice in quick succession presents once, the file shown (${await full()} fullscreen calls, ${await shown()})`);
+  await p26.keyboard.press('Escape');
+  await p26.waitForTimeout(400);
+  ok(!(await presenting()), 'and one Esc leaves it');
+  // F5, then a switch to the other tab before the start has finished: nothing is presented.
+  await p26.evaluate(() => { window.__fullscreenDelay = 600; });
+  await p26.keyboard.press('F5');
+  await p26.waitForTimeout(100);
+  await p26.keyboard.press('Control+2');
+  await p26.waitForTimeout(1000);
+  ok(!(await presenting()) && await full() === 1 && (await shown()).startsWith('File b'),
+    `F5 then a tab switch before the start ends presents nothing, and the other tab is shown (${await presenting()}, ${await full()} fullscreen calls, ${await shown()})`);
+  // The lock is released: F5 on the shown file presents it.
+  await p26.keyboard.press('F5');
+  await p26.waitForTimeout(500);
+  ok(await presenting() && (await shown()).startsWith('File b'), 'and a later F5 presents the file shown');
+  await s26.close();
+}
 {
   // In the page: a key typed at the end of the 450-line paragraph lands there.
   const longRaw = `${Array.from({ length: 450 }, (_, n) => `line ${n + 1} of the long paragraph`).join('\n')}\n\nNext one.\n`;
