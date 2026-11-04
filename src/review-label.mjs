@@ -76,9 +76,9 @@ export function reviewAction(review) {
   return REVIEW_ACTIONS.includes(review?.action) ? review.action : 'improve';
 }
 
-/// Every status a review can have; `question` waits on the reader's reply.
+/// Every status a review can have: open, or done (closed by pdf-next or by `done`).
 /// Same list as REVIEW_STATUSES in main.rs.
-export const REVIEW_STATUSES = ['open', 'applied', 'resolved', 'question'];
+export const REVIEW_STATUSES = ['open', 'done'];
 
 export function reviewStatus(review) {
   return REVIEW_STATUSES.includes(review?.status) ? review.status : 'open';

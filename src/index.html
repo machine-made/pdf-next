@@ -417,7 +417,7 @@
         </div>
       </div>
       <div id="markdownStage">
-        <article id="markdown"></article>
+        <article id="markdown" contenteditable="true" spellcheck="false" role="textbox" aria-multiline="true" aria-label="Markdown text"></article>
         <pre id="markdownRaw" hidden></pre>
         <div id="figureResizer" hidden aria-hidden="true">
           <span id="figureResizerLabel" class="figure-resizer-label"></span>
@@ -455,7 +455,7 @@
             <option value="bold">Bold</option><option value="italic">Italic</option><option value="delete">Delete</option>
           </select></label>
           <label>Status <select id="reviewStatusFilter" aria-label="Filter reviews by status">
-            <option value="all">All</option><option value="open">Open</option><option value="applied">Applied</option><option value="resolved">Resolved</option><option value="question">Question</option>
+            <option value="all">All</option><option value="open">Open</option><option value="done">Done</option>
           </select></label>
         </div>
         <div id="reviewList"></div>
@@ -601,7 +601,7 @@
         <svg class="icon"><use href="#i-add-review"/></svg>
       </button>
       <div id="reviewMenu" hidden role="menu">
-        <button id="reviewMenuDelete" type="button" role="menuitem">Delete <kbd>Del</kbd></button>
+        <button id="reviewMenuDelete" type="button" role="menuitem">Remove the selection from the file <kbd>Del</kbd></button>
         <button id="reviewMenuCopy" type="button" role="menuitem">Copy</button>
         <div id="reviewMenuReview" class="menu-group">
           <button id="reviewMenuAdd" type="button" role="menuitem">Improve selection</button>

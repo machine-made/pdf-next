@@ -28,6 +28,29 @@ function lineStarts(raw) {
   return starts;
 }
 
+/// A line that begins a block of its own: an ATX heading, or a list item (bulleted or numbered, at any depth).
+const BLOCK_START = /^(?: {0,3}#{1,6}|[ \t]*(?:[-*+]|\d{1,9}[.)]))(?:\s|$)/;
+const HEADING = /^ {0,3}#{1,6}(?:\s|$)/;
+
+/// The source of the one block `line` is in, with no blank line between its lines: a
+/// paragraph, a list item or a heading. A heading is a block of its own line; a list
+/// item or a heading begins a new block even with no blank line before it. Lines are
+/// 1-based; the result is as for `blockSpan`.
+export function lineBlock(raw, line) {
+  const starts = lineStarts(raw);
+  const total = starts.length - 1;
+  const text = (n) => raw.slice(starts[n - 1], starts[n] - 1);
+  const blank = (n) => text(n).trim() === '';
+  let first = Math.min(Math.max(1, Number(line) || 1), total);
+  while (first > 1 && !blank(first - 1) && !BLOCK_START.test(text(first)) && !HEADING.test(text(first - 1))) first -= 1;
+  let last = Math.min(Math.max(1, Number(line) || 1), total);
+  while (last < total && !blank(last + 1) && !BLOCK_START.test(text(last + 1)) && !HEADING.test(text(last))) last += 1;
+  let stop = starts[last] - 1;
+  if (stop > raw.length) stop = raw.length;
+  if (raw[stop - 1] === '\r') stop -= 1;
+  return { start: starts[first - 1], end: stop, line: first, endLine: last };
+}
+
 /// The source of the block a selection sits in: from its first line to the
 /// end of the paragraph its last line belongs to (the next blank line).
 /// Lines are 1-based, as in a review's `at`.
@@ -37,21 +60,23 @@ export function blockSpan(raw, line, end = line) {
   const first = Math.min(Math.max(1, Number(line) || 1), total);
   let last = Math.min(Math.max(first, Number(end) || first), total);
   const lineText = (n) => raw.slice(starts[n - 1], starts[n] - 1);
-  for (let guard = 0; last < total && guard < 400 && lineText(last + 1).trim() !== ''; guard += 1) last += 1;
+  while (last < total && lineText(last + 1).trim() !== '') last += 1;
   let stop = starts[last] - 1;
   if (stop > raw.length) stop = raw.length;
   if (raw[stop - 1] === '\r') stop -= 1;
   return { start: starts[first - 1], end: stop, line: first, endLine: last };
 }
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /// The renderer's smart punctuation turns source quotes and dashes into
 /// typographic ones; a rendered character matches either form.
-const SMART = {
+export const SMART = {
   '‘': "['‘]", '’': "['’]", '“': '["“]', '”': '["”]',
   '–': '(?:--|–)', '—': '(?:---|—)', '…': '(?:\\.\\.\\.|…)',
 };
+// The ASCII source of a smart character that takes more than one character to write.
+export const SMART_SOURCE = { '–': '--', '—': '---', '…': '...' };
 // Latin letters, digits and underscore at an edge make the boundary matter;
 // dashes also count as inside a word ("two-dimensional"). Other scripts run
 // without spaces, so no boundary is checked for them.

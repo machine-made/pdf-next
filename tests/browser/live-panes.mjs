@@ -10,7 +10,7 @@ const pngs = { swatch: await fixture('swatch.png'), figure: await fixture('large
 let pdfNow = 'hello';
 let pngNow = 'swatch';
 const store = {
-  format: 3, revision: 1, nextId: 3, reviews: [
+  format: 4, revision: 1, nextId: 3, reviews: [
     { id: 'r1', kind: 'markdown', at: { line: 1 }, quote: 'brave new', anchor: { prefix: 'hello ', suffix: ' world.' }, action: 'polish', status: 'open' },
     { id: 'r2', kind: 'pdf', at: { page: 1 }, quote: 'smoke test', action: 'check', status: 'open' },
   ],

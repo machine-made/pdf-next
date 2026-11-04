@@ -39,7 +39,7 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         3 => (action.clone(), 1u32..6, text).prop_map(|(action, line, comment)| Op::Add { action, line, comment }),
         1 => (any::<usize>(), text).prop_map(|(i, c)| Op::Comment(i, c)),
-        1 => (any::<usize>(), prop::sample::select(vec!["open", "applied", "resolved", "done"])).prop_map(|(i, s)| Op::Status(i, s)),
+        1 => (any::<usize>(), prop::sample::select(vec!["open", "done"])).prop_map(|(i, s)| Op::Status(i, s)),
         1 => (any::<usize>(), action).prop_map(|(i, a)| Op::Action(i, a)),
         1 => (any::<usize>(), "[a-z ]{1,12}").prop_map(|(i, t)| Op::Done(i, t)),
         2 => any::<usize>().prop_map(Op::Delete),
@@ -51,17 +51,18 @@ fn seeded_store(dir: &Path) -> (PathBuf, AllowedDocuments) {
     let doc = dir.join("notes.md");
     std::fs::write(&doc, "one\ntwo\nthree\nfour\nfive\n").unwrap();
     let store = json!({
-        "format": 3, "revision": 4, "nextId": 3, "x-store": { "keep": [1, 2] },
+        "format": 4, "revision": 4, "nextId": 3, "x-store": { "keep": [1, 2] },
         "reviews": [
             { "id": "r1", "file": "notes.md", "kind": "markdown", "at": { "line": 1, "x-at": true },
               "quote": "one", "comment": "", "action": "polish", "status": "open", "resolution": "",
               "color": 1, "x-review": "r1 extra" },
             { "id": "r2", "file": "notes.md", "kind": "markdown", "at": { "line": 2 },
-              "quote": "two", "comment": "why", "action": "check", "status": "applied",
+              "quote": "two", "comment": "why", "action": "check", "status": "done",
               "resolution": "checked", "color": 2, "x-review": "r2 extra" },
         ],
     });
-    std::fs::write(dir.join("notes_review.json"), store.to_string()).unwrap();
+    std::fs::create_dir_all(dir.join(".pdf-next")).unwrap();
+    std::fs::write(dir.join(".pdf-next/notes.json"), store.to_string()).unwrap();
     let mut allowed = AllowedDocuments::default();
     let canonical = std::fs::canonicalize(&doc).unwrap();
     allowed.insert(canonical.clone()).unwrap();
@@ -78,7 +79,8 @@ fn new_review(action: &str, line: u32, comment: &str) -> Review {
 }
 
 fn on_disk(dir: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("notes_review.json")).unwrap()).unwrap()
+    serde_json::from_str(&std::fs::read_to_string(dir.join(".pdf-next/notes.json")).unwrap())
+        .unwrap()
 }
 
 fn number(id: &str) -> u64 {
@@ -171,16 +173,11 @@ proptest! {
                     _ => {}
                 }
             }
-            let view = std::fs::read_to_string(dir.join("notes_review.agent.txt")).unwrap();
+            let view = std::fs::read_to_string(dir.join("notes_review.txt")).unwrap();
             let mut lines = view.lines();
-            // With no review left to name the file, the header names the stem.
             let header = format!(" rev {now}:");
             let first = lines.next().unwrap();
-            prop_assert!(
-                (first.starts_with("# notes.md ") || first.starts_with("# notes ")) && first.contains(&header),
-                "{}",
-                view
-            );
+            prop_assert!(first.starts_with("# notes.md ") && first.contains(&header), "{}", view);
             let listed: BTreeSet<&str> = lines.map(|line| line.split(' ').next().unwrap()).collect();
             let open: BTreeSet<&str> = after["reviews"].as_array().unwrap().iter().filter(|r| r["status"] == "open").map(|r| r["id"].as_str().unwrap()).collect();
             prop_assert_eq!(view.lines().count() - 1, open.len(), "one line per open item:\n{}", view);

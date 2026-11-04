@@ -27,8 +27,8 @@ use tauri::{http, AppHandle, DragDropEvent, Emitter, Manager, State, Theme, Wind
 use tauri_plugin_dialog::DialogExt;
 
 /// Document poll cadence in seconds; 0 turns *document* watching off.
-/// `{stem}_review.json` is followed on every IDLE_TICK while a PDF or
-/// Markdown file is open, so an agent can edit the sidecar with poll off.
+/// The store `.pdf-next/{stem}.json` is followed on every IDLE_TICK while a PDF
+/// or Markdown file is open, so an agent can edit the store with poll off.
 static POLL_SECONDS: AtomicU64 = AtomicU64::new(1);
 const IDLE_TICK: Duration = Duration::from_millis(500);
 
@@ -44,16 +44,13 @@ struct WatchState {
     modified: Option<SystemTime>,
     len: u64,
     missing: bool,
-    /// `{stem}_review.json` next to the watched document. Followed even when
-    /// document poll is off, so an agent save shows up in the Review panel
-    /// without reloading the PDF. `sidecar_missing` starts true: no sidecar
+    /// `.pdf-next/{stem}.json` next to the watched document. Followed even
+    /// when document poll is off, so a store save shows up in the Review panel
+    /// without reloading the PDF. `sidecar_missing` starts true: no store
     /// is the usual case, not a deletion to report.
     sidecar_modified: Option<SystemTime>,
     sidecar_len: u64,
     sidecar_missing: bool,
-    /// `{stem}_review.done` as last applied. None: not looked at yet, so the
-    /// first tick after a document opens applies whatever is waiting.
-    inbox_stamp: Option<Stamp>,
     /// Every file the reader has opened this session, canonicalized. The doc
     /// protocol and the markdown renderer serve members of this set and
     /// nothing else; `adopt` is the only way in, and it takes supported kinds
@@ -78,6 +75,34 @@ struct WatchState {
     /// live instead.
     pending: Vec<Opening>,
     ready: bool,
+    /// Markdown files to settle again once they have been quiet: when each is
+    /// due. One entry per path, set when a file is opened or seen changed.
+    settle_later: HashMap<PathBuf, Instant>,
+}
+
+impl WatchState {
+    /// Settle `path` again `SETTLE_AGAIN_AFTER` from `now`. A later change
+    /// pushes the time back.
+    fn settle_again(&mut self, path: &Path, now: Instant) {
+        if kind_for(path) == "markdown" {
+            self.settle_later
+                .insert(path.to_path_buf(), now + SETTLE_AGAIN_AFTER);
+        }
+    }
+
+    /// The files whose time has come; they leave the table.
+    fn take_due_settles(&mut self, now: Instant) -> Vec<PathBuf> {
+        let due: Vec<PathBuf> = self
+            .settle_later
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in &due {
+            self.settle_later.remove(path);
+        }
+        due
+    }
 }
 
 #[derive(Default)]
@@ -214,7 +239,10 @@ struct Opening {
 
 /// Leftover 0.10 sidecar in a folder. 0.11 reads it, then writes per file.
 const LEGACY_REVIEW_FILE: &str = "_review.json";
+/// Where 0.11 to 0.18 kept a document's store: `{stem}_review.json`.
 const REVIEW_SUFFIX: &str = "_review.json";
+/// The hidden folder of a document's store, beside the document.
+const STORE_FOLDER: &str = ".pdf-next";
 
 fn is_review_file(path: &Path) -> bool {
     path.file_name()
@@ -222,14 +250,33 @@ fn is_review_file(path: &Path) -> bool {
         .is_some_and(|name| name.to_ascii_lowercase().ends_with(REVIEW_SUFFIX))
 }
 
-fn review_sidecar(doc: &Path) -> PathBuf {
-    let stem = doc
-        .file_stem()
+fn document_stem(doc: &Path) -> &str {
+    doc.file_stem()
         .and_then(|name| name.to_str())
-        .unwrap_or("file");
+        .unwrap_or("file")
+}
+
+fn document_folder(doc: &Path) -> &Path {
     doc.parent()
+        .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
-        .join(format!("{stem}{REVIEW_SUFFIX}"))
+}
+
+/// The store of a document: `.pdf-next/{stem}.json` in its folder.
+fn review_sidecar(doc: &Path) -> PathBuf {
+    document_folder(doc)
+        .join(STORE_FOLDER)
+        .join(format!("{}.json", document_stem(doc)))
+}
+
+/// The pre-0.19 store, `{stem}_review.json`, read once and then removed.
+fn legacy_review_sidecar(doc: &Path) -> PathBuf {
+    document_folder(doc).join(format!("{}{REVIEW_SUFFIX}", document_stem(doc)))
+}
+
+/// The file the agent reads: `{stem}_review.txt`, the open comments only.
+fn review_inbox(doc: &Path) -> PathBuf {
+    document_folder(doc).join(format!("{}_review.txt", document_stem(doc)))
 }
 
 fn kind_for(path: &Path) -> &'static str {
@@ -339,11 +386,24 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
     }
     let canonical = std::fs::canonicalize(&path).unwrap_or(path);
     let (modified, len) = stat(&canonical).unwrap_or((None, 0));
-    let sidecar = review_sidecar(&canonical);
-    let (sidecar_modified, sidecar_len) = stat(&sidecar).unwrap_or((None, 0));
-
     let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     state.allowed.insert(canonical.clone())?;
+    let admitted = state.allowed.get(&canonical).cloned();
+    drop(state);
+    // A store from before 0.19 moves to its new place, and comments whose
+    // text changed while the file was closed are closed. A failure leaves the
+    // old files as they are; the next command tries again.
+    if let Some(admitted) = admitted {
+        let _ = settle_document(&admitted);
+        // A file written in the last two seconds was left alone: look again.
+        if let Ok(mut state) = watched.0.lock() {
+            state.settle_again(&canonical, Instant::now());
+        }
+    }
+
+    let sidecar = review_sidecar(&canonical);
+    let (sidecar_modified, sidecar_len) = stat(&sidecar).unwrap_or((None, 0));
+    let mut state = watched.0.lock().map_err(|error| error.to_string())?;
     if activate {
         state.path = Some(canonical.clone());
         state.modified = modified;
@@ -352,7 +412,6 @@ fn adopt(watched: &Watched, path: PathBuf, activate: bool) -> Result<FileInfo, S
         state.sidecar_modified = sidecar_modified;
         state.sidecar_len = sidecar_len;
         state.sidecar_missing = !sidecar.exists();
-        state.inbox_stamp = None;
         state.images.clear();
     }
     drop(state);
@@ -3008,31 +3067,22 @@ fn note_sidecar_written(watched: &Watched, document: &str) {
     }
 }
 
-/// Apply `{stem}_review.done` when it changes. The store write that results is
-/// then seen by `watch_review_sidecar` like any other, and the panel reloads.
-fn watch_done_inbox(watched: &Watched, doc: &Path) {
-    let kind = kind_for(doc);
-    if kind != "markdown" && kind != "pdf" {
-        return;
-    }
-    let inbox = review_sidecar(doc).with_extension("done");
-    let now = stat(&inbox).unwrap_or((None, 0));
+/// Close the comments of the watched Markdown file whose quoted text the
+/// change edited or removed. The store write that results is seen by
+/// `watch_review_sidecar` like any other, and the panel reloads.
+fn settle_watched(watched: &Watched, doc: &Path) {
     let admitted = {
-        let Ok(mut state) = watched.0.lock() else {
+        let Ok(state) = watched.0.lock() else {
             return;
         };
-        if state.path.as_deref() != Some(doc) || state.inbox_stamp == Some(now) {
-            return;
-        }
-        state.inbox_stamp = Some(now);
         state.allowed.get(doc).cloned()
     };
     if let Some(admitted) = admitted {
-        let _ = apply_done_inbox(&admitted);
+        let _ = settle_document(&admitted);
     }
 }
 
-/// The poll toggle follows `{stem}_review.json` as well as the document.
+/// The poll toggle follows `.pdf-next/{stem}.json` as well as the document.
 /// A change here only reloads the Review panel — not the PDF.
 fn watch_review_sidecar(
     app: &AppHandle,
@@ -3173,6 +3223,17 @@ fn spawn_watcher(app: AppHandle) {
             let Some(watched) = app.try_state::<Watched>() else {
                 continue;
             };
+            // A file that changed or was opened a moment ago is settled again
+            // once quiet: the first pass leaves a file written in the last two
+            // seconds alone, as it may be half written.
+            let due = watched
+                .0
+                .lock()
+                .map(|mut state| state.take_due_settles(Instant::now()))
+                .unwrap_or_default();
+            for later in due {
+                settle_watched(&watched, &later);
+            }
             let snapshot = {
                 let Ok(state) = watched.0.lock() else {
                     continue;
@@ -3202,7 +3263,6 @@ fn spawn_watcher(app: AppHandle) {
                 continue;
             };
 
-            watch_done_inbox(&watched, &path);
             watch_review_sidecar(
                 &app,
                 &watched,
@@ -3240,6 +3300,12 @@ fn spawn_watcher(app: AppHandle) {
                     }
                     let images =
                         !changed && !reappeared && embedded_images_changed(&watched, &path, stat);
+                    if changed || reappeared {
+                        settle_watched(&watched, &path);
+                        if let Ok(mut state) = watched.0.lock() {
+                            state.settle_again(&path, Instant::now());
+                        }
+                    }
                     if changed || reappeared || images {
                         let revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
                         let _ = app.emit(
@@ -3457,12 +3523,6 @@ struct Review {
     comment: String,
     #[serde(default)]
     resolution: String,
-    /// What the agent asked the reader (status `question`), and the reader's
-    /// answer, which puts the item back to `open`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    question: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    reply: String,
     #[serde(default = "default_review_color")]
     color: u8,
     #[serde(default)]
@@ -3488,6 +3548,31 @@ struct Review {
     /// Missing on items written before 0.17: read as changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rev: Option<u64>,
+    /// Who closed a `done` comment, when pdf-next did it by itself because
+    /// the quoted text was edited or removed. Only such a comment is ever
+    /// opened again by pdf-next.
+    #[serde(default, rename = "closedBy", skip_serializing_if = "Option::is_none")]
+    closed_by: Option<String>,
+    /// The file digest at which the reader reopened the comment: settle
+    /// leaves it alone on that text.
+    #[serde(
+        default,
+        rename = "reopenedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    reopened_at: Option<String>,
+    /// A file digest at which the renderer found the quote in place. Only a
+    /// comment with one may be closed by pdf-next.
+    #[serde(
+        default,
+        rename = "verifiedDigest",
+        skip_serializing_if = "Option::is_none"
+    )]
+    verified_digest: Option<String>,
+    /// The renderer never found the quote in place, so pdf-next will not
+    /// close this comment by itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unverifiable: bool,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -3515,8 +3600,34 @@ struct ReviewFile {
     reviews: Vec<Review>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
+    /// Set on the copy a save returns when the store was written but the
+    /// inbox was not (a file of someone else's stands there). Never on disk.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none",
+        rename = "inboxWarning"
+    )]
+    inbox_warning: Option<String>,
     #[serde(skip)]
-    migration_backup: Option<String>,
+    origin: Origin,
+}
+
+/// Where a loaded store came from; not part of the file.
+#[derive(Clone, Debug, Default)]
+struct Origin {
+    /// Read from the files of a version before 0.19 (`{stem}_review.json`, or
+    /// the folder's `_review.json`): the next save writes the new store and
+    /// then removes them.
+    old_files: bool,
+    /// The folder's `_review.json` was merged in.
+    legacy_folder: bool,
+    /// Every line of a pending `{stem}_review.done` was applied (or there was
+    /// none): the file may go with the other old files.
+    done_applied: bool,
+    /// Format 1 or 2, or a merge from the folder's `_review.json`: records
+    /// are not checked on load, only when written.
+    lenient: bool,
 }
 
 /// Whether every review's `rev` can be trusted: this version wrote last.
@@ -3530,14 +3641,15 @@ fn review_format_2() -> u32 {
 
 fn empty_store() -> ReviewFile {
     ReviewFile {
-        format: 3,
+        format: REVIEW_FORMAT,
         revision: 0,
         next_id: 1,
         document: None,
         reviews: Vec::new(),
         extra: serde_json::Map::new(),
         stamped: None,
-        migration_backup: None,
+        inbox_warning: None,
+        origin: Origin::default(),
     }
 }
 
@@ -3576,8 +3688,16 @@ const REVIEW_REQUESTS: &[(&str, &str)] = &[
     ("tone:jfm", "tone: Journal of Fluid Mechanics style"),
 ];
 
-/// Every status a review can have. `question` waits on the reader.
-const REVIEW_STATUSES: &[&str] = &["open", "applied", "resolved", "question"];
+/// Every status a review can have. pdf-next closes a Markdown comment when
+/// its quoted text is edited or removed; a PDF comment closes with `done`.
+const REVIEW_STATUSES: &[&str] = &["open", "done"];
+
+/// A migrated question joins its comment whole: up to a comment, a question
+/// and an answer of 2 000 bytes each, and the labels between them.
+const FOLDED_COMMENT_LIMIT: usize = 6_100;
+
+/// The format `save_store` writes. Formats 1 to 4 are read.
+const REVIEW_FORMAT: u32 = 4;
 
 fn validate_requests(requests: &[String]) -> Result<(), String> {
     if requests.len() > REVIEW_REQUESTS.len() {
@@ -3617,22 +3737,19 @@ fn validate_review(review: &Review) -> Result<(), String> {
     if review.quote.len() > 20_000 {
         return Err("quote is too long (max 20 000 chars)".into());
     }
-    if review.comment.len() > 2_000 {
-        return Err("comment is too long (max 2 000 chars)".into());
+    let comment_limit = if review.extra.contains_key("folded") {
+        FOLDED_COMMENT_LIMIT
+    } else {
+        2_000
+    };
+    if review.comment.len() > comment_limit {
+        return Err(format!("comment is too long (max {comment_limit} chars)"));
     }
     if review.resolution.len() > 4_000 {
         return Err("resolution is too long (max 4 000 chars)".into());
     }
-    for (name, value) in [("question", &review.question), ("reply", &review.reply)] {
-        if value.len() > 2_000 {
-            return Err(format!("{name} is too long (max 2 000 chars)"));
-        }
-    }
     if review.before.len() > 20_000 {
         return Err("before is too long (max 20 000 chars)".into());
-    }
-    if review.status == "question" && review.question.trim().is_empty() {
-        return Err("a question review needs the question".into());
     }
     if let Some(anchor) = review.anchor.as_ref() {
         for (name, value) in [("prefix", &anchor.prefix), ("suffix", &anchor.suffix)] {
@@ -3695,17 +3812,6 @@ fn validate_review(review: &Review) -> Result<(), String> {
             }
         }
     }
-    if review.status == "applied"
-        && review.kind == "pdf"
-        && review
-            .build
-            .as_ref()
-            .and_then(|value| value.get("success"))
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-    {
-        return Err("PDF review cannot be marked applied without a successful build".into());
-    }
     if !review_basename(&review.file) {
         return Err("file must be a basename".into());
     }
@@ -3745,6 +3851,45 @@ fn validate_review(review: &Review) -> Result<(), String> {
     Ok(())
 }
 
+/// Stamp `verifiedDigest` when the comment is placed on this text and its quote
+/// is found there, unchanged: from then on settle may close it.
+fn verify_in_place(review: &mut Review, source: &str) {
+    if review.kind != "markdown" {
+        return;
+    }
+    let digest = text_sha256(source);
+    let anchored = review
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.document_revision.as_deref())
+        == Some(digest.as_str());
+    if anchored
+        && matches!(
+            place_review(&review_locate::rendered(source), review),
+            Place::Intact(..)
+        )
+    {
+        review.verified_digest = Some(digest);
+    }
+}
+
+/// A PDF comment is done only after a build that succeeded. Checked on every
+/// way a record is written; reading an old record is not a write.
+fn pdf_done_needs_build(review: &Review) -> Result<(), String> {
+    if review.status == "done"
+        && review.kind == "pdf"
+        && review
+            .build
+            .as_ref()
+            .and_then(|value| value.get("success"))
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return Err("PDF review cannot be marked done without a successful build".into());
+    }
+    Ok(())
+}
+
 fn drop_redundant_end(review: &mut Review) {
     let start = if review.kind == "markdown" {
         review.at.line
@@ -3772,11 +3917,11 @@ fn parse_store(text: &str) -> Result<ReviewFile, String> {
         .map_err(|error| error.to_string())?;
     let mut parsed: ReviewFile =
         serde_json::from_value(raw.clone()).map_err(|error| error.to_string())?;
-    if !matches!(parsed.format, 1..=3) {
+    if !matches!(parsed.format, 1..=REVIEW_FORMAT) {
         return Err("unsupported review format".into());
     }
     let original_format = parsed.format;
-    if original_format == 3 {
+    if original_format >= 3 {
         validate_store_ids(&parsed)?;
         let max_next = parsed
             .reviews
@@ -3813,10 +3958,48 @@ fn parse_store(text: &str) -> Result<ReviewFile, String> {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or("review id limit reached")?;
-        parsed.migration_backup = Some(text.to_string());
+        parsed.origin.lenient = true;
     }
-    parsed.format = 3;
+    for review in &mut parsed.reviews {
+        migrate_review(review);
+    }
+    parsed.format = REVIEW_FORMAT;
     Ok(parsed)
+}
+
+/// Format 4 has two statuses. `applied` and `resolved` are `done`. A
+/// `question` is `open` again: the agent asks in its terminal now, and the
+/// question and the reader's answer, if any, join the comment so nothing is
+/// lost. Safe to run on a record that is already in format 4.
+fn migrate_review(review: &mut Review) {
+    if matches!(review.status.as_str(), "applied" | "resolved") {
+        review.status = "done".into();
+    }
+    let mut text = |key: &str| match review.extra.remove(key) {
+        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+        _ => String::new(),
+    };
+    let (question, reply) = (text("question"), text("reply"));
+    if review.status == "question" {
+        review.status = "open".into();
+    }
+    let mut parts = vec![review.comment.trim().to_string()];
+    if !question.is_empty() {
+        parts.push(format!("asked: {question}"));
+    }
+    if !reply.is_empty() {
+        parts.push(format!("answer: {reply}"));
+    }
+    if parts.len() > 1 {
+        parts.retain(|part| !part.is_empty());
+        review.comment = cut_bytes(&parts.join(" | "), FOLDED_COMMENT_LIMIT).to_string();
+        if review.comment.len() > 2_000 {
+            // Whole, not cut: validation allows a folded comment this long.
+            review
+                .extra
+                .insert("folded".into(), serde_json::Value::Bool(true));
+        }
+    }
 }
 
 fn legacy_review_color(id: &str) -> u8 {
@@ -3946,7 +4129,7 @@ fn review_ranges_overlap(first: &Review, second: &Review) -> bool {
 fn choose_review_color(store: &ReviewFile, review: &Review) -> u8 {
     let mut counts = [0usize; 17];
     for existing in &store.reviews {
-        if matches!(existing.status.as_str(), "open" | "applied" | "question")
+        if existing.status == "open"
             && review_ranges_overlap(existing, review)
             && (1..=16).contains(&existing.color)
         {
@@ -4033,6 +4216,7 @@ impl ReviewLock {
     }
 
     fn open(sidecar: &ReviewPath) -> std::io::Result<std::fs::File> {
+        sidecar.ensure_folder()?;
         let lock_path = sidecar.with_extension(format!(
             "{}.lock",
             sidecar
@@ -4079,8 +4263,24 @@ impl Drop for ReviewLock {
     }
 }
 
-fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String> {
-    store.format = 3;
+/// Write the document's store `.pdf-next/{stem}.json` and its inbox
+/// `{stem}_review.txt`. A store read from the files of a version before 0.19
+/// is written, read back and compared first; only then are those files
+/// removed. When a step fails the old files stay and the error is returned.
+fn save_store(doc: &ReviewPath, store: &mut ReviewFile) -> Result<(), String> {
+    save_store_as(doc, store, true)
+}
+
+/// `save_store`; with `bump` false the revision stays: settle stamps digests
+/// that no reader or agent sees, and an agent's `--expected-revision` must
+/// survive them.
+fn save_store_as(doc: &ReviewPath, store: &mut ReviewFile, bump: bool) -> Result<(), String> {
+    let sidecar = doc.sidecar();
+    store.inbox_warning = None;
+    store.format = REVIEW_FORMAT;
+    if store.origin.old_files {
+        apply_pending_done(doc, store);
+    }
     let minimum_next_id = store
         .reviews
         .iter()
@@ -4090,10 +4290,12 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
         .checked_add(1)
         .ok_or("review id limit reached")?;
     store.next_id = store.next_id.max(minimum_next_id);
-    store.revision = store
-        .revision
-        .checked_add(1)
-        .ok_or("review revision limit reached")?;
+    if bump {
+        store.revision = store
+            .revision
+            .checked_add(1)
+            .ok_or("review revision limit reached")?;
+    }
     validate_store_ids(store)?;
     // A quote is matched with its whitespace collapsed, so it is stored that
     // way: one line, no newlines from a selection across MathML glyphs.
@@ -4113,17 +4315,14 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
     for review in &store.reviews {
         validate_review(review)?;
     }
-    let prior_valid = if sidecar.exists() {
+    if sidecar.exists() {
         let previous = sidecar
             .read_to_string()
             .map_err(|error| error.to_string())?;
-        let prior = parse_store(&previous)?;
-        stamp_changes(&prior, store);
-        Some(previous.into_bytes())
+        stamp_changes(&parse_store(&previous)?, store);
     } else {
         stamp_changes(&empty_store(), store);
-        None
-    };
+    }
     store.stamped = Some(store.revision);
     let json = store_json(store)?;
     if json.len() > STORE_LIMIT {
@@ -4131,29 +4330,187 @@ fn save_store(sidecar: &ReviewPath, store: &mut ReviewFile) -> Result<(), String
             "the review store would be too large (max 4 MB): resolve or remove some reviews".into(),
         );
     }
-    if let Some(previous) = prior_valid.as_deref() {
-        write_atomic_bytes(&sidecar.with_extension("json.bak"), previous)?;
-    }
-    if let Some(original) = store.migration_backup.as_deref() {
-        let backup = sidecar.with_extension("json.pre-v3.bak");
-        if !backup.exists() {
-            write_atomic_bytes(&backup, original.as_bytes())?;
+    // Windows readers can briefly block an atomic replacement.
+    write_atomic_bytes(&sidecar, json.as_bytes())?;
+    if store.origin.old_files {
+        if let Err(error) = confirm_migration(doc, store) {
+            // Back to where it was: the old files are read again next time.
+            let _ = sidecar.remove_file();
+            return Err(error);
         }
     }
-    // Windows readers can briefly block an atomic replacement.
-    write_atomic_bytes(sidecar, json.as_bytes())?;
-    store.migration_backup = None;
-    // The short view agents read. It follows every store write, so it is as
-    // current as the store; a failure here never fails the save.
-    let inbox = sidecar
-        .with_extension("done")
-        .read_to_string()
-        .unwrap_or_default();
-    let _ = write_atomic_bytes(
-        &sidecar.with_extension("agent.txt"),
-        agent_view(store, &sidecar_document_name(sidecar), &inbox).as_bytes(),
-    );
+    // The store is saved. The inbox follows it, but a failure here is a
+    // warning: an error would make a caller retry and file a comment twice.
+    if let Err(error) = write_inbox(doc, store) {
+        eprintln!("pdf-next: warning: {error}");
+        store.inbox_warning = Some(error);
+    }
+    if store.origin.old_files {
+        remove_migrated_files(doc, store);
+        store.origin = Origin::default();
+    }
     Ok(())
+}
+
+/// The first line pdf-next writes in `{stem}_review.txt`: `# notes.md rev 12: …`.
+///
+/// `inbox_header_start` writes it and this reads it, so they cannot drift.
+/// A document name may itself contain " rev ", so every occurrence is tried.
+fn is_inbox_header(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("# ") else {
+        return false;
+    };
+    rest.match_indices(INBOX_REV).any(|(at, _)| {
+        let after = &rest[at + INBOX_REV.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && after[digits..].starts_with(':')
+    })
+}
+
+const INBOX_REV: &str = " rev ";
+
+/// `# notes.md rev 12: 3 open`
+fn inbox_header_start(document: &str, revision: u64, open: usize) -> String {
+    format!("# {document}{INBOX_REV}{revision}: {open} open")
+}
+
+/// `{stem}_review.txt`: what the agent reads. It follows every store write.
+/// A file there that pdf-next did not write is not overwritten.
+fn write_inbox(doc: &ReviewPath, store: &ReviewFile) -> Result<(), String> {
+    let name = review_inbox(doc).file_name().unwrap_or_default().to_owned();
+    let inbox = doc.sibling(&name);
+    let shown = name.to_string_lossy();
+    match inbox.open() {
+        Ok(mut file) => {
+            use std::io::Read;
+            let mut head = Vec::new();
+            file.by_ref()
+                .take(512)
+                .read_to_end(&mut head)
+                .map_err(|error| format!("{shown}: {error}"))?;
+            let head = String::from_utf8_lossy(&head);
+            let first = head.lines().next().unwrap_or("");
+            if !head.trim().is_empty() && !is_inbox_header(first) {
+                return Err(format!(
+                    "{shown} is not pdf-next's inbox; move it so the agent can read the comments"
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{shown}: {error}")),
+    }
+    write_atomic_bytes(
+        &inbox,
+        agent_view(store, &doc.file_name_string()).as_bytes(),
+    )
+    .map_err(|error| format!("{shown}: {error}"))
+}
+
+/// Lines an agent left in a version-0.18 `{stem}_review.done`: `<id> <what
+/// changed>` closes the Markdown comment. A line that cannot be applied (a
+/// question, a PDF, an id that is not here) keeps the file.
+fn apply_pending_done(doc: &ReviewPath, store: &mut ReviewFile) {
+    const LIMIT: u64 = 1024 * 1024;
+    let file = doc.sibling(format!("{}_review.done", document_stem(doc)));
+    let Ok(basename) = document_basename(doc) else {
+        store.origin.done_applied = false;
+        return;
+    };
+    let text = match file.metadata() {
+        Err(_) => {
+            store.origin.done_applied = true;
+            return;
+        }
+        Ok(metadata) if metadata.len() > LIMIT => {
+            store.origin.done_applied = false;
+            return;
+        }
+        Ok(_) => file.read_to_string(),
+    };
+    let Ok(text) = text else {
+        store.origin.done_applied = false;
+        return;
+    };
+    let mut all = true;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (id, note) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let note = note.trim();
+        let review = store
+            .reviews
+            .iter_mut()
+            .find(|review| review.id == id && review.file == basename && review.kind == "markdown");
+        match review {
+            Some(review)
+                if review_command::valid_id(id) && !note.is_empty() && !note.starts_with('?') =>
+            {
+                review.status = "done".into();
+                review.resolution = cut_bytes(note, 4_000).to_string();
+                review.closed_by = None;
+            }
+            _ => all = false,
+        }
+    }
+    store.origin.done_applied = all;
+}
+
+/// Read the new store back: the same number of comments, the same ids.
+fn confirm_migration(doc: &ReviewPath, store: &ReviewFile) -> Result<(), String> {
+    let text = doc
+        .sidecar()
+        .read_to_string()
+        .map_err(|error| format!("could not read the new review store back: {error}"))?;
+    let back = parse_store(&text)?;
+    let ids = |store: &ReviewFile| -> Vec<String> {
+        store
+            .reviews
+            .iter()
+            .map(|review| review.id.clone())
+            .collect()
+    };
+    if ids(&back) != ids(store) {
+        return Err("the new review store does not match the old one; the old files stay".into());
+    }
+    Ok(())
+}
+
+/// The files a version before 0.19 wrote for this document, which the new
+/// store replaces. Exact names, in the document's folder. The folder's own
+/// `_review.json` goes only when it was merged and every row in it names this
+/// document; a pending `.done` goes only when all its lines were applied.
+fn remove_migrated_files(doc: &ReviewPath, store: &ReviewFile) {
+    let name = |suffix: &str| format!("{}{suffix}", document_stem(doc));
+    let mut old = vec![
+        name("_review.json"),
+        name("_review.json.bak"),
+        name("_review.json.pre-v3.bak"), // legacy backup of a format 1 or 2 store
+        name("_review.json.lock"),
+        name("_review.agent.txt"),
+    ];
+    if store.origin.done_applied {
+        old.push(name("_review.done"));
+    }
+    if store.origin.legacy_folder && legacy_folder_is_only_this_document(doc) {
+        old.push(LEGACY_REVIEW_FILE.to_string());
+        old.push(format!("{LEGACY_REVIEW_FILE}.lock"));
+    }
+    for file in old {
+        let _ = doc.sibling(file).remove_file();
+    }
+}
+
+fn legacy_folder_is_only_this_document(doc: &ReviewPath) -> bool {
+    let Ok(basename) = document_basename(doc) else {
+        return false;
+    };
+    doc.sibling(LEGACY_REVIEW_FILE)
+        .read_to_string()
+        .ok()
+        .and_then(|text| parse_store(&text).ok())
+        .is_some_and(|old| old.reviews.iter().all(|review| review.file == basename))
 }
 
 /// Give every review that differs from the stored one, or has no stamp yet,
@@ -4184,6 +4541,7 @@ fn stamp_changes(prior: &ReviewFile, store: &mut ReviewFile) {
 fn store_json(store: &ReviewFile) -> Result<String, String> {
     let head = ReviewFile {
         reviews: Vec::new(),
+        inbox_warning: None,
         ..store.clone()
     };
     let head = serde_json::to_string(&head).map_err(|error| error.to_string())?;
@@ -4208,15 +4566,6 @@ fn store_json(store: &ReviewFile) -> Result<String, String> {
     Ok(out)
 }
 
-/// The document a sidecar belongs to, for the view header: `notes.md` from its
-/// reviews, or the stem of `notes_review.json` when there are none yet.
-fn sidecar_document_name(sidecar: &ReviewPath) -> String {
-    let name = sidecar.file_name_string();
-    name.strip_suffix("_review.json")
-        .unwrap_or(&name)
-        .to_string()
-}
-
 /// Quote text for the agent view: compatibility forms folded (the math
 /// alphabet's 𝑣 reads v), whitespace collapsed, cut on a word boundary.
 fn view_quote(quote: &str, limit: usize) -> String {
@@ -4232,33 +4581,6 @@ fn view_quote(quote: &str, limit: usize) -> String {
         _ => cut.as_str(),
     };
     format!("{}…", kept.trim_end())
-}
-
-/// One line of `{stem}_review.done`: `<id> <what changed>` closes the item,
-/// `<id> ? <question>` asks the reader. `None` for blank lines and comments,
-/// `Some(None)` for a line that is neither.
-fn inbox_line(line: &str) -> Option<Option<(&str, bool, &str)>> {
-    let line = line.trim();
-    if line.is_empty() || line.starts_with('#') {
-        return None;
-    }
-    let (id, text) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-    let text = text.trim();
-    let (asks, text) = match text.strip_prefix('?') {
-        Some(question) => (true, question.trim()),
-        None => (false, text),
-    };
-    Some((review_command::valid_id(id) && !text.is_empty()).then_some((id, asks, text)))
-}
-
-/// Lines of `{stem}_review.done` that are neither a close nor a question,
-/// 1-based. Blank lines and `#` comments are not counted.
-fn inbox_unread(inbox: &str) -> Vec<usize> {
-    inbox
-        .lines()
-        .enumerate()
-        .filter_map(|(index, line)| matches!(inbox_line(line), Some(None)).then_some(index + 1))
-        .collect()
 }
 
 /// Line or page where a review starts.
@@ -4329,13 +4651,6 @@ fn review_task(review: &Review) -> String {
     if !asked.is_empty() && !task.contains(&asked) {
         task = format!("{task} ({asked})");
     }
-    if !review.reply.is_empty() {
-        task.push_str(&format!(
-            "; you asked \"{}\", reader replied: \"{}\"",
-            one_line(&review.question),
-            one_line(&review.reply)
-        ));
-    }
     task
 }
 
@@ -4383,32 +4698,28 @@ fn done_usage(document: &str, id: &str, pdf: bool) -> String {
     )
 }
 
-const ASK_RULE: &str = "An ask item means the text is unclear: rewrite it so it answers that, and say in the done note what you changed";
+const ASK_RULE: &str = "An ask item means the text is unclear: rewrite it so it answers that";
 
-/// `{stem}_review.agent.txt`: one header line, then one line per open review,
-/// in reading order. Built for an agent's context window: the location, the
-/// task and enough of the quote to find the text.
-fn agent_view(store: &ReviewFile, stem: &str, inbox: &str) -> String {
-    agent_view_since(store, stem, inbox, None)
+/// What the header of the agent view says to do about the reader.
+const ASK_IN_TERMINAL: &str = "Ask the reader in your terminal, not through pdf-next";
+
+/// `{stem}_review.txt`: one header line, then one line per open review, in
+/// reading order. Built for an agent's context window: the location, the
+/// task and enough of the quote to find the text. With nothing open it is one
+/// line.
+fn agent_view(store: &ReviewFile, document_name: &str) -> String {
+    agent_view_since(store, document_name, None)
 }
 
 /// The agent view, with `since`: only the open items changed after that
 /// store revision. An item without a change stamp counts as changed.
-fn agent_view_since(store: &ReviewFile, stem: &str, inbox: &str, since: Option<u64>) -> String {
-    let (document, named) = view_document(store, stem);
+fn agent_view_since(store: &ReviewFile, document_name: &str, since: Option<u64>) -> String {
+    let (document, named) = view_document(store, document_name);
     let pdf = store.reviews.iter().any(|r| r.kind == "pdf") || document.ends_with(".pdf");
-    let waiting: Vec<&str> = store
-        .reviews
-        .iter()
-        .filter(|r| r.status == "question")
-        .map(|r| r.id.as_str())
-        .collect();
-    let applied = store
-        .reviews
-        .iter()
-        .filter(|r| r.status == "applied")
-        .count();
     let open = open_in_order(store);
+    if open.is_empty() {
+        return format!("# {document} rev {}: nothing open\n", store.revision);
+    }
     let listed: Vec<&Review> = open
         .iter()
         .copied()
@@ -4416,35 +4727,29 @@ fn agent_view_since(store: &ReviewFile, stem: &str, inbox: &str, since: Option<u
             since.is_none_or(|since| !stamps_current(store) || r.rev.is_none_or(|rev| rev > since))
         })
         .collect();
-    let mut out = format!("# {document} rev {}: {} open", store.revision, open.len());
+    let mut out = inbox_header_start(&document, store.revision, open.len());
     if let Some(since) = since {
         out.push_str(&format!(" ({} changed since rev {since})", listed.len()));
     }
-    if !waiting.is_empty() {
+    out.push_str(". Read the open items, edit ");
+    if pdf {
         out.push_str(&format!(
-            ", {} waiting on the reader ({})",
-            waiting.len(),
-            waiting.join(" ")
+            "the LaTeX source and build. Close an item: {}",
+            done_usage(&document, "<id>", true)
+        ));
+    } else {
+        out.push_str(&format!(
+            "{document}. pdf-next marks a Markdown item done when its quoted text is edited or removed, once the file has been quiet for 2 seconds, and only for an item it has seen in place. Any other item (words kept: bold, italic, define, gloss, check, expand, a request) stays open: close it with {}",
+            done_usage(&document, "<id>", false)
         ));
     }
-    out.push_str(&format!(
-        ", {applied} applied. Fix each in the source. Done: {} (or the line \"<id> <what you changed>\" in {stem}_review.done). Unclear: pdf-next reviews ask {document} <id> \"<question>\"",
-        done_usage(&document, "<id>", pdf),
-    ));
+    out.push_str(&format!(". {ASK_IN_TERMINAL}"));
     if listed
         .iter()
         .any(|r| r.requests.iter().any(|q| q.starts_with("ask:")))
     {
         out.push_str(". ");
         out.push_str(ASK_RULE);
-    }
-    let unread = inbox_unread(inbox);
-    if !unread.is_empty() {
-        let list: Vec<String> = unread.iter().map(usize::to_string).collect();
-        out.push_str(&format!(
-            ". Unread {stem}_review.done lines: {}",
-            list.join(", ")
-        ));
     }
     out.push('\n');
     for review in listed {
@@ -4459,20 +4764,8 @@ fn agent_view_since(store: &ReviewFile, stem: &str, inbox: &str, since: Option<u
 fn next_view(store: &ReviewFile, stem: &str, source: Option<&str>) -> String {
     let (document, named) = view_document(store, stem);
     let open = open_in_order(store);
-    let waiting = store
-        .reviews
-        .iter()
-        .filter(|r| r.status == "question")
-        .count();
     let Some(review) = open.first().copied() else {
-        return format!(
-            "# {document}: nothing open{}",
-            if waiting > 0 {
-                format!(", {waiting} waiting on the reader")
-            } else {
-                String::new()
-            }
-        );
+        return format!("# {document}: nothing open");
     };
     let mut item = review.clone();
     let lines = source.and_then(|source| quote_lines(source, review));
@@ -4481,10 +4774,16 @@ fn next_view(store: &ReviewFile, stem: &str, source: Option<&str>) -> String {
         item.at.end = (last > first).then_some(*last);
     }
     let mut out = format!(
-        "# {document}: {} open. Done: {} (unclear: pdf-next reviews ask {document} {} \"<question>\")",
+        "# {document}: {} open. {} ({ASK_IN_TERMINAL})",
         open.len(),
-        done_usage(&document, &review.id, review.kind == "pdf"),
-        review.id,
+        if review.kind == "pdf" {
+            format!("Close it: {}", done_usage(&document, &review.id, true))
+        } else {
+            format!(
+                "Edit the quoted text, then close it: {}",
+                done_usage(&document, &review.id, false)
+            )
+        },
     );
     if review.requests.iter().any(|q| q.starts_with("ask:")) {
         out.push_str(". ");
@@ -4544,56 +4843,6 @@ fn quote_lines(source: &str, review: &Review) -> Option<(u32, u32, String)> {
     Some((first, last, out))
 }
 
-/// Close reviews from `{stem}_review.done`: each line `<id> <what changed>`
-/// marks that review applied, with the text as its resolution, and a line
-/// `<id> ? <question>` asks the reader about an open one. The file is only
-/// read. A later line for an ID wins; an ID no longer in the store is
-/// skipped. A line is applied only when it differs from what the review
-/// holds, so applying the file again changes nothing, and a review you
-/// reopened, or that the reader answered, stays open until a new line for it
-/// arrives. Returns whether anything changed.
-fn apply_inbox(store: &mut ReviewFile, inbox: &str) -> bool {
-    let mut last: Vec<(String, bool, String)> = Vec::new();
-    for line in inbox.lines() {
-        let Some(Some((id, asks, text))) = inbox_line(line) else {
-            continue;
-        };
-        let text = cut_bytes(text, if asks { 2_000 } else { 4_000 }).to_string();
-        last.retain(|(seen, _, _)| seen != id);
-        last.push((id.to_string(), asks, text));
-    }
-    let mut changed = false;
-    for (id, asks, text) in last {
-        let Some(review) = store.reviews.iter_mut().find(|review| review.id == id) else {
-            continue;
-        };
-        if asks {
-            if review.status == "open" && review.question != text {
-                ask_reader(review, &text);
-                changed = true;
-            }
-            continue;
-        }
-        if review.resolution == text {
-            continue;
-        }
-        review.status = "applied".into();
-        review.resolution = text;
-        if review.kind == "pdf"
-            && review
-                .build
-                .as_ref()
-                .and_then(|b| b.get("success"))
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-        {
-            review.build = Some(serde_json::json!({ "success": true, "reportedBy": "done inbox" }));
-        }
-        changed = true;
-    }
-    changed
-}
-
 /// At most `limit` bytes of `text`, cut on a character boundary: the store
 /// limits are bytes.
 fn cut_bytes(text: &str, limit: usize) -> &str {
@@ -4604,56 +4853,20 @@ fn cut_bytes(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
-/// Put a question to the reader: the item waits until the app saves a reply.
-fn ask_reader(review: &mut Review, question: &str) {
-    review.status = "question".into();
-    review.question = question.trim().to_string();
-    review.reply.clear();
-}
-
-/// Largest `{stem}_review.done` read.
-const INBOX_LIMIT: u64 = 1024 * 1024;
-
-fn read_inbox(sidecar: &ReviewPath) -> String {
-    let inbox = sidecar.with_extension("done");
-    match inbox.metadata() {
-        Ok(metadata) if metadata.len() <= INBOX_LIMIT => inbox.read_to_string().unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
-/// Apply the done inbox of a document under the store lock. True when the
-/// store changed.
-fn apply_done_inbox(doc_path: &ReviewPath) -> Result<bool, String> {
-    let sidecar_path = doc_path.sidecar();
-    let inbox = read_inbox(&sidecar_path);
-    if inbox.trim().is_empty() {
-        return Ok(false);
-    }
-    let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(doc_path)?;
-    if !apply_inbox(&mut store, &inbox) {
-        return Ok(false);
-    }
-    save_store(&sidecar, &mut store)?;
-    Ok(true)
-}
-
-/// The agent view of a document's store, as `{stem}_review.agent.txt` holds
-/// it, or with `since` only the items changed after that revision.
+/// The agent view of a document's store, as `{stem}_review.txt` holds it, or
+/// with `since` only the items changed after that revision.
 fn review_brief(doc_path: &ReviewPath, since: Option<u64>) -> Result<String, String> {
-    let (sidecar, store) = load_store(doc_path)?;
+    let store = load_store(doc_path)?;
     Ok(agent_view_since(
         &store,
-        &sidecar_document_name(&sidecar),
-        &read_inbox(&sidecar),
+        &doc_path.file_name_string(),
         since,
     ))
 }
 
 /// `reviews next`: the first open item, with its source lines for Markdown.
 fn review_next(doc_path: &ReviewPath) -> Result<String, String> {
-    let (sidecar, store) = load_store(doc_path)?;
+    let store = load_store(doc_path)?;
     let source = if kind_for(doc_path) == "markdown" {
         Some(read_markdown_source(doc_path)?)
     } else {
@@ -4661,7 +4874,7 @@ fn review_next(doc_path: &ReviewPath) -> Result<String, String> {
     };
     Ok(next_view(
         &reviews_for_file(store, &document_basename(doc_path)?),
-        &sidecar_document_name(&sidecar),
+        &doc_path.file_name_string(),
         source.as_deref(),
     ))
 }
@@ -4675,9 +4888,9 @@ fn read_markdown_source(doc_path: &ReviewPath) -> Result<String, String> {
     doc_path.read_to_string().map_err(|error| error.to_string())
 }
 
-/// `pdf-next reviews done`: mark one review applied with what was changed.
+/// `pdf-next reviews done`: mark one review done with what was changed.
 /// For a PDF, `built` is the build command that succeeded; a PDF review is
-/// never marked applied without one.
+/// never marked done without one.
 fn mark_review_done(
     doc_path: &ReviewPath,
     id: &str,
@@ -4685,9 +4898,8 @@ fn mark_review_done(
     built: Option<&str>,
 ) -> Result<ReviewFile, String> {
     let basename = document_basename(doc_path)?;
-    let sidecar_path = doc_path.sidecar();
-    let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(doc_path)?;
+    let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
+    let mut store = load_store(doc_path)?;
     let review = store
         .reviews
         .iter_mut()
@@ -4698,33 +4910,10 @@ fn mark_review_done(
             built.ok_or("a PDF review needs --built \"<the build command that succeeded>\"")?;
         review.build = Some(serde_json::json!({ "success": true, "command": command }));
     }
-    review.status = "applied".into();
+    review.status = "done".into();
+    review.closed_by = None;
     review.resolution = text.trim().to_string();
-    save_store(&sidecar, &mut store)?;
-    Ok(reviews_for_file(store, &basename))
-}
-
-/// `pdf-next reviews ask`: the agent cannot do an open item without the
-/// reader. It waits as `question` until the reader replies in the app.
-fn ask_review_question(
-    doc_path: &ReviewPath,
-    id: &str,
-    question: &str,
-) -> Result<ReviewFile, String> {
-    let basename = document_basename(doc_path)?;
-    let sidecar_path = doc_path.sidecar();
-    let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(doc_path)?;
-    let review = store
-        .reviews
-        .iter_mut()
-        .find(|review| review.id == id && review.file == basename)
-        .ok_or_else(|| format!("{id} is not a review of {basename}"))?;
-    if review.status != "open" {
-        return Err(format!("{id} is {}, not open", review.status));
-    }
-    ask_reader(review, question);
-    save_store(&sidecar, &mut store)?;
+    save_store(doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -4772,6 +4961,85 @@ fn add_review_record(
     Ok((id, store))
 }
 
+/// Where an open Markdown review stands in the source as it is now.
+enum Place {
+    /// The quoted words are there, at these characters of the rendered text.
+    Intact(usize, usize),
+    /// The words were edited; this is what stands there now.
+    Edited(usize, usize),
+    /// Neither the words nor a close edit of them are in the text.
+    Gone,
+    /// The place cannot be told: a repeated quote with no context to choose by,
+    /// or a quote too short to search for.
+    Unsure,
+}
+
+/// Find a review in the rendered text, as the app finds it, then with a fuzzy
+/// search near its old line for a quote the app's rules cannot place.
+fn place_review(text: &review_locate::Rendered, review: &Review) -> Place {
+    let anchor = review.anchor.clone().unwrap_or_default();
+    let near = review
+        .at
+        .line
+        .and_then(|line| text.block_lines.iter().position(|at| *at >= line))
+        .unwrap_or(0);
+    if review_locate::normalize(&review.quote).len() < 2 {
+        return Place::Unsure;
+    }
+    match review_locate::resolve(
+        &text.chars,
+        &review.quote,
+        anchor.prefix.as_deref().unwrap_or(""),
+        anchor.suffix.as_deref().unwrap_or(""),
+    ) {
+        review_locate::Found::Located { start, end, .. } => Place::Intact(start, end),
+        // The words changed: the quote stays as the reader made it, and
+        // its lines follow the text that stands there now.
+        review_locate::Found::Changed { start, end } => Place::Edited(start, end),
+        review_locate::Found::Ambiguous(all) => all
+            .into_iter()
+            .min_by_key(|(start, _)| start.abs_diff(near))
+            .filter(|_| anchor.prefix.is_some() || anchor.suffix.is_some())
+            .map_or(Place::Unsure, |(start, end)| Place::Intact(start, end)),
+        // The quote is in the text but the rules could not tell where it
+        // belongs (a short quote whose neighbours changed): it is not gone.
+        review_locate::Found::Unlocated
+            if review_locate::count_exact(&text.chars, &review.quote) > 0 =>
+        {
+            Place::Unsure
+        }
+        review_locate::Found::Unlocated => review_locate::fuzzy(&text.chars, &review.quote, near)
+            .map_or(Place::Gone, |(start, end)| Place::Edited(start, end)),
+    }
+}
+
+/// Record the lines and the context where a review was found. True when
+/// anything differs from what the review held.
+fn record_place(
+    review: &mut Review,
+    text: &review_locate::Rendered,
+    (start, end): (usize, usize),
+    digest: &str,
+) -> bool {
+    let anchor = review.anchor.clone().unwrap_or_default();
+    let line = text.block_lines[start];
+    let last = text.block_lines[end - 1].max(line);
+    let (prefix, suffix) = review_locate::context_at(&text.chars, start, end);
+    let lines = (review.at.line, review.at.end);
+    review.at.line = Some(line);
+    review.at.end = (last > line).then_some(last);
+    let context = (Some(prefix), Some(suffix));
+    if context != (anchor.prefix.clone(), anchor.suffix.clone())
+        || lines != (review.at.line, review.at.end)
+    {
+        let moved_anchor = review.anchor.get_or_insert_with(ReviewAnchor::default);
+        (moved_anchor.prefix, moved_anchor.suffix) = context;
+        moved_anchor.document_revision = Some(digest.to_string());
+        return true;
+    }
+    false
+}
+
 /// What `relocate` did with one review.
 #[derive(Debug, PartialEq)]
 enum Relocated {
@@ -4783,7 +5051,7 @@ enum Relocated {
 /// `pdf-next reviews relocate`: find each open Markdown review in the source
 /// as it is now, and record its lines and context, as the app does while it
 /// shows the file. A quote the app's rules cannot place is looked for with a
-/// fuzzy search near its old line. Applied and resolved items are left alone.
+/// fuzzy search near its old line. Done items are left alone.
 fn relocate_reviews(
     document: &str,
     expected_revision: Option<u64>,
@@ -4795,9 +5063,8 @@ fn relocate_reviews(
         return Err("relocate is for Markdown documents".into());
     }
     let basename = document_basename(&doc_path)?;
-    let sidecar_path = doc_path.sidecar();
-    let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
+    let mut store = load_store(&doc_path)?;
     if let Some(revision) = expected_revision {
         if revision != store.revision {
             return Err(format!(
@@ -4811,53 +5078,19 @@ fn relocate_reviews(
     let text = review_locate::rendered(&source);
     let mut report = Vec::new();
     let mut changed = false;
-    for review in store.reviews.iter_mut().filter(|review| {
-        review.file == basename && matches!(review.status.as_str(), "open" | "question")
-    }) {
+    for review in store
+        .reviews
+        .iter_mut()
+        .filter(|review| review.file == basename && review.status == "open")
+    {
         let from = review_location(review);
-        let anchor = review.anchor.clone().unwrap_or_default();
-        let near = review
-            .at
-            .line
-            .and_then(|line| text.block_lines.iter().position(|at| *at >= line))
-            .unwrap_or(0);
-        let found = match review_locate::resolve(
-            &text.chars,
-            &review.quote,
-            anchor.prefix.as_deref().unwrap_or(""),
-            anchor.suffix.as_deref().unwrap_or(""),
-        ) {
-            review_locate::Found::Located { start, end, .. } => Some((start, end)),
-            // The words changed: the quote stays as the reader made it, and
-            // its lines follow the text that stands there now.
-            review_locate::Found::Changed { start, end } => Some((start, end)),
-            review_locate::Found::Ambiguous(all) => all
-                .into_iter()
-                .min_by_key(|(start, _)| start.abs_diff(near))
-                .filter(|_| anchor.prefix.is_some() || anchor.suffix.is_some()),
-            review_locate::Found::Unlocated => {
-                review_locate::fuzzy(&text.chars, &review.quote, near)
-            }
-        };
-        let Some((start, end)) = found else {
+        let (Place::Intact(start, end) | Place::Edited(start, end)) = place_review(&text, review)
+        else {
             report.push((review.id.clone(), Relocated::NotFound));
             continue;
         };
-        let line = text.block_lines[start];
-        let last = text.block_lines[end - 1].max(line);
-        let (prefix, suffix) = review_locate::context_at(&text.chars, start, end);
         let lines = (review.at.line, review.at.end);
-        review.at.line = Some(line);
-        review.at.end = (last > line).then_some(last);
-        let context = (Some(prefix), Some(suffix));
-        if context != (anchor.prefix.clone(), anchor.suffix.clone())
-            || lines != (review.at.line, review.at.end)
-        {
-            let moved_anchor = review.anchor.get_or_insert_with(ReviewAnchor::default);
-            (moved_anchor.prefix, moved_anchor.suffix) = context;
-            moved_anchor.document_revision = Some(digest.clone());
-            changed = true;
-        }
+        changed |= record_place(review, &text, (start, end), &digest);
         report.push((
             review.id.clone(),
             if lines == (review.at.line, review.at.end) {
@@ -4871,9 +5104,217 @@ fn relocate_reviews(
         ));
     }
     if changed && !dry_run {
-        save_store(&sidecar, &mut store)?;
+        save_store(&doc_path, &mut store)?;
     }
     Ok((report, reviews_for_file(store, &basename)))
+}
+
+/// What pdf-next writes as the resolution of a comment it closes itself.
+const CLOSED_EDITED: &str = "closed by pdf-next: quoted text edited";
+const CLOSED_REMOVED: &str = "closed by pdf-next: quoted text removed";
+/// `closedBy` of a comment pdf-next closed on its own.
+const CLOSED_BY: &str = "pdf-next";
+
+/// A file written in the last two seconds may be half written (a writer that
+/// truncates and then writes, a branch switch): settle leaves it for later.
+const QUIET_BEFORE_SETTLE: Duration = Duration::from_secs(2);
+/// A modification time further ahead than this does not count as recent.
+const FUTURE_MTIME_SLACK: Duration = Duration::from_secs(5);
+/// The watcher settles a changed file again this long after the change.
+const SETTLE_AGAIN_AFTER: Duration = Duration::from_millis(2_500);
+
+fn written_recently(doc_path: &ReviewPath) -> bool {
+    let modified = doc_path
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map(cap_std::time::SystemTime::into_std);
+    match modified {
+        // A time in the future by more than a clock's wobble is a file that
+        // was stamped on purpose (a copy, a build tool), not a write in
+        // progress: waiting for it would block settle for good.
+        Ok(modified) => match SystemTime::now().duration_since(modified) {
+            Ok(age) => age < QUIET_BEFORE_SETTLE,
+            Err(ahead) => ahead.duration() <= FUTURE_MTIME_SLACK,
+        },
+        // A clock or a file system that cannot say: wait rather than guess.
+        Err(_) => true,
+    }
+}
+
+/// What settle did to the store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Settled {
+    Nothing,
+    /// Only digests were stamped: nothing a reader or an agent would see.
+    Stamps,
+    /// A comment closed, reopened or moved.
+    Changes,
+}
+
+/// A comment is closed by pdf-next only when its quote was seen in place at
+/// some digest (`verifiedDigest`), is not there now, and the file looks
+/// finished. A comment left open by mistake costs one click; a comment closed
+/// by mistake costs the reader's work.
+///
+/// Per Markdown comment of the file:
+/// - open: found unchanged, it follows its text and is verified; edited or
+///   not found, it is closed if verified and otherwise marked unverifiable and
+///   left open; a place that cannot be told leaves it as it is. A comment the
+///   reader reopened is left alone on the text it was reopened on.
+/// - closed by pdf-next: when its quote is found unchanged again, it is open
+///   again. Comments closed by the reader or by `done` are never touched.
+fn settle_reviews(store: &mut ReviewFile, source: &str, basename: &str) -> Settled {
+    let digest = text_sha256(source);
+    let mut text = None;
+    let mut settled = Settled::Nothing;
+    for review in store
+        .reviews
+        .iter_mut()
+        .filter(|review| review.file == basename && review.kind == "markdown")
+    {
+        let placed_here = review
+            .anchor
+            .as_ref()
+            .and_then(|anchor| anchor.document_revision.as_deref())
+            == Some(digest.as_str());
+        let auto_closed = review.status == "done" && review.closed_by.as_deref() == Some(CLOSED_BY);
+        if review.status == "open" {
+            if review.reopened_at.as_deref() == Some(digest.as_str()) {
+                continue;
+            }
+            if placed_here && (review.verified_digest.is_some() || review.unverifiable) {
+                continue;
+            }
+        } else if !auto_closed || placed_here {
+            continue;
+        }
+        // The text moved on from the one the reader reopened it on.
+        let was_held = review.reopened_at.take().is_some();
+        let text = text.get_or_insert_with(|| review_locate::rendered(source));
+        let place = place_review(text, review);
+        // The renderer has no text for raw HTML: a quote still on the page
+        // inside a tag is not gone.
+        let place =
+            if matches!(place, Place::Gone) && review_locate::quote_in_raw(source, &review.quote) {
+                Place::Unsure
+            } else {
+                place
+            };
+        let stamp = |review: &mut Review| {
+            review
+                .anchor
+                .get_or_insert_with(ReviewAnchor::default)
+                .document_revision = Some(digest.clone());
+        };
+        let result = match place {
+            Place::Intact(start, end) => {
+                let moved = record_place(review, text, (start, end), &digest);
+                stamp(review);
+                review.verified_digest = Some(digest.clone());
+                review.unverifiable = false;
+                if auto_closed {
+                    review.status = "open".into();
+                    review.closed_by = None;
+                    review.resolution.clear();
+                    Settled::Changes
+                } else if moved {
+                    Settled::Changes
+                } else {
+                    Settled::Stamps
+                }
+            }
+            Place::Edited(..) | Place::Gone if auto_closed => {
+                stamp(review);
+                Settled::Stamps
+            }
+            Place::Edited(..) | Place::Gone if review.verified_digest.is_none() => {
+                review.unverifiable = true;
+                stamp(review);
+                Settled::Stamps
+            }
+            Place::Edited(..) | Place::Gone => {
+                review.status = "done".into();
+                review.closed_by = Some(CLOSED_BY.into());
+                review.resolution = if matches!(place, Place::Edited(..)) {
+                    CLOSED_EDITED
+                } else {
+                    CLOSED_REMOVED
+                }
+                .into();
+                stamp(review);
+                Settled::Changes
+            }
+            Place::Unsure => Settled::Nothing,
+        };
+        settled = settled.max(if was_held {
+            result.max(Settled::Stamps)
+        } else {
+            result
+        });
+    }
+    settled
+}
+
+/// Bring a document's store up to date: move a store from before 0.19 to its
+/// new place, and for Markdown close the comments whose text was edited or
+/// removed (see `settle_reviews`). Runs when the app opens a file, when the
+/// file changes (and again once it has been quiet), and at the start of every
+/// CLI command. Writes only when something changed, and bumps the revision
+/// only for a change a reader or an agent would see. True when it wrote.
+fn settle_document(doc_path: &ReviewPath) -> Result<bool, String> {
+    let sidecar = doc_path.sidecar();
+    let any_store = sidecar.exists()
+        || doc_path
+            .sibling(
+                legacy_review_sidecar(doc_path)
+                    .file_name()
+                    .unwrap_or_default(),
+            )
+            .exists()
+        || doc_path.sibling(LEGACY_REVIEW_FILE).exists();
+    if !any_store {
+        return Ok(false);
+    }
+    let markdown = kind_for(doc_path) == "markdown";
+    let basename = document_basename(doc_path)?;
+    let has_work = |store: &ReviewFile| {
+        markdown
+            && store.reviews.iter().any(|review| {
+                review.file == basename
+                    && review.kind == "markdown"
+                    && (review.status == "open"
+                        || (review.status == "done"
+                            && review.closed_by.as_deref() == Some(CLOSED_BY)))
+            })
+    };
+    // Look first without the lock: a document with nothing to settle gets no
+    // folder, no lock file and no inbox file.
+    let preview = load_store(doc_path)?;
+    if !preview.origin.old_files && !has_work(&preview) {
+        return Ok(false);
+    }
+    // A folder that does not let us create the lock file cannot be written
+    // to either: nothing to settle.
+    let Some(_lock) = ReviewLock::acquire_for_read(&sidecar)? else {
+        return Ok(false);
+    };
+    let mut store = load_store(doc_path)?;
+    let mut settled = if store.origin.old_files {
+        Settled::Changes
+    } else {
+        Settled::Nothing
+    };
+    if has_work(&store) {
+        let source = read_markdown_source(doc_path)?;
+        if !source.trim().is_empty() && !written_recently(doc_path) {
+            settled = settled.max(settle_reviews(&mut store, &source, &basename));
+        }
+    }
+    if settled == Settled::Nothing {
+        return Ok(false);
+    }
+    save_store_as(doc_path, &mut store, settled == Settled::Changes)?;
+    Ok(true)
 }
 
 fn write_atomic_bytes(destination: &ReviewPath, bytes: &[u8]) -> Result<(), String> {
@@ -4912,32 +5353,38 @@ fn review_fingerprint(review: &Review) -> String {
     )
 }
 
-/// Load `{stem}_review.json`, then fold in matching rows from a leftover
-/// folder `_review.json`. The merge stays in memory until the next write.
-fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String> {
+/// Load the store `.pdf-next/{stem}.json`; when there is none, the pre-0.19
+/// `{stem}_review.json`; when there is neither, fold in the matching rows of
+/// a leftover folder `_review.json`. What came from the old files is written
+/// in the new place by the next save, which then removes them.
+fn load_store(doc_path: &ReviewPath) -> Result<ReviewFile, String> {
     let sidecar = doc_path.sidecar();
-    let migrated = sidecar.exists();
-    let mut store = if migrated {
-        parse_store(
-            &sidecar
-                .read_to_string()
-                .map_err(|error| error.to_string())?,
-        )?
+    let old = doc_path.sibling(
+        legacy_review_sidecar(doc_path)
+            .file_name()
+            .unwrap_or_default(),
+    );
+    let current = sidecar.exists();
+    let from_old = !current && old.exists();
+    let mut store = if current || from_old {
+        let source = if current { &sidecar } else { &old };
+        parse_store(&source.read_to_string().map_err(|error| error.to_string())?)?
     } else {
         empty_store()
     };
+    store.origin.old_files = from_old;
     if let Ok(basename) = document_basename(doc_path) {
         adopt_reviews(&mut store, &basename, kind_for(doc_path));
     }
-    // Format 3 is checked after adoption, so a record without `file` or
-    // `kind` gets this document's values first, as format 2 always did.
-    if migrated && store.migration_backup.is_none() {
+    // Format 3 and 4 are checked after adoption, so a record without `file`
+    // or `kind` gets this document's values first, as format 2 always did.
+    if (current || from_old) && !store.origin.lenient {
         for review in &store.reviews {
             validate_review(review).map_err(|error| format!("review {}: {error}", review.id))?;
         }
     }
     let legacy = doc_path.sibling(LEGACY_REVIEW_FILE);
-    if !migrated && legacy.exists() {
+    if !current && !from_old && legacy.exists() {
         let basename = doc_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -4950,9 +5397,11 @@ fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String>
                 .and_then(|value| value.get("format").and_then(serde_json::Value::as_u64))
                 .unwrap_or(2);
         let have: HashSet<String> = store.reviews.iter().map(review_fingerprint).collect();
+        let mut merged = 0;
         for review in old.reviews {
             if review.file == basename && !have.contains(&review_fingerprint(&review)) {
                 store.reviews.push(review);
+                merged += 1;
             }
         }
         ensure_ids(&mut store.reviews)?;
@@ -4964,9 +5413,11 @@ fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String>
             .unwrap_or(0)
             .checked_add(1)
             .ok_or("review id limit reached")?;
-        if old_format < 3 && store.migration_backup.is_none() {
-            store.migration_backup = Some(raw);
-        }
+        // A folder file with nothing of this document's is not this
+        // document's to migrate or to remove.
+        store.origin.old_files = merged > 0;
+        store.origin.legacy_folder = merged > 0;
+        store.origin.lenient = old_format < 3;
     }
     if kind_for(doc_path) == "pdf" {
         let basename = document_basename(doc_path)?;
@@ -4984,7 +5435,7 @@ fn load_store(doc_path: &ReviewPath) -> Result<(ReviewPath, ReviewFile), String>
                 .map(str::to_string);
         }
     }
-    Ok((sidecar, store))
+    Ok(store)
 }
 
 fn reviews_for_file(store: ReviewFile, basename: &str) -> ReviewFile {
@@ -5000,21 +5451,34 @@ fn reviews_for_file(store: ReviewFile, basename: &str) -> ReviewFile {
             .collect(),
         stamped: store.stamped,
         extra: store.extra,
-        migration_backup: None,
+        inbox_warning: store.inbox_warning,
+        origin: Origin::default(),
     }
 }
 
 fn read_snapshot(doc_path: &ReviewPath) -> Result<Option<ReviewFile>, String> {
     let sidecar = doc_path.sidecar();
+    let old = doc_path.sibling(
+        legacy_review_sidecar(doc_path)
+            .file_name()
+            .unwrap_or_default(),
+    );
     let legacy = doc_path.sibling(LEGACY_REVIEW_FILE);
-    if !sidecar.exists() && !legacy.exists() {
+    if !sidecar.exists() && !old.exists() && !legacy.exists() {
         return Ok(None);
     }
-    // Saves replace the sidecar by rename, so an unlocked read never sees a
+    // Saves replace the store by rename, so an unlocked read never sees a
     // partial file. A read-only folder cannot hold the lock file.
-    let _lock = ReviewLock::acquire_for_read(&sidecar)?;
+    // A read does not create the hidden folder: with only the old files
+    // present there is no lock to take, and the save that migrates them
+    // takes it.
+    let _lock = if sidecar.exists() {
+        ReviewLock::acquire_for_read(&sidecar)?
+    } else {
+        None
+    };
     let basename = document_basename(doc_path)?;
-    let (_sidecar, store) = load_store(doc_path)?;
+    let store = load_store(doc_path)?;
     Ok(Some(reviews_for_file(store, &basename)))
 }
 
@@ -5044,13 +5508,14 @@ fn document_basename(doc_path: &Path) -> Result<String, String> {
         .ok_or_else(|| "could not read the file name".to_string())
 }
 
-/// Read-merge-write `{stem}_review.json` next to an open document.
+/// Read-merge-write the store `.pdf-next/{stem}.json` of an open document.
 fn write_review(
     document: &str,
     mut review: Review,
     allowed: &AllowedDocuments,
 ) -> Result<ReviewFile, String> {
     validate_review(&review)?;
+    pdf_done_needs_build(&review)?;
     let doc_path = open_review_document(document, allowed)?;
     let kind = kind_for(&doc_path);
     if review.kind != kind {
@@ -5074,8 +5539,12 @@ fn write_review(
             .get_or_insert_with(ReviewAnchor::default)
             .document_revision = Some(digest);
     }
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     drop_redundant_end(&mut review);
+    // Seen in place on this text, the comment may later be closed by pdf-next.
+    if let Ok(source) = read_markdown_source(&doc_path) {
+        verify_in_place(&mut review, &source);
+    }
     review.id = next_review_id(&store)?;
     review.color = choose_review_color(&store, &review);
     store.next_id = store
@@ -5083,7 +5552,7 @@ fn write_review(
         .checked_add(1)
         .ok_or("review id limit reached")?;
     store.reviews.push(review);
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -5093,7 +5562,7 @@ fn list_reviews(document: &str, allowed: &AllowedDocuments) -> Result<ReviewFile
     match read_snapshot(&doc_path)? {
         Some(snapshot) => Ok(snapshot),
         None => {
-            let (_sidecar, store) = load_store(&doc_path)?;
+            let store = load_store(&doc_path)?;
             Ok(reviews_for_file(store, &basename))
         }
     }
@@ -5115,7 +5584,7 @@ fn change_review_comment(
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
     let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     let Some(review) = store
         .reviews
         .iter_mut()
@@ -5127,7 +5596,7 @@ fn change_review_comment(
         return Err("review conflict: comment changed on disk".into());
     }
     review.comment = comment.trim().to_string();
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -5143,7 +5612,7 @@ fn remove_review(
     let doc_path = open_review_document(document, allowed)?;
     let basename = document_basename(&doc_path)?;
     let _lock = ReviewLock::acquire(&doc_path.sidecar())?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     let before = store.reviews.len();
     store
         .reviews
@@ -5151,7 +5620,7 @@ fn remove_review(
     if store.reviews.len() == before {
         return Err("review not found".into());
     }
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -5189,7 +5658,7 @@ fn remove_review_cas(
     let basename = document_basename(&doc_path)?;
     let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     let index = store
         .reviews
         .iter()
@@ -5200,7 +5669,7 @@ fn remove_review_cas(
         return Err("review conflict: record changed on disk".into());
     }
     store.reviews.remove(index);
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -5229,7 +5698,7 @@ fn restore_review_record(
     }
     let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     if let Some(revision) = expected_revision {
         if revision != store.revision {
             return Err(format!(
@@ -5252,6 +5721,7 @@ fn restore_review_record(
         return Err(format!("{} already exists", review.id));
     }
     validate_review(&review)?;
+    pdf_done_needs_build(&review)?;
     let mut review = review;
     drop_redundant_end(&mut review);
     let index = store
@@ -5266,16 +5736,8 @@ fn restore_review_record(
         })
         .unwrap_or(store.reviews.len());
     store.reviews.insert(index, review);
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
-}
-
-/// Who sends a patch. Only the agent's side (the CLI) puts a question to the
-/// reader; the app answers it with `reply`.
-#[derive(Clone, Copy, PartialEq)]
-enum PatchFrom {
-    App,
-    Cli,
 }
 
 fn patch_review_record(
@@ -5285,26 +5747,6 @@ fn patch_review_record(
     expected: &serde_json::Value,
     allowed: &AllowedDocuments,
     dry_run: bool,
-) -> Result<ReviewFile, String> {
-    patch_review_from(
-        document,
-        id,
-        patch,
-        expected,
-        allowed,
-        dry_run,
-        PatchFrom::Cli,
-    )
-}
-
-fn patch_review_from(
-    document: &str,
-    id: &str,
-    patch: &serde_json::Value,
-    expected: &serde_json::Value,
-    allowed: &AllowedDocuments,
-    dry_run: bool,
-    from: PatchFrom,
 ) -> Result<ReviewFile, String> {
     const PATCHABLE: &[&str] = &[
         "quote",
@@ -5316,8 +5758,6 @@ fn patch_review_from(
         "color",
         "anchor",
         "at",
-        "question",
-        "reply",
     ];
     let changes = patch
         .as_object()
@@ -5329,7 +5769,7 @@ fn patch_review_from(
         return Err("patch must contain at least one field".into());
     }
     for key in changes.keys() {
-        if !PATCHABLE.contains(&key.as_str()) || (from == PatchFrom::App && key == "question") {
+        if !PATCHABLE.contains(&key.as_str()) {
             return Err(format!("unsupported review patch field: {key}"));
         }
         if !expected.contains_key(key) && !expected.contains_key("$revision") {
@@ -5342,7 +5782,7 @@ fn patch_review_from(
     let basename = document_basename(&doc_path)?;
     let sidecar_path = doc_path.sidecar();
     let _lock = ReviewLock::acquire(&sidecar_path)?;
-    let (sidecar, mut store) = load_store(&doc_path)?;
+    let mut store = load_store(&doc_path)?;
     if let Some(revision) = expected.get("$revision") {
         let revision = revision
             .as_u64()
@@ -5364,8 +5804,7 @@ fn patch_review_from(
         .as_object()
         .cloned()
         .ok_or_else(|| "could not serialize review".to_string())?;
-    // Every expected field is checked, patched or not: a reply names the
-    // question it answers.
+    // Every expected field is checked, patched or not.
     for (key, expected_value) in expected {
         let actual = current.get(key).unwrap_or(&serde_json::Value::Null);
         if key != "$revision" && !same_json(expected_value, actual) {
@@ -5377,12 +5816,52 @@ fn patch_review_from(
     }
     let mut patched: Review = serde_json::from_value(serde_json::Value::Object(current))
         .map_err(|error| format!("invalid review patch: {error}"))?;
-    // A reply answers the question: the item is the agent's again.
-    if changes.contains_key("reply") && !patched.reply.is_empty() && patched.status == "question" {
-        patched.status = "open".into();
+    // A build proves a PDF comment: it goes to done with one, and a done
+    // comment does not take a failed build.
+    if review.status != "done" || changes.contains_key("build") {
+        pdf_done_needs_build(&patched)?;
     }
-    if from == PatchFrom::App && patched.status == "question" && review.status != "question" {
-        return Err("only the agent puts a question to the reader".into());
+    // The reader reopens a done comment: it is looked at again only after
+    // the text changes, and closed again only once its quote was seen in
+    // place first.
+    if review.status == "done" && patched.status == "open" {
+        patched.closed_by = None;
+        patched.verified_digest = None;
+        patched.unverifiable = false;
+        if review.closed_by.as_deref() == Some(CLOSED_BY) {
+            patched.resolution.clear();
+        }
+        if patched.kind == "markdown" {
+            if let Ok(source) = read_markdown_source(&doc_path) {
+                let digest = text_sha256(&source);
+                patched
+                    .anchor
+                    .get_or_insert_with(ReviewAnchor::default)
+                    .document_revision = Some(digest.clone());
+                patched.reopened_at = Some(digest);
+            }
+        }
+    }
+    // A new quote or place is a new comment as far as settle is concerned:
+    // what was seen in place before says nothing about this one.
+    if ["quote", "anchor", "at"]
+        .iter()
+        .any(|key| changes.contains_key(*key))
+    {
+        patched.verified_digest = None;
+        patched.unverifiable = false;
+        patched.reopened_at = None;
+        patched.closed_by = None;
+        if patched.kind == "markdown" {
+            if let Ok(source) = read_markdown_source(&doc_path) {
+                verify_in_place(&mut patched, &source);
+            }
+        }
+    }
+    // An explicit status or resolution is the reader's or the agent's own
+    // close: pdf-next never reopens it.
+    if changes.contains_key("status") || changes.contains_key("resolution") {
+        patched.closed_by = None;
     }
     validate_review(&patched)?;
     drop_redundant_end(&mut patched);
@@ -5395,7 +5874,7 @@ fn patch_review_from(
     if dry_run {
         return Ok(reviews_for_file(store, &basename));
     }
-    save_store(&sidecar, &mut store)?;
+    save_store(&doc_path, &mut store)?;
     Ok(reviews_for_file(store, &basename))
 }
 
@@ -5404,7 +5883,7 @@ fn allowed_set(watched: &Watched) -> Result<AllowedDocuments, String> {
     Ok(state.allowed.clone())
 }
 
-/// Append one review record to `{stem}_review.json` next to the document.
+/// Append one review record to the document's store.
 #[tauri::command]
 fn append_review(
     document: String,
@@ -5467,14 +5946,13 @@ fn patch_review(
     expected: serde_json::Value,
     watched: State<'_, Watched>,
 ) -> Result<ReviewFile, String> {
-    let store = patch_review_from(
+    let store = patch_review_record(
         &document,
         &id,
         &patch,
         &expected,
         &allowed_set(&watched)?,
         false,
-        PatchFrom::App,
     )?;
     note_sidecar_written(&watched, &document);
     Ok(store)
@@ -6279,8 +6757,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
     use super::{
-        adopt, empty_store, review_sidecar, save_store as save_bound_store, ReviewDocument,
-        Watched, LEGACY_REVIEW_FILE,
+        adopt, empty_store, legacy_review_sidecar, review_sidecar, save_store as save_bound_store,
+        ReviewDocument, Watched, LEGACY_REVIEW_FILE,
     };
     use super::{
         change_review_comment, document_watch_due, is_network_path, is_release_url,
@@ -8058,8 +8536,6 @@ mod tests {
             action: "improve".into(),
             status: "open".into(),
             resolution: String::new(),
-            question: String::new(),
-            reply: String::new(),
             color: 1,
             anchor: None,
             before: String::new(),
@@ -8067,6 +8543,10 @@ mod tests {
             build: None,
             requests: Vec::new(),
             rev: None,
+            closed_by: None,
+            reopened_at: None,
+            verified_digest: None,
+            unverifiable: false,
             extra: serde_json::Map::new(),
         }
     }
@@ -8087,8 +8567,6 @@ mod tests {
             action: "improve".into(),
             status: "open".into(),
             resolution: String::new(),
-            question: String::new(),
-            reply: String::new(),
             color: 1,
             anchor: None,
             before: String::new(),
@@ -8096,6 +8574,10 @@ mod tests {
             build: None,
             requests: Vec::new(),
             rev: None,
+            closed_by: None,
+            reopened_at: None,
+            verified_digest: None,
+            unverifiable: false,
             extra: serde_json::Map::new(),
         }
     }
@@ -8110,7 +8592,7 @@ mod tests {
         let doc = nested.join("collab.md");
         std::fs::write(&doc, "# admitted\n").unwrap();
         let original = r#"{"format":2,"reviews":[{"id":"r8","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"original"}]}"#;
-        std::fs::write(review_sidecar(&doc), original).unwrap();
+        std::fs::write(legacy_review_sidecar(&doc), original).unwrap();
         let watched = Watched::default();
         adopt(&watched, doc.clone(), true).unwrap();
         let pdf = nested.join("paper.pdf");
@@ -8124,7 +8606,7 @@ mod tests {
         std::fs::write(&doc, "# replacement\n").unwrap();
         std::fs::write(&pdf, b"%PDF-1.1\nreplacement\n%%EOF\n").unwrap();
         let replacement = r#"{"format":3,"revision":90,"nextId":100,"reviews":[{"id":"r99","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"replacement"}]}"#;
-        std::fs::write(review_sidecar(&doc), replacement).unwrap();
+        std::fs::write(legacy_review_sidecar(&doc), replacement).unwrap();
         let before: Vec<_> = std::fs::read_dir(&nested)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
@@ -8178,7 +8660,7 @@ mod tests {
                     .as_str()
             ),
         );
-        let saved = retained.join("nested/collab_review.json");
+        let saved = retained.join("nested/.pdf-next/collab.json");
         assert_eq!(
             parse_store(&std::fs::read_to_string(&saved).unwrap())
                 .unwrap()
@@ -8186,15 +8668,15 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            std::fs::read_to_string(saved.with_extension("json.pre-v3.bak")).unwrap(),
-            original
-        );
-        assert!(saved.with_extension("json.bak").is_file());
         assert!(saved.with_extension("json.lock").is_file());
+        assert!(
+            !retained.join("nested/collab_review.json").exists(),
+            "the migrated old store is gone from the admitted folder"
+        );
         assert_eq!(
-            std::fs::read_to_string(review_sidecar(&doc)).unwrap(),
-            replacement
+            std::fs::read_to_string(legacy_review_sidecar(&doc)).unwrap(),
+            replacement,
+            "the replacement folder is untouched"
         );
         let after: Vec<_> = std::fs::read_dir(&nested)
             .unwrap()
@@ -8202,7 +8684,7 @@ mod tests {
             .collect();
         assert_eq!(
             before, after,
-            "no lock, backup, or temporary file may reach the replacement directory"
+            "no store, lock, or temporary file may reach the replacement directory"
         );
     }
 
@@ -8212,20 +8694,14 @@ mod tests {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let dir = tempfile::tempdir().unwrap();
-        let sidecar = dir.path().join("paper_review.json");
+        let doc = dir.path().join("paper.pdf");
+        let sidecar = review_sidecar(&doc);
         let mut store = empty_store();
-        save_store(&sidecar, &mut store).unwrap();
+        save_store(&doc, &mut store).unwrap();
         assert_eq!(std::fs::metadata(&sidecar).unwrap().mode() & 0o777, 0o600);
         std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o640)).unwrap();
-        save_store(&sidecar, &mut store).unwrap();
+        save_store(&doc, &mut store).unwrap();
         assert_eq!(std::fs::metadata(&sidecar).unwrap().mode() & 0o777, 0o640);
-        assert_eq!(
-            std::fs::metadata(sidecar.with_extension("json.bak"))
-                .unwrap()
-                .mode()
-                & 0o777,
-            0o600
-        );
     }
 
     #[cfg(unix)]
@@ -8240,12 +8716,12 @@ mod tests {
         let doc = nested.join("collab.md");
         std::fs::write(&doc, "# admitted\n").unwrap();
         let legacy = r#"{"format":2,"reviews":[{"id":"r8","file":"collab.md","kind":"markdown","at":{"line":1},"quote":"legacy"}]}"#;
-        std::fs::write(nested.join(LEGACY_REVIEW_FILE), legacy).unwrap();
         let watched = Watched::default();
         adopt(&watched, doc.clone(), true).unwrap();
+        std::fs::write(nested.join(LEGACY_REVIEW_FILE), legacy).unwrap();
         let allowed = super::allowed_set(&watched).unwrap();
         let authorized = super::open_review_document(doc.to_str().unwrap(), &allowed).unwrap();
-        let (sidecar, mut store) = super::load_store(&authorized).unwrap();
+        let mut store = super::load_store(&authorized).unwrap();
         assert_eq!(store.reviews[0].quote, "legacy");
 
         let retained = root.path().join("retained");
@@ -8254,18 +8730,18 @@ mod tests {
         std::fs::create_dir_all(victim.join("nested")).unwrap();
         symlink(&victim, &selected).unwrap();
         // Locking and saving must still use the directory that supplied the legacy data.
-        let lock = super::ReviewLock::acquire(&sidecar).unwrap();
-        save_bound_store(&sidecar, &mut store).unwrap();
+        let lock = super::ReviewLock::acquire(&authorized.sidecar()).unwrap();
+        save_bound_store(&authorized, &mut store).unwrap();
         drop(lock);
         assert_eq!(
             super::read_snapshot(&authorized).unwrap().unwrap().reviews[0].quote,
             "legacy"
         );
-        let saved = retained.join("nested/collab_review.json");
+        let saved = retained.join("nested/.pdf-next/collab.json");
         assert!(saved.is_file());
-        assert_eq!(
-            std::fs::read_to_string(saved.with_extension("json.pre-v3.bak")).unwrap(),
-            legacy
+        assert!(
+            !retained.join("nested").join(LEGACY_REVIEW_FILE).exists(),
+            "the merged folder file is removed once its only document is migrated"
         );
         assert_eq!(std::fs::read_dir(victim.join("nested")).unwrap().count(), 0);
     }
@@ -8369,18 +8845,22 @@ mod tests {
         let second = write_review(&pdf.display().to_string(), pdf_review(), &allowed).unwrap();
         assert_eq!(first.reviews.len(), 1);
         assert_eq!(second.reviews.len(), 1);
-        assert!(dir.join("collab_review.json").exists());
-        assert!(dir.join("paper_review.json").exists());
+        assert!(dir.join(".pdf-next/collab.json").exists());
+        assert!(dir.join(".pdf-next/paper.json").exists());
+        assert!(dir.join("collab_review.txt").exists());
+        assert!(dir.join("paper_review.txt").exists());
         assert!(!dir.join("_review.json").exists());
 
-        let md_store: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("collab_review.json")).unwrap())
-                .unwrap();
-        let pdf_store: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("paper_review.json")).unwrap())
-                .unwrap();
-        assert_eq!(md_store["format"], 3);
-        assert_eq!(pdf_store["format"], 3);
+        let md_store: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".pdf-next/collab.json")).unwrap(),
+        )
+        .unwrap();
+        let pdf_store: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".pdf-next/paper.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(md_store["format"], 4);
+        assert_eq!(pdf_store["format"], 4);
         let md_keys: HashSet<_> = md_store["reviews"][0]
             .as_object()
             .unwrap()
@@ -8469,9 +8949,10 @@ mod tests {
             ..ReviewAnchor::default()
         });
         write_review(&md.display().to_string(), review.clone(), &allowed).unwrap();
-        let stored: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("collab_review.json")).unwrap())
-                .unwrap();
+        let stored: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".pdf-next/collab.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(stored["reviews"][0]["anchor"]["prefix"], "text before");
         assert_eq!(stored["reviews"][0]["anchor"]["suffix"], "text after");
 
@@ -8522,6 +9003,10 @@ mod tests {
         assert_eq!(listed.reviews[0].quote, "legacy quote");
         assert_eq!(listed.reviews[0].id, "r1");
         assert!(!dir.join("paper_review.json").exists());
+        assert!(
+            !dir.join(".pdf-next/paper.json").exists(),
+            "listing writes nothing"
+        );
 
         drop(allowed);
         let _ = std::fs::remove_dir_all(&dir);
@@ -8572,7 +9057,12 @@ mod tests {
         let mut review = pdf_review();
         review.id = "r1".into();
         legacy.reviews.push(review);
-        save_store(&dir.join(LEGACY_REVIEW_FILE), &mut legacy).unwrap();
+        legacy.next_id = 2;
+        std::fs::write(
+            dir.join(LEGACY_REVIEW_FILE),
+            super::store_json(&legacy).unwrap(),
+        )
+        .unwrap();
         let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let document = pdf.to_str().unwrap();
         let listed = list_reviews(document, &allowed).unwrap();
@@ -8629,7 +9119,7 @@ mod tests {
         let mut store = empty_store();
         store.reviews.push(foreign.clone());
         store.next_id = 2;
-        save_store(&review_sidecar(&pdf), &mut store).unwrap();
+        save_store(&pdf, &mut store).unwrap();
         let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let document = pdf.to_str().unwrap();
         assert!(change_review_comment(document, "r1", "", "changed", &allowed).is_err());
@@ -8645,8 +9135,10 @@ mod tests {
     fn saving_reviews_preserves_an_open_snapshot_of_the_old_file() {
         use std::io::Read;
         let dir = scratch("atomic_review_save");
-        let sidecar = dir.join("paper_review.json");
-        let old = b"{\"format\":2,\"reviews\":[]}\n";
+        let doc = dir.join("paper.pdf");
+        let sidecar = review_sidecar(&doc);
+        let old = b"{\"format\":4,\"reviews\":[]}\n";
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
         std::fs::write(&sidecar, old).unwrap();
         let mut snapshot = std::fs::File::open(&sidecar).unwrap();
         let mut store = empty_store();
@@ -8654,7 +9146,7 @@ mod tests {
         review.id = "r1".into();
         store.reviews.push(review);
         store.next_id = 2;
-        save_store(&sidecar, &mut store).unwrap();
+        save_store(&doc, &mut store).unwrap();
         let mut bytes = Vec::new();
         snapshot.read_to_end(&mut bytes).unwrap();
         assert_eq!(
@@ -8798,10 +9290,11 @@ mod tests {
             document: None,
             reviews: vec![r1, r2, r3],
             stamped: None,
-            migration_backup: None,
+            inbox_warning: None,
+            origin: super::Origin::default(),
             extra: serde_json::Map::new(),
         };
-        let view = super::agent_view(&store, "notes.md", "");
+        let view = super::agent_view(&store, "notes.md");
         assert!(
             view.contains("means the text is unclear: rewrite it so it answers that"),
             "{view}"
@@ -8823,7 +9316,7 @@ mod tests {
         );
         let mut changes_only = store.clone();
         changes_only.reviews.remove(0);
-        let view = super::agent_view(&changes_only, "notes.md", "");
+        let view = super::agent_view(&changes_only, "notes.md");
         assert!(
             !view.contains("rewrite it so it answers"),
             "the Ask rule shows only with an Ask: {view}"
@@ -8862,10 +9355,11 @@ mod tests {
             document: None,
             reviews: vec![r1, r2, r3],
             stamped: None,
-            migration_backup: None,
+            inbox_warning: None,
+            origin: super::Origin::default(),
             extra: serde_json::Map::new(),
         };
-        let view = super::agent_view(&store, "notes.md", "");
+        let view = super::agent_view(&store, "notes.md");
         assert!(
             view.contains(
                 "r1 L12-18 define: add parenthetical definition () after term | \"obrigado\""
@@ -8982,7 +9476,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             false,
         )
         .unwrap();
-        let written = std::fs::read_to_string(dir.join("demo_review.json")).unwrap();
+        let written = std::fs::read_to_string(dir.join(".pdf-next/demo.json")).unwrap();
         assert!(
             written.len() * 10 < pretty.len() * 9,
             "the compact layout is smaller: {} vs {}",
@@ -8993,7 +9487,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         assert_eq!(lines.len(), 5, "header, three items, closing: {written}");
         assert!(
             lines[0]
-                .starts_with(r#"{"format":3,"revision":13,"nextId":4,"stamped":13,"reviews":["#),
+                .starts_with(r#"{"format":4,"revision":13,"nextId":4,"stamped":13,"reviews":["#),
             "{}",
             lines[0]
         );
@@ -9029,91 +9523,21 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let doc = allowed.get(&md).unwrap().clone();
         let view = super::review_brief(&doc, None).unwrap();
         let (header, body) = view.split_once('\n').unwrap();
-        assert_eq!(header, "# demo.md rev 12: 3 open, 0 applied. Fix each in the source. Done: pdf-next reviews done demo.md <id> \"<what you changed>\" (or the line \"<id> <what you changed>\" in demo_review.done). Unclear: pdf-next reviews ask demo.md <id> \"<question>\"");
+        assert_eq!(header, "# demo.md rev 12: 3 open. Read the open items, edit demo.md. pdf-next marks a Markdown item done when its quoted text is edited or removed, once the file has been quiet for 2 seconds, and only for an item it has seen in place. Any other item (words kept: bold, italic, define, gloss, check, expand, a request) stays open: close it with pdf-next reviews done demo.md <id> \"<what you changed>\". Ask the reader in your terminal, not through pdf-next");
+        assert!(
+            header.contains("pdf-next reviews done demo.md"),
+            "the header names the command that closes an item"
+        );
         assert_eq!(body, DEMO_VIEW);
         // Every store write leaves the same view on disk.
         mark_review_done(&doc, "r3", "moved the sentence before the table", None).unwrap();
-        let file = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
-        assert!(
-            file.starts_with("# demo.md rev 13: 2 open, 1 applied."),
-            "{file}"
-        );
+        let file = std::fs::read_to_string(dir.join("demo_review.txt")).unwrap();
+        assert!(file.starts_with("# demo.md rev 13: 2 open."), "{file}");
         assert!(
             !file.contains("r3 L7"),
             "a closed item leaves the view: {file}"
         );
         assert_eq!(super::view_quote("a\u{1D463}\n\u{2217}  b", 120), "av ∗ b");
-        drop((doc, allowed));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn done_inbox_closes_items_once_and_respects_a_reopen() {
-        let (dir, md, allowed) = demo_tree();
-        let doc = allowed.get(&md).unwrap().clone();
-        let inbox = dir.join("demo_review.done");
-        std::fs::write(
-            &inbox,
-            "r1 states the ideal-gas assumption\nhello there\nr9 gone item\n",
-        )
-        .unwrap();
-        // A new review arrives through the app in the same moment.
-        let mut extra = markdown_review();
-        extra.file = "demo.md".into();
-        write_review(md.to_str().unwrap(), extra, &allowed).unwrap();
-        assert!(super::apply_done_inbox(&doc).unwrap());
-        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
-        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
-        assert_eq!(
-            (r1.status.as_str(), r1.resolution.as_str()),
-            ("applied", "states the ideal-gas assumption")
-        );
-        assert_eq!(
-            store.reviews.len(),
-            4,
-            "the new item and the inbox both landed"
-        );
-        assert!(
-            !super::apply_done_inbox(&doc).unwrap(),
-            "applying again changes nothing"
-        );
-        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
-        assert!(
-            view.lines()
-                .next()
-                .unwrap()
-                .ends_with("Unread demo_review.done lines: 2"),
-            "{view}"
-        );
-        assert!(!view.contains("\nr1 "), "{view}");
-        // The reader reopens r1: the old line does not close it again.
-        patch_review_record(
-            md.to_str().unwrap(),
-            "r1",
-            &serde_json::json!({ "status": "open" }),
-            &serde_json::json!({ "status": "applied" }),
-            &allowed,
-            false,
-        )
-        .unwrap();
-        assert!(!super::apply_done_inbox(&doc).unwrap());
-        // A new line for it does, and the later line wins.
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&inbox)
-            .unwrap();
-        std::io::Write::write_all(
-            &mut file,
-            b"r1 first try\nr1 rewrote the sentence instead\n",
-        )
-        .unwrap();
-        assert!(super::apply_done_inbox(&doc).unwrap());
-        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
-        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
-        assert_eq!(
-            (r1.status.as_str(), r1.resolution.as_str()),
-            ("applied", "rewrote the sentence instead")
-        );
         drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -9137,10 +9561,9 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let refused = mark_review_done(&doc, "r1", "fixed", None).unwrap_err();
         assert!(refused.contains("--built"), "{refused}");
         let store = mark_review_done(&doc, "r1", "fixed", Some("latexmk -pdf paper.tex")).unwrap();
-        assert_eq!(store.reviews[0].status, "applied");
-        let view = std::fs::read_to_string(dir.join("paper_review.agent.txt")).unwrap();
-        assert!(view.starts_with("# paper.pdf rev 2: 0 open"), "{view}");
-        assert!(view.contains("--built \"<build command>\""), "{view}");
+        assert_eq!(store.reviews[0].status, "done");
+        let view = std::fs::read_to_string(dir.join("paper_review.txt")).unwrap();
+        assert_eq!(view, "# paper.pdf rev 2: nothing open\n");
         drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -9267,7 +9690,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             "{\n  \"reviews\": [\n    {\n      \"id\": \"r1\",\n      \"quote\": \"three words here\",\n      \"at\": { \"page\": 1 },\n      \"comment\": \"fix\"\n    },\n  ]\n}\n",
         )
         .unwrap();
-        assert_eq!(store.format, 3);
+        assert_eq!(store.format, 4);
         assert_eq!(store.reviews.len(), 1);
         assert_eq!(store.reviews[0].id, "r1");
         assert_eq!(store.reviews[0].comment, "fix");
@@ -9279,7 +9702,11 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let raw = r#"{"format":3,"revision":8,"nextId":22,"storeExtra":{"ok":true},"document":{"pdf":"paper.pdf","project":".","tex":"paper.tex","extra":9},"reviews":[{"id":"r21","file":"paper.pdf","kind":"pdf","at":{"page":2,"atExtra":"kept"},"quote":"quote","comment":"note","action":"delete","status":"applied","resolution":"removed in tex","color":7,"anchor":{"prefix":"before","suffix":"after","documentRevision":"sha256:abc","position":{"page":2,"x":1.5,"y":3.0,"boxExtra":true},"anchorExtra":[1]},"source":{"path":"chapter.tex"},"build":{"success":true},"recordExtra":{"x":1}}]}"#;
         let parsed = parse_store(raw).unwrap();
         let encoded = serde_json::to_value(parsed).unwrap();
-        assert_eq!(encoded["format"], 3);
+        assert_eq!(encoded["format"], 4);
+        assert_eq!(
+            encoded["reviews"][0]["status"], "done",
+            "applied reads as done"
+        );
         assert_eq!(encoded["revision"], 8);
         assert_eq!(encoded["nextId"], 22);
         assert_eq!(encoded["storeExtra"]["ok"], true);
@@ -9315,6 +9742,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let md = dir.join("collab.md");
         std::fs::write(&md, "# hi\n").unwrap();
         let sidecar = review_sidecar(&md);
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
         std::fs::write(&sidecar, "\n\t").unwrap();
         let before = std::fs::read(&sidecar).unwrap();
         let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
@@ -9333,16 +9761,17 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         assert!(read_snapshot(&path).unwrap().is_none());
 
         let sidecar = review_sidecar(&pdf);
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
         std::fs::write(
             &sidecar,
-            r#"{"format":3,"revision":4,"nextId":1,"reviews":[]}"#,
+            r#"{"format":4,"revision":4,"nextId":1,"reviews":[]}"#,
         )
         .unwrap();
         let empty = read_snapshot(&path).unwrap().unwrap();
         assert!(empty.reviews.is_empty());
         assert_eq!(empty.revision, 4);
 
-        std::fs::write(&sidecar, "{\"format\":3,\"reviews\":[").unwrap();
+        std::fs::write(&sidecar, "{\"format\":4,\"reviews\":[").unwrap();
         assert!(read_snapshot(&path).is_err());
         std::fs::remove_file(&sidecar).unwrap();
         std::fs::write(
@@ -9488,15 +9917,22 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let dir = scratch("review_read_only_folder");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        std::fs::write(
-            review_sidecar(&pdf),
-            r#"{"format":3,"revision":1,"nextId":2,"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":1},"quote":"kept"}]}"#,
-        )
-        .unwrap();
+        let store = r#"{"format":4,"revision":1,"nextId":2,"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":1},"quote":"kept"}]}"#;
         let path = std::fs::canonicalize(&pdf).unwrap();
+        // A store from before 0.19 in a folder that cannot be written.
+        std::fs::write(legacy_review_sidecar(&pdf), store).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
         let read = read_snapshot(&path);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read.unwrap().unwrap().reviews[0].quote, "kept");
+        // A store in the hidden folder, which cannot be written either.
+        std::fs::remove_file(legacy_review_sidecar(&pdf)).unwrap();
+        let hidden = review_sidecar(&pdf).parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(review_sidecar(&pdf), store).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let read = read_snapshot(&path);
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(read.unwrap().unwrap().reviews[0].quote, "kept");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -9507,7 +9943,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
         std::fs::write(
-            review_sidecar(&pdf),
+            legacy_review_sidecar(&pdf),
             r#"{"format":3,"revision":1,"nextId":2,"reviews":[{"id":"r1","at":{"page":1},"quote":"minimal","comment":"fix"}]}"#,
         )
         .unwrap();
@@ -9525,8 +9961,8 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
         std::fs::write(
-            review_sidecar(&pdf),
-            r#"{"format":3,"revision":1,"nextId":3,"reviews":[{"id":"r1","at":{"page":1},"quote":"ok"},{"id":"r2","at":{"page":1},"quote":"bad","status":"done"}]}"#,
+            legacy_review_sidecar(&pdf),
+            r#"{"format":3,"revision":1,"nextId":3,"reviews":[{"id":"r1","at":{"page":1},"quote":"ok"},{"id":"r2","at":{"page":1},"quote":"bad","status":"waiting"}]}"#,
         )
         .unwrap();
         let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
@@ -9550,13 +9986,13 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
     }
 
     #[test]
-    fn legacy_format_migrates_losslessly_and_backs_up_on_first_write() {
-        let dir = scratch("review_migration_backup");
+    fn legacy_format_migrates_losslessly_and_the_old_file_goes_after_the_first_write() {
+        let dir = scratch("review_migration");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let sidecar = review_sidecar(&pdf);
+        let old = legacy_review_sidecar(&pdf);
         let original = r#"{"format":2,"reviews":[{"id":"r8","file":"paper.pdf","kind":"pdf","at":{"page":3,"oldAt":true},"quote":"keep me","comment":"note","oldField":{"v":1}}],"oldStore":42}"#;
-        std::fs::write(&sidecar, original).unwrap();
+        std::fs::write(&old, original).unwrap();
         let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
         let path = pdf.to_str().unwrap();
         let listed = list_reviews(path, &allowed).unwrap();
@@ -9566,14 +10002,15 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             serde_json::to_value(&listed.reviews[0]).unwrap()["oldField"]["v"],
             1
         );
-        assert!(!sidecar.with_extension("json.pre-v3.bak").exists());
+        assert!(old.exists(), "reading changes nothing on disk");
         change_review_comment(path, "r8", "note", "updated", &allowed).unwrap();
-        assert_eq!(
-            std::fs::read(sidecar.with_extension("json.pre-v3.bak")).unwrap(),
-            original.as_bytes()
+        assert!(
+            !old.exists(),
+            "the old store goes once the new one is read back"
         );
-        let migrated = parse_store(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
-        assert_eq!(migrated.format, 3);
+        let migrated =
+            parse_store(&std::fs::read_to_string(review_sidecar(&pdf)).unwrap()).unwrap();
+        assert_eq!(migrated.format, 4);
         assert_eq!(migrated.reviews[0].extra["oldField"]["v"], 1);
         assert_eq!(migrated.extra["oldStore"], 42);
         drop(allowed);
@@ -9649,7 +10086,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let build_required = patch_review_record(
             path,
             "r1",
-            &serde_json::json!({"status":"applied"}),
+            &serde_json::json!({"status":"done"}),
             &serde_json::json!({"status":"open"}),
             &allowed,
             false,
@@ -9662,13 +10099,13 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let applied = patch_review_record(
             path,
             "r1",
-            &serde_json::json!({"status":"applied","build":{"success":true,"command":"latexmk"}}),
+            &serde_json::json!({"status":"done","build":{"success":true,"command":"latexmk"}}),
             &serde_json::json!({"status":"open","build":null}),
             &allowed,
             false,
         )
         .unwrap();
-        assert_eq!(applied.reviews[0].status, "applied");
+        assert_eq!(applied.reviews[0].status, "done");
         assert_eq!(applied.reviews[0].build.as_ref().unwrap()["success"], true);
         drop(allowed);
         std::fs::remove_dir_all(dir).unwrap();
@@ -9826,7 +10263,6 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             found.document.as_ref().unwrap().tex.as_deref(),
             Some("paper.tex")
         );
-        let sidecar = review_sidecar(&pdf);
         let mut established = empty_store();
         established.document = Some(ReviewDocument {
             task: Some("preserved-task".into()),
@@ -9835,7 +10271,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             tex: Some("chapters/main.tex".into()),
             extra: serde_json::Map::new(),
         });
-        save_store(&sidecar, &mut established).unwrap();
+        save_store(&pdf, &mut established).unwrap();
         std::fs::remove_file(dir.join("paper.tex")).unwrap();
         let retained = list_reviews(pdf.to_str().unwrap(), &allowed).unwrap();
         assert_eq!(
@@ -9855,26 +10291,28 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
     }
 
     #[test]
-    fn save_store_keeps_an_atomic_last_valid_backup_and_rejects_bad_replacements() {
+    fn save_store_writes_no_backup_and_rejects_bad_replacements() {
         let dir = scratch("review_last_valid_backup");
-        let sidecar = dir.join("paper_review.json");
-        let original = b"{\"format\":3,\"revision\":1,\"nextId\":1,\"reviews\":[]}\n";
-        std::fs::write(&sidecar, original).unwrap();
+        let doc = dir.join("paper.pdf");
+        let sidecar = review_sidecar(&doc);
         let mut store = empty_store();
         let mut review = pdf_review();
         review.id = "r1".into();
         store.reviews.push(review);
         store.next_id = 2;
-        save_store(&sidecar, &mut store).unwrap();
-        let backup = sidecar.with_extension("json.bak");
-        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        save_store(&doc, &mut store).unwrap();
+        save_store(&doc, &mut store).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(sidecar.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["paper.json"]);
 
         let current = std::fs::read(&sidecar).unwrap();
-        let previous_backup = std::fs::read(&backup).unwrap();
         store.reviews[0].status = "unsupported".into();
-        assert!(save_store(&sidecar, &mut store).is_err());
+        assert!(save_store(&doc, &mut store).is_err());
         assert_eq!(std::fs::read(&sidecar).unwrap(), current);
-        assert_eq!(std::fs::read(&backup).unwrap(), previous_backup);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -9910,7 +10348,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let dir = scratch("review_legacy_colors");
         let pdf = dir.join("paper.pdf");
         std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
-        let sidecar = review_sidecar(&pdf);
+        let sidecar = legacy_review_sidecar(&pdf);
         std::fs::write(
             &sidecar,
             r#"{"format":2,"reviews":[{"id":"r1","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"one"},{"id":"r2","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"two"},{"id":"r7","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"seven"},{"id":"r4","file":"paper.pdf","kind":"pdf","at":{"page":7},"quote":"explicit","color":5}]}"#,
@@ -9977,6 +10415,26 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         assert_eq!(permanent_attempts, 1);
     }
 
+    /// Make a file look an hour old: settle leaves a file written in the last
+    /// two seconds alone, as it may be half written.
+    fn age(path: &std::path::Path) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3_600))
+            .unwrap();
+    }
+
+    /// Write a document the way an editor would, an hour ago.
+    fn edit(path: &std::path::Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+        age(path);
+    }
+
+    /// A key of a review as the store file holds it, or Null.
+    fn field(store: &super::ReviewFile, id: &str, key: &str) -> serde_json::Value {
+        let review = store.reviews.iter().find(|r| r.id == id).unwrap();
+        serde_json::to_value(review).unwrap()[key].clone()
+    }
+
     /// A Markdown document and its store, from text: (folder, document, allowed).
     fn markdown_tree(
         name: &str,
@@ -9986,6 +10444,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let dir = scratch(name);
         let md = dir.join("wake.md");
         std::fs::write(&md, source).unwrap();
+        age(&md);
         if !store.is_empty() {
             std::fs::write(dir.join("wake_review.json"), store).unwrap();
         }
@@ -10020,8 +10479,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             false,
         )
         .unwrap();
-        std::fs::write(dir.join("demo_review.done"), "r2 deleted the passage\n").unwrap();
-        super::apply_done_inbox(&doc).unwrap();
+        mark_review_done(&doc, "r2", "deleted the passage", None).unwrap();
         let mut extra = markdown_review();
         extra.file = "demo.md".into();
         write_review(document, extra, &allowed).unwrap();
@@ -10040,7 +10498,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         assert_eq!(lines.len(), 2, "{view}");
         assert!(lines[1].starts_with("r4 L12-18 tighten this"), "{view}");
         // An older app rewrites the store without stamping: all are listed again.
-        let sidecar = dir.join("demo_review.json");
+        let sidecar = dir.join(".pdf-next/demo.json");
         let text = std::fs::read_to_string(&sidecar).unwrap();
         std::fs::write(&sidecar, text.replace("\"revision\":16", "\"revision\":17")).unwrap();
         let view = super::review_brief(&doc, Some(16)).unwrap();
@@ -10056,7 +10514,7 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
         let next = super::review_next(&doc).unwrap();
         assert_eq!(
             next,
-            "# demo.md: 3 open. Done: pdf-next reviews done demo.md r3 \"<what you changed>\" (unclear: pdf-next reviews ask demo.md r3 \"<question>\")\n\
+            "# demo.md: 3 open. Edit the quoted text, then close it: pdf-next reviews done demo.md r3 \"<what you changed>\" (Ask the reader in your terminal, not through pdf-next)\n\
              r3 L7 move this before the table | \"the table below\"\n\
              7| See the table below for the cases.\n"
         );
@@ -10072,12 +10530,8 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             ),
             "{next}"
         );
-        super::ask_review_question(&doc, "r2", "Delete the whole paragraph or the clause?")
-            .unwrap();
-        assert_eq!(
-            super::review_next(&doc).unwrap(),
-            "# demo.md: nothing open, 1 waiting on the reader"
-        );
+        mark_review_done(&doc, "r2", "deleted the clause", None).unwrap();
+        assert_eq!(super::review_next(&doc).unwrap(), "# demo.md: nothing open");
         drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -10108,150 +10562,10 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
     }
 
     #[test]
-    fn the_agent_asks_and_the_reader_replies() {
-        let (dir, md, allowed) = demo_tree();
-        let doc = allowed.get(&md).unwrap().clone();
-        let document = md.to_str().unwrap();
-        let store = super::ask_review_question(&doc, "r1", "Ideal in which sense?").unwrap();
-        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
-        assert_eq!(
-            (r1.status.as_str(), r1.question.as_str()),
-            ("question", "Ideal in which sense?")
-        );
-        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
-        assert!(
-            view.starts_with("# demo.md rev 13: 2 open, 1 waiting on the reader (r1), 0 applied."),
-            "{view}"
-        );
-        assert!(
-            !view.contains("\nr1 "),
-            "a waiting item is not listed: {view}"
-        );
-        let again = super::ask_review_question(&doc, "r1", "again").unwrap_err();
-        assert!(again.contains("not open"), "{again}");
-        // The app may not ask, and may not answer by setting the status.
-        let refused = super::patch_review_from(
-            document,
-            "r3",
-            &serde_json::json!({ "status": "question", "question": "?" }),
-            &serde_json::json!({ "$revision": 13 }),
-            &allowed,
-            false,
-            super::PatchFrom::App,
-        )
-        .unwrap_err();
-        assert!(refused.contains("question"), "{refused}");
-        let refused = super::patch_review_from(
-            document,
-            "r3",
-            &serde_json::json!({ "status": "question" }),
-            &serde_json::json!({ "$revision": 13 }),
-            &allowed,
-            false,
-            super::PatchFrom::App,
-        )
-        .unwrap_err();
-        assert!(refused.contains("only the agent"), "{refused}");
-        let store = super::patch_review_from(
-            document,
-            "r1",
-            &serde_json::json!({ "reply": "Ideal gas: no viscosity, no heat loss." }),
-            &serde_json::json!({ "reply": null, "status": "question" }),
-            &allowed,
-            false,
-            super::PatchFrom::App,
-        )
-        .unwrap();
-        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
-        assert_eq!(r1.status, "open", "a reply puts the item back to open");
-        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
-        assert!(
-            view.contains("r1 L12 say this is an ideal value; you asked \"Ideal in which sense?\", reader replied: \"Ideal gas: no viscosity, no heat loss.\" |"),
-            "{view}"
-        );
-        assert!(!view.contains("waiting"), "{view}");
-        // The same through the inbox, which also leaves a reply alone.
-        let inbox = dir.join("demo_review.done");
-        std::fs::write(&inbox, "r3 ? Which table?\nr2 ?\n").unwrap();
-        assert!(super::apply_done_inbox(&doc).unwrap());
-        let store = list_reviews(document, &allowed).unwrap();
-        let r3 = store.reviews.iter().find(|r| r.id == "r3").unwrap();
-        assert_eq!(
-            (r3.status.as_str(), r3.question.as_str()),
-            ("question", "Which table?")
-        );
-        let view = std::fs::read_to_string(dir.join("demo_review.agent.txt")).unwrap();
-        assert!(
-            view.lines()
-                .next()
-                .unwrap()
-                .ends_with("Unread demo_review.done lines: 2"),
-            "{view}"
-        );
-        super::patch_review_from(
-            document,
-            "r3",
-            &serde_json::json!({ "reply": "Table 2" }),
-            &serde_json::json!({ "reply": null }),
-            &allowed,
-            false,
-            super::PatchFrom::App,
-        )
-        .unwrap();
-        assert!(
-            !super::apply_done_inbox(&doc).unwrap(),
-            "an answered question is not asked again"
-        );
-        // The reader can close a question too.
-        super::ask_review_question(&doc, "r2", "Keep the last clause?").unwrap();
-        let store = super::patch_review_from(
-            document,
-            "r2",
-            &serde_json::json!({ "status": "resolved" }),
-            &serde_json::json!({ "status": "question" }),
-            &allowed,
-            false,
-            super::PatchFrom::App,
-        )
-        .unwrap();
-        assert_eq!(
-            store.reviews.iter().find(|r| r.id == "r2").unwrap().status,
-            "resolved"
-        );
-        drop((doc, allowed));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn a_long_non_ascii_inbox_line_is_cut_to_the_byte_limit_not_left_to_wedge_the_store() {
-        let (dir, md, allowed) = demo_tree();
-        let doc = allowed.get(&md).unwrap().clone();
-        let document = md.to_str().unwrap();
-        let note = "é".repeat(3_000);
-        let question = "ü".repeat(1_500);
-        std::fs::write(
-            dir.join("demo_review.done"),
-            format!("r1 {note}\nr3 ? {question}\n"),
-        )
-        .unwrap();
-        assert!(super::apply_done_inbox(&doc).unwrap());
-        let store = list_reviews(document, &allowed).unwrap();
-        let r1 = store.reviews.iter().find(|r| r.id == "r1").unwrap();
-        let r3 = store.reviews.iter().find(|r| r.id == "r3").unwrap();
-        assert_eq!(
-            (r1.status.as_str(), r1.resolution.len()),
-            ("applied", 4_000)
-        );
-        assert_eq!((r3.status.as_str(), r3.question.len()), ("question", 2_000));
-        assert!(super::review_brief(&doc, None).is_ok());
-        drop((doc, allowed));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn a_store_too_large_to_read_back_is_never_written() {
         let dir = scratch("review_store_limit");
-        let sidecar = dir.join("paper_review.json");
+        let doc = dir.join("paper.pdf");
+        let sidecar = review_sidecar(&doc);
         let mut store = empty_store();
         let mut review = markdown_review();
         review.quote = "q".repeat(20_000);
@@ -10262,17 +10576,17 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
                 ..review.clone()
             });
         }
-        let error = save_store(&sidecar, &mut store).unwrap_err();
+        let error = save_store(&doc, &mut store).unwrap_err();
         assert!(error.contains("too large"), "{error}");
         assert!(!sidecar.exists(), "nothing was written");
         store.reviews.truncate(50);
-        save_store(&sidecar, &mut store).unwrap();
+        save_store(&doc, &mut store).unwrap();
         let written = std::fs::read(&sidecar).unwrap();
         store.reviews.extend((51..=110).map(|number| Review {
             id: format!("r{number}"),
             ..review.clone()
         }));
-        assert!(save_store(&sidecar, &mut store).is_err());
+        assert!(save_store(&doc, &mut store).is_err());
         assert_eq!(
             std::fs::read(&sidecar).unwrap(),
             written,
@@ -10283,76 +10597,37 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
     }
 
     #[test]
-    fn a_reply_checks_the_question_it_answers_and_not_the_whole_store() {
-        let (dir, md, allowed) = demo_tree();
-        let doc = allowed.get(&md).unwrap().clone();
-        let document = md.to_str().unwrap();
-        super::ask_review_question(&doc, "r1", "Ideal in which sense?").unwrap();
-        mark_review_done(&doc, "r3", "moved it", None).unwrap();
-        let reply = |question: &str| {
-            super::patch_review_from(
-                document,
-                "r1",
-                &serde_json::json!({ "reply": "No viscosity." }),
-                &serde_json::json!({ "reply": null, "status": "question", "question": question }),
-                &allowed,
-                true,
-                super::PatchFrom::App,
-            )
-        };
-        let stale = reply("Which sense?").unwrap_err();
-        assert!(stale.contains("question changed"), "{stale}");
-        assert_eq!(
-            reply("Ideal in which sense?").unwrap().reviews[0].status,
-            "open"
-        );
-        drop((doc, allowed));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn the_documented_sidecar_is_a_valid_store() {
         let store = parse_store(include_str!("../../docs/_review.json")).unwrap();
         for review in &store.reviews {
             super::validate_review(review).unwrap();
         }
         assert!(super::stamps_current(&store));
-        let view = super::agent_view(&store, "paper.pdf", "");
-        assert!(view.contains("1 waiting on the reader (r2)"), "{view}");
+        let view = super::agent_view(&store, "paper.pdf");
+        assert!(view.contains("\nr1 p7 "), "{view}");
+        assert!(view.contains("\nr3 p9 "), "{view}");
+        assert!(
+            !view.contains("\nr2 "),
+            "a done comment is not listed: {view}"
+        );
     }
 
     #[test]
-    fn question_reply_and_before_are_checked_and_kept() {
+    fn before_is_checked_and_kept_and_empty_fields_are_left_out() {
         let mut review = markdown_review();
-        review.status = "question".into();
-        assert!(
-            super::validate_review(&review).is_err(),
-            "a question needs its text"
-        );
-        review.question = "Which reference?".into();
-        assert!(super::validate_review(&review).is_ok());
-        review.question = "q".repeat(2_001);
-        assert!(super::validate_review(&review).is_err());
-        review.question = "Which reference?".into();
-        review.reply = "r".repeat(2_001);
-        assert!(super::validate_review(&review).is_err());
-        review.reply = "Barkley 2006".into();
         review.before = "b".repeat(20_001);
         assert!(super::validate_review(&review).is_err());
         review.before = "The source lines.\n".into();
         review.rev = Some(4);
         review.id = "r1".into();
         let line = serde_json::to_string(&review).unwrap();
-        assert!(
-            line.contains(r#""question":"Which reference?","reply":"Barkley 2006""#),
-            "{line}"
-        );
+        assert!(line.contains(r#""before":"The source lines.\n""#), "{line}");
         let back: Review = serde_json::from_str(&line).unwrap();
         assert_eq!(back, review);
         let mut store = empty_store();
         store.revision = 3;
         store.reviews.push(review);
-        let view = super::agent_view(&store, "collab.md", "");
+        let view = super::agent_view(&store, "collab.md");
         assert!(
             !view.contains("The source lines"),
             "before is never in the agent view: {view}"
@@ -10582,7 +10857,1203 @@ r2 L40-42 delete | \"the slab burns from both faces at once, so the burning area
             (5, Some(3)),
             "a dry run writes nothing"
         );
+        assert!(
+            !dir.join(".pdf-next/wake.json").exists(),
+            "and migrates nothing"
+        );
         drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ── The inbox (0.19): format 4, the hidden store, the inbox file ─────────
+
+    /// Close what the source no longer holds, on a copy of base.md edited to
+    /// `edit`. Returns the document, the folder and the store after.
+    fn settled(edited: &str) -> (PathBuf, PathBuf, super::ReviewFile) {
+        let (dir, md, allowed) = markdown_tree("inbox_settle", RELOCATE_BASE, &relocate_store());
+        let doc = allowed.get(&md).unwrap().clone();
+        // The first settle migrates the store and sees every quote in place.
+        assert!(super::settle_document(&doc).unwrap());
+        edit(&md, edited);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        (dir, md, store)
+    }
+
+    /// base.md with its store migrated and every quote seen in place:
+    /// (folder, document, allowed, admitted document).
+    fn verified_tree(name: &str) -> (PathBuf, PathBuf, super::AllowedDocuments, super::ReviewPath) {
+        let (dir, md, allowed) = markdown_tree(name, RELOCATE_BASE, &relocate_store());
+        let doc = allowed.get(&md).unwrap().clone();
+        super::settle_document(&doc).unwrap();
+        (dir, md, allowed, doc)
+    }
+
+    fn status_of<'a>(store: &'a super::ReviewFile, id: &str) -> &'a str {
+        &store.reviews.iter().find(|r| r.id == id).unwrap().status
+    }
+
+    #[test]
+    fn inbox_migrates_format3_and_removes_old_files_after_write() {
+        let (dir, md, allowed) = markdown_tree("inbox_migrate", RELOCATE_BASE, &relocate_store());
+        for (name, text) in [
+            ("wake_review.json.bak", "{}"),
+            ("wake_review.json.pre-v3.bak", "{}"), // legacy backup
+            ("wake_review.agent.txt", "# old view\n"),
+            ("wake_review.done", "# nothing pending\n"),
+            ("wake_review.json.lock", ""),
+        ] {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        let doc = allowed.get(&md).unwrap().clone();
+        assert!(super::settle_document(&doc).unwrap());
+        let store = parse_store(&std::fs::read_to_string(dir.join(".pdf-next/wake.json")).unwrap())
+            .unwrap();
+        assert_eq!(store.format, 4);
+        let ids: Vec<&str> = store.reviews.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["r1", "r2", "r3", "r4", "r5"], "none lost");
+        assert_eq!(status_of(&store, "r5"), "done", "applied reads as done");
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, [".pdf-next", "wake.md", "wake_review.txt"]);
+        let inbox = std::fs::read_to_string(dir.join("wake_review.txt")).unwrap();
+        assert_eq!(
+            inbox.lines().count(),
+            5,
+            "header and four open items: {inbox}"
+        );
+        assert!(!super::settle_document(&doc).unwrap(), "nothing left to do");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inbox_failed_write_keeps_old_files() {
+        let (dir, md, allowed) = markdown_tree("inbox_failed", RELOCATE_BASE, &relocate_store());
+        std::fs::write(dir.join("wake_review.agent.txt"), "# old view\n").unwrap();
+        // A file where the hidden folder should be: the new store cannot be written.
+        std::fs::write(dir.join(".pdf-next"), "in the way").unwrap();
+        let before: Vec<(String, Vec<u8>)> = ["wake_review.json", "wake_review.agent.txt"]
+            .iter()
+            .map(|name| (name.to_string(), std::fs::read(dir.join(name)).unwrap()))
+            .collect();
+        let doc = allowed.get(&md).unwrap().clone();
+        let error = super::settle_document(&doc).unwrap_err();
+        assert!(!error.is_empty());
+        for (name, bytes) in before {
+            assert_eq!(std::fs::read(dir.join(&name)).unwrap(), bytes, "{name}");
+        }
+        assert!(!dir.join("wake_review.txt").exists());
+        // The old store is still what is read.
+        assert_eq!(super::load_store(&doc).unwrap().reviews.len(), 5);
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_legacy_folder_file_stays_while_it_holds_another_document() {
+        let dir = scratch("inbox_legacy_folder");
+        let md = dir.join("wake.md");
+        std::fs::write(&md, "The wake grows downstream.\n").unwrap();
+        std::fs::write(
+            dir.join(LEGACY_REVIEW_FILE),
+            r#"{"format":2,"reviews":[{"file":"wake.md","kind":"markdown","at":{"line":1},"quote":"the wake grows"},{"file":"other.md","kind":"markdown","at":{"line":1},"quote":"other"}]}"#,
+        )
+        .unwrap();
+        let allowed = admitted([std::fs::canonicalize(&md).unwrap()]);
+        let doc = allowed
+            .get(&std::fs::canonicalize(&md).unwrap())
+            .unwrap()
+            .clone();
+        assert!(super::settle_document(&doc).unwrap());
+        assert!(
+            dir.join(LEGACY_REVIEW_FILE).exists(),
+            "the other document's row is not lost"
+        );
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(store.reviews.len(), 1);
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_question_folds_into_comment() {
+        let raw = r#"{"format":3,"revision":3,"nextId":5,"reviews":[
+            {"id":"r1","file":"a.md","kind":"markdown","at":{"line":1},"quote":"one","comment":"tighten","status":"question","question":"Which one?","reply":"This one."},
+            {"id":"r2","file":"a.md","kind":"markdown","at":{"line":2},"quote":"two","status":"question","question":"Keep it?"},
+            {"id":"r3","file":"a.md","kind":"markdown","at":{"line":3},"quote":"three","comment":"fix","status":"open","question":"Why?","reply":"Because."},
+            {"id":"r4","file":"a.md","kind":"markdown","at":{"line":4},"quote":"four","comment":"fine"}]}"#;
+        let store = parse_store(raw).unwrap();
+        let comments: Vec<(&str, &str)> = store
+            .reviews
+            .iter()
+            .map(|r| (r.status.as_str(), r.comment.as_str()))
+            .collect();
+        assert_eq!(
+            comments,
+            [
+                ("open", "tighten | asked: Which one? | answer: This one."),
+                ("open", "asked: Keep it?"),
+                ("open", "fix | asked: Why? | answer: Because."),
+                ("open", "fine"),
+            ]
+        );
+        let written = super::store_json(&store).unwrap();
+        assert!(!written.contains("\"question\""), "{written}");
+        assert!(!written.contains("\"reply\""), "{written}");
+        super::validate_review(&store.reviews[0]).unwrap();
+    }
+
+    #[test]
+    fn inbox_long_folded_question_is_folded_whole() {
+        let raw = format!(
+            r#"{{"format":3,"reviews":[{{"id":"r1","file":"a.md","kind":"markdown","at":{{"line":1}},"quote":"one","status":"question","question":"{}","reply":"{}"}}]}}"#,
+            "é".repeat(1_500),
+            "ü".repeat(1_500)
+        );
+        let store = parse_store(&raw).unwrap();
+        let comment = &store.reviews[0].comment;
+        assert_eq!(
+            comment,
+            &format!(
+                "asked: {} | answer: {}",
+                "é".repeat(1_500),
+                "ü".repeat(1_500)
+            ),
+            "nothing of the question or the answer is cut"
+        );
+        super::validate_review(&store.reviews[0]).unwrap();
+        let dir = scratch("inbox_long_fold_saves");
+        let doc = dir.join("a.md");
+        std::fs::write(&doc, "one\n").unwrap();
+        let mut store = store;
+        store.reviews[0].file = "a.md".into();
+        save_store(&doc, &mut store).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_applied_and_resolved_become_done() {
+        let raw = r#"{"format":3,"revision":3,"nextId":4,"reviews":[
+            {"id":"r1","file":"a.md","kind":"markdown","at":{"line":1},"quote":"one","status":"applied","resolution":"reworded"},
+            {"id":"r2","file":"a.md","kind":"markdown","at":{"line":2},"quote":"two","status":"resolved","resolution":"kept"},
+            {"id":"r3","file":"a.md","kind":"markdown","at":{"line":3},"quote":"three","status":"open"}]}"#;
+        let store = parse_store(raw).unwrap();
+        let seen: Vec<(&str, &str)> = store
+            .reviews
+            .iter()
+            .map(|r| (r.status.as_str(), r.resolution.as_str()))
+            .collect();
+        assert_eq!(seen, [("done", "reworded"), ("done", "kept"), ("open", "")]);
+        assert_eq!(store.format, 4);
+        assert_eq!(super::REVIEW_STATUSES, ["open", "done"]);
+        let mut review = store.reviews[0].clone();
+        review.status = "applied".into();
+        assert!(
+            super::validate_review(&review).is_err(),
+            "the old words are not written"
+        );
+    }
+
+    #[test]
+    fn inbox_relocate_unchanged_stays_open() {
+        let (dir, md, allowed) = markdown_tree("inbox_unchanged", RELOCATE_BASE, &relocate_store());
+        let doc = allowed.get(&md).unwrap().clone();
+        assert!(super::settle_document(&doc).unwrap(), "the store moves");
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        for id in ["r1", "r2", "r3", "r4"] {
+            assert_eq!(status_of(&store, id), "open", "{id}");
+        }
+        // Lines inserted above: the comments stay open and follow their text.
+        edit(
+            &md,
+            include_str!("../../tests/fixtures/relocate/inserted.md"),
+        );
+        assert!(super::settle_document(&doc).unwrap());
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        for (id, line) in [("r1", 6), ("r2", 9), ("r3", 12), ("r4", 15)] {
+            let review = store.reviews.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(
+                (review.status.as_str(), review.at.line),
+                ("open", Some(line)),
+                "{id}"
+            );
+        }
+        assert!(
+            !super::settle_document(&doc).unwrap(),
+            "the same text is not looked at again"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_edited_quote_becomes_done() {
+        let (dir, _md, store) = settled(include_str!(
+            "../../tests/fixtures/relocate/edited-quote.md"
+        ));
+        for id in ["r1", "r3"] {
+            let review = store.reviews.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(review.status, "done", "{id}");
+            assert_eq!(review.resolution, super::CLOSED_EDITED);
+        }
+        for id in ["r2", "r4"] {
+            assert_eq!(status_of(&store, id), "open", "{id}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_deleted_quote_becomes_done() {
+        let (dir, _md, store) = settled(include_str!("../../tests/fixtures/relocate/deleted.md"));
+        let r2 = store.reviews.iter().find(|r| r.id == "r2").unwrap();
+        assert_eq!(
+            (r2.status.as_str(), r2.resolution.as_str()),
+            ("done", super::CLOSED_REMOVED)
+        );
+        for id in ["r1", "r3", "r4"] {
+            assert_eq!(status_of(&store, id), "open", "{id}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_a_document_that_did_not_change_closes_nothing() {
+        // A comment made on text the renderer cannot place is not closed by
+        // a store that was written for this very document, nor by a later change.
+        let source = "# Title\n\nA line with $x^2$ and a word.\n";
+        let dir = scratch("inbox_same_document");
+        let md = dir.join("wake.md");
+        edit(&md, source);
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let mut review = markdown_review();
+        review.file = "wake.md".into();
+        review.quote = "text that is not in the document".into();
+        review.at.line = Some(3);
+        review.at.end = None;
+        write_review(canonical.to_str().unwrap(), review, &allowed).unwrap();
+        let doc = allowed.get(&canonical).unwrap().clone();
+        let revision = list_reviews(canonical.to_str().unwrap(), &allowed)
+            .unwrap()
+            .revision;
+        // It may mark the record unverifiable, which no reader would see.
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(canonical.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(
+            (store.revision, store.reviews[0].status.as_str()),
+            (revision, "open")
+        );
+        edit(&md, &format!("{source}More.\n"));
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(canonical.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(
+            store.reviews[0].status, "open",
+            "a quote that was never seen in place is not closed"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_a_quote_too_short_to_search_for_stays_open() {
+        let (dir, md, allowed) = markdown_tree("inbox_short", "Word.\n\nMore words.\n", "");
+        let mut review = markdown_review();
+        review.file = "wake.md".into();
+        review.quote = "x".into();
+        review.at.line = Some(1);
+        review.at.end = None;
+        write_review(md.to_str().unwrap(), review, &allowed).unwrap();
+        edit(&md, "Other.\n");
+        let doc = allowed.get(&md).unwrap().clone();
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(store.reviews[0].status, "open");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_no_backup_files() {
+        let dir = scratch("inbox_no_backup");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        let allowed = admitted([std::fs::canonicalize(&pdf).unwrap()]);
+        let path = pdf.to_str().unwrap();
+        write_review(path, pdf_review(), &allowed).unwrap();
+        change_review_comment(
+            path,
+            "r1",
+            "does the figure still match?",
+            "edited",
+            &allowed,
+        )
+        .unwrap();
+        let doc = allowed
+            .get(&std::fs::canonicalize(&pdf).unwrap())
+            .unwrap()
+            .clone();
+        mark_review_done(&doc, "r1", "fixed", Some("latexmk -pdf paper.tex")).unwrap();
+        let mut top: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        top.sort();
+        assert_eq!(top, [".pdf-next", "paper.pdf", "paper_review.txt"]);
+        let mut hidden: Vec<_> = std::fs::read_dir(dir.join(".pdf-next"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        hidden.sort();
+        assert_eq!(hidden, ["paper.json", "paper.json.lock"]);
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_done_file_is_not_read() {
+        let (dir, md, allowed) = demo_tree();
+        std::fs::write(dir.join("demo_review.done"), "r1 closed by an old line\n").unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert!(store.reviews.iter().all(|r| r.status == "open"));
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_file_lists_only_open() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        mark_review_done(&doc, "r3", "moved it", None).unwrap();
+        let file = std::fs::read_to_string(dir.join("demo_review.txt")).unwrap();
+        let lines: Vec<&str> = file.lines().collect();
+        assert_eq!(lines.len(), 3, "{file}");
+        assert!(
+            lines[0].starts_with("# demo.md rev 13: 2 open. Read the open items, edit demo.md"),
+            "{file}"
+        );
+        assert!(
+            lines[0].contains("Ask the reader in your terminal"),
+            "{file}"
+        );
+        assert!(
+            lines[1].starts_with("r1 L12 say this is an ideal value"),
+            "{file}"
+        );
+        assert!(lines[2].starts_with("r2 L40-42 delete"), "{file}");
+        for id in ["r1", "r2"] {
+            mark_review_done(&doc, id, "done", None).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join("demo_review.txt")).unwrap(),
+            "# demo.md rev 15: nothing open\n"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_format4_documented_contract_parses() {
+        let text = include_str!("../../docs/_review.json");
+        let store = parse_store(text).unwrap();
+        assert_eq!(store.format, 4);
+        assert!(!store.reviews.is_empty());
+        for review in &store.reviews {
+            super::validate_review(review).unwrap();
+            assert!(["open", "done"].contains(&review.status.as_str()));
+        }
+        assert!(store.reviews.iter().any(|r| r.status == "open"));
+        assert!(store.reviews.iter().any(|r| r.status == "done"));
+        let raw: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(raw["format"], 4);
+        assert!(!text.contains("\"question\":") && !text.contains("\"reply\":"));
+    }
+
+    #[test]
+    fn inbox_pdf_comment_stays_open_until_built() {
+        let dir = scratch("inbox_pdf_open");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        write_review(path, pdf_review(), &allowed).unwrap();
+        let doc = allowed.get(&canonical).unwrap().clone();
+        // A change to the PDF settles nothing: a build proves a PDF comment.
+        std::fs::write(&pdf, b"%PDF-1.1\nchanged\n%%EOF\n").unwrap();
+        assert!(!super::settle_document(&doc).unwrap());
+        let view = std::fs::read_to_string(dir.join("paper_review.txt")).unwrap();
+        assert!(view.contains("--built \"<build command>\""), "{view}");
+        assert!(view.contains("\nr1 p7 "), "{view}");
+        let by_patch = patch_review_record(
+            path,
+            "r1",
+            &serde_json::json!({"status":"done"}),
+            &serde_json::json!({"status":"open"}),
+            &allowed,
+            false,
+        )
+        .unwrap_err();
+        assert!(by_patch.contains("successful build"), "{by_patch}");
+        assert!(mark_review_done(&doc, "r1", "fixed", None).is_err());
+        assert_eq!(
+            list_reviews(path, &allowed).unwrap().reviews[0].status,
+            "open"
+        );
+        let store = mark_review_done(&doc, "r1", "fixed", Some("latexmk -pdf paper.tex")).unwrap();
+        assert_eq!(store.reviews[0].status, "done");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An agent that has only the inbox text and the Markdown file: it reads
+    /// each item's quote, rewrites those words in the file, and nothing else.
+    #[test]
+    fn inbox_scripted_agent_ends_with_all_done() {
+        let dir = scratch("inbox_scripted_agent");
+        let md = dir.join("wake.md");
+        edit(&md, RELOCATE_BASE);
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let document = canonical.to_str().unwrap();
+        let quotes = [
+            ("the wake becomes unstable", 4),
+            ("the flow is incompressible", 6),
+            ("a hot wire placed downstream", 9),
+            ("the Strouhal number", 10),
+            ("The leading eigenvalue", 13),
+        ];
+        for (quote, line) in quotes {
+            let review = serde_json::from_value(serde_json::json!({
+                "at": { "line": line }, "quote": quote, "comment": "reword this",
+                "file": "", "kind": "",
+            }))
+            .unwrap();
+            super::add_review_record(document, review, &allowed).unwrap();
+        }
+        let doc = allowed.get(&canonical).unwrap().clone();
+        let inbox = dir.join("wake_review.txt");
+        let mut open = 5;
+        loop {
+            // settle runs as the app or any CLI command would run it
+            super::settle_document(&doc).unwrap();
+            let text = std::fs::read_to_string(&inbox).unwrap();
+            let items: Vec<&str> = text.lines().skip(1).collect();
+            assert!(items.len() <= open, "an item came back: {text}");
+            open = items.len();
+            let Some(item) = items.first() else {
+                break;
+            };
+            // `r3 L9 reword this | "a hot wire placed downstream"`
+            let quote = item.split_once(" | \"").unwrap().1.trim_end_matches('"');
+            let source = std::fs::read_to_string(&md).unwrap();
+            assert!(source.contains(quote), "the quote is in the file: {quote}");
+            let mut words: Vec<&str> = quote.split(' ').collect();
+            let last = words.len() - 1;
+            words[last] = "reworded";
+            edit(&md, &source.replace(quote, &words.join(" ")));
+        }
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(store.reviews.len(), 5, "none lost");
+        assert!(
+            store.reviews.iter().all(|r| r.status == "done"),
+            "{store:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&inbox).unwrap().lines().count(),
+            1,
+            "one line: nothing open"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ── Round 2: a comment is never closed or lost by mistake ────────────────
+
+    const DELETED: &str = include_str!("../../tests/fixtures/relocate/deleted.md");
+
+    #[test]
+    fn inbox_empty_source_closes_nothing() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_empty_source");
+        edit(&md, "");
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        for id in ["r1", "r2", "r3", "r4"] {
+            assert_eq!(status_of(&store, id), "open", "{id}");
+        }
+        edit(&md, "  \n\n");
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert!(store
+            .reviews
+            .iter()
+            .filter(|r| r.id != "r5")
+            .all(|r| r.status == "open"));
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_recent_write_defers_settle() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_recent_write");
+        // Written just now: it may be half written, so nothing is closed.
+        std::fs::write(&md, DELETED).unwrap();
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r2"),
+            "open",
+            "a file written a moment ago"
+        );
+        age(&md);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r2"),
+            "done",
+            "the same file, once it is quiet"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_auto_closed_comment_reopens_when_quote_returns() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_reopens");
+        edit(&md, DELETED);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(status_of(&store, "r2"), "done");
+        assert_eq!(field(&store, "r2", "closedBy"), "pdf-next");
+        assert!(field(&store, "r2", "resolution")
+            .as_str()
+            .unwrap()
+            .contains("removed"));
+        // The text is back (a branch switch, an undo): the comment is open again.
+        edit(&md, RELOCATE_BASE);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(status_of(&store, "r2"), "open");
+        assert!(field(&store, "r2", "closedBy").is_null());
+        assert_eq!(field(&store, "r2", "resolution"), "");
+        // A comment closed with `done` is never reopened.
+        mark_review_done(&doc, "r1", "reworded it", None).unwrap();
+        edit(&md, &format!("{RELOCATE_BASE}\nAn added line.\n"));
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(status_of(&store, "r1"), "done");
+        assert!(field(&store, "r1", "closedBy").is_null());
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_user_reopen_holds_until_quote_changes() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_user_reopen");
+        let document = md.to_str().unwrap();
+        edit(&md, DELETED);
+        super::settle_document(&doc).unwrap();
+        let reopen = || {
+            patch_review_record(
+                document,
+                "r2",
+                &serde_json::json!({ "status": "open" }),
+                &serde_json::json!({ "status": "done" }),
+                &allowed,
+                false,
+            )
+        };
+        reopen().unwrap();
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r2"),
+            "open",
+            "same text: the reopen holds"
+        );
+        // The next edit elsewhere does not close it again.
+        edit(&md, &format!("{DELETED}\nAn added line.\n"));
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r2"),
+            "open",
+            "an unrelated edit does not undo the reopen"
+        );
+        // The quote comes back and is seen; removing it again then closes it.
+        edit(&md, RELOCATE_BASE);
+        super::settle_document(&doc).unwrap();
+        edit(&md, DELETED);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r2"), "done");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_unverifiable_quote_never_auto_closes() {
+        // Raw HTML has no text in the renderer: its quote is never found.
+        let source =
+            "<div>raw html with a quotable sentence</div>\n\nA plain paragraph follows here.\n";
+        let (dir, md, allowed) = markdown_tree("inbox_unverifiable", source, "");
+        let mut review = markdown_review();
+        review.file = "wake.md".into();
+        review.quote = "a quotable sentence".into();
+        review.at.line = Some(1);
+        review.at.end = None;
+        write_review(md.to_str().unwrap(), review, &allowed).unwrap();
+        let doc = allowed.get(&md).unwrap().clone();
+        for text in [
+            "A plain paragraph follows here.\n",
+            "A plain paragraph follows here, changed.\n\nMore.\n",
+        ] {
+            edit(&md, text);
+            super::settle_document(&doc).unwrap();
+            let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+            assert_eq!(status_of(&store, "r1"), "open", "{text}");
+        }
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(field(&store, "r1", "unverifiable"), true);
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_migrated_record_is_not_closed_at_migration() {
+        // The store is from 0.18 and the text under r2 is already gone: the
+        // renderer never saw the quote in place, so nothing is closed.
+        let (dir, md, allowed) = markdown_tree("inbox_migrated_open", DELETED, &relocate_store());
+        let doc = allowed.get(&md).unwrap().clone();
+        assert!(super::settle_document(&doc).unwrap(), "the store moves");
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(store.reviews.len(), 5);
+        assert_eq!(status_of(&store, "r2"), "open");
+        assert_eq!(field(&store, "r2", "unverifiable"), true);
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_short_unique_quote_stays_open() {
+        let before = "# Results\n\nAlpha beta gamma delta epsilon zeta.\n\nEta theta iota kappa lambda mu.\n";
+        let after = "# Results\n\nSomething else was written here instead.\n\nAnd the next paragraph is new too.\n";
+        let (dir, md, allowed) = markdown_tree("inbox_short_unique", before, "");
+        let document = md.to_str().unwrap();
+        let review = serde_json::from_value(serde_json::json!({
+            "at": { "line": 1 }, "quote": "Results", "comment": "name the case",
+            "file": "", "kind": "",
+        }))
+        .unwrap();
+        super::add_review_record(document, review, &allowed).unwrap();
+        let doc = allowed.get(&md).unwrap().clone();
+        edit(&md, after);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r1"),
+            "open",
+            "the heading is still there"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_legacy_rows_without_file_are_kept() {
+        let dir = scratch("inbox_legacy_no_file");
+        let md = dir.join("wake.md");
+        edit(&md, "The wake grows downstream.\n");
+        std::fs::write(
+            dir.join(LEGACY_REVIEW_FILE),
+            r#"{"format":2,"reviews":[{"file":"wake.md","kind":"markdown","at":{"line":1},"quote":"the wake grows"},{"kind":"markdown","at":{"line":1},"quote":"a row nobody can place"}]}"#,
+        )
+        .unwrap();
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let doc = allowed.get(&canonical).unwrap().clone();
+        assert!(super::settle_document(&doc).unwrap());
+        assert!(
+            dir.join(LEGACY_REVIEW_FILE).exists(),
+            "a row with no file name is not this document's to delete"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_pending_done_is_applied_not_dropped() {
+        let (dir, md, allowed) =
+            markdown_tree("inbox_pending_done", RELOCATE_BASE, &relocate_store());
+        std::fs::write(
+            dir.join("wake_review.done"),
+            "# agent\nr1 reworded the claim\n",
+        )
+        .unwrap();
+        let doc = allowed.get(&md).unwrap().clone();
+        assert!(super::settle_document(&doc).unwrap());
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(status_of(&store, "r1"), "done");
+        assert_eq!(field(&store, "r1", "resolution"), "reworded the claim");
+        assert!(
+            !dir.join("wake_review.done").exists(),
+            "applied, then removed"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // A line that cannot be applied leaves the file where it is.
+        let (dir, md, allowed) =
+            markdown_tree("inbox_pending_done_left", RELOCATE_BASE, &relocate_store());
+        std::fs::write(
+            dir.join("wake_review.done"),
+            "r1 reworded it\nr2 ? which one?\nr99 gone\n",
+        )
+        .unwrap();
+        let doc = allowed.get(&md).unwrap().clone();
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(status_of(&store, "r1"), "done");
+        assert_eq!(status_of(&store, "r2"), "open");
+        assert!(
+            dir.join("wake_review.done").exists(),
+            "{:?}",
+            std::fs::read_dir(&dir).unwrap().count()
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_foreign_review_txt_is_not_overwritten() {
+        let dir = scratch("inbox_foreign_txt");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        std::fs::write(dir.join("paper_review.txt"), "my own notes on the paper\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        let store = write_review(path, pdf_review(), &allowed).unwrap();
+        assert_eq!(store.reviews.len(), 1, "the store is saved");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("paper_review.txt")).unwrap(),
+            "my own notes on the paper\n"
+        );
+        let doc = allowed.get(&canonical).unwrap().clone();
+        let error = super::write_inbox(&doc, &store).unwrap_err();
+        assert!(
+            error.contains("paper_review.txt") && error.contains("move"),
+            "{error}"
+        );
+        // Its own file is written again.
+        std::fs::remove_file(dir.join("paper_review.txt")).unwrap();
+        super::write_inbox(&doc, &store).unwrap();
+        super::write_inbox(&doc, &store).unwrap();
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_pdf_done_needs_build_on_restore() {
+        let dir = scratch("inbox_pdf_restore");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        let mut done = pdf_review();
+        done.status = "done".into();
+        assert!(
+            write_review(path, done.clone(), &allowed).is_err(),
+            "no build, no done on append"
+        );
+        write_review(path, pdf_review(), &allowed).unwrap();
+        let mut record = list_reviews(path, &allowed).unwrap().reviews[0].clone();
+        remove_review(path, "r1", &allowed).unwrap();
+        record.status = "done".into();
+        let error = restore_review_record(path, record.clone(), None, &allowed).unwrap_err();
+        assert!(error.contains("successful build"), "{error}");
+        record.build = Some(serde_json::json!({ "success": true, "command": "latexmk" }));
+        restore_review_record(path, record, None, &allowed).unwrap();
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_header_names_the_done_command() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let view = super::review_brief(&doc, None).unwrap();
+        let header = view.lines().next().unwrap();
+        assert!(
+            header.contains("pdf-next reviews done demo.md <id>"),
+            "an item that keeps its words is closed with done: {header}"
+        );
+        assert!(
+            header.contains("bold") && header.contains("stays open"),
+            "{header}"
+        );
+        let next = super::review_next(&doc).unwrap();
+        assert!(
+            next.lines()
+                .next()
+                .unwrap()
+                .contains("pdf-next reviews done demo.md r3"),
+            "{next}"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_inbox_write_failure_keeps_the_save() {
+        let dir = scratch("inbox_write_failure");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        // A directory where the inbox file should be.
+        std::fs::create_dir(dir.join("paper_review.txt")).unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        let saved = write_review(path, pdf_review(), &allowed).expect("the comment is saved");
+        assert_eq!(saved.reviews.len(), 1);
+        assert_eq!(list_reviews(path, &allowed).unwrap().reviews.len(), 1);
+        // A retry would have filed it twice.
+        assert_eq!(
+            write_review(path, pdf_review(), &allowed)
+                .unwrap()
+                .reviews
+                .len(),
+            2
+        );
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_settle_does_not_bump_revision_for_digest_only() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_quiet_stamps");
+        let document = md.to_str().unwrap();
+        let revision = list_reviews(document, &allowed).unwrap().revision;
+        // A paragraph added at the end: every quote is where it was.
+        edit(
+            &md,
+            &format!("{RELOCATE_BASE}\nA closing line about nothing.\n"),
+        );
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(store.revision, revision, "only digests were stamped");
+        // The agent's compare-and-swap still works after the edit.
+        patch_review_record(
+            document,
+            "r1",
+            &serde_json::json!({ "color": 5 }),
+            &serde_json::json!({ "$revision": revision }),
+            &allowed,
+            false,
+        )
+        .unwrap();
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_no_files_for_a_document_without_comments() {
+        let dir = scratch("inbox_no_comments");
+        let md = dir.join("wake.md");
+        edit(&md, "Nothing is reviewed here.\n");
+        // The folder's old shared file holds only another document's row.
+        std::fs::write(
+            dir.join(LEGACY_REVIEW_FILE),
+            r#"{"format":2,"reviews":[{"file":"other.md","kind":"markdown","at":{"line":1},"quote":"other"}]}"#,
+        )
+        .unwrap();
+        let names = |dir: &PathBuf| {
+            let mut names: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = names(&dir);
+        let watched = Watched::default();
+        adopt(&watched, md.clone(), true).unwrap();
+        let allowed = super::allowed_set(&watched).unwrap();
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        let doc = allowed.get(&canonical).unwrap().clone();
+        assert!(!super::settle_document(&doc).unwrap());
+        assert!(list_reviews(canonical.to_str().unwrap(), &allowed)
+            .unwrap()
+            .reviews
+            .is_empty());
+        assert_eq!(names(&dir), before, "no folder, lock or inbox file");
+        drop((doc, allowed, watched));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_quote_patch_resets_verification() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_quote_patch");
+        let document = md.to_str().unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert!(
+            !field(&store, "r1", "verifiedDigest").is_null(),
+            "seen in place first"
+        );
+        let old = field(&store, "r1", "quote");
+        // Reattach: the reader pins the comment to other text.
+        patch_review_record(
+            document,
+            "r1",
+            &serde_json::json!({ "quote": "a sentence the page never shows" }),
+            &serde_json::json!({ "quote": old }),
+            &allowed,
+            false,
+        )
+        .unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert!(
+            field(&store, "r1", "verifiedDigest").is_null(),
+            "the old verification says nothing about the new quote"
+        );
+        edit(&md, DELETED);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r1"), "open");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_quote_inside_raw_html_stays_open() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_raw_html");
+        let document = md.to_str().unwrap();
+        // The last paragraph goes into a raw HTML block: the renderer shows
+        // no text there, but the words are still on the page.
+        let wrapped = RELOCATE_BASE.replace(
+            "A global mode analysis then gives the growth rate of each perturbation.\nThe leading eigenvalue crosses the axis at the critical Reynolds number.",
+            "<div>A global mode analysis then gives the growth rate of each perturbation.\nThe <em>leading</em> eigenvalue crosses the axis at the critical Reynolds number.</div>",
+        );
+        assert_ne!(wrapped, RELOCATE_BASE);
+        edit(&md, &wrapped);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r4"), "open", "the words are still there");
+        assert!(
+            field(&store, "r4", "unverifiable").is_null()
+                || field(&store, "r4", "unverifiable") == serde_json::json!(false),
+            "and it is not marked unverifiable"
+        );
+        // Removed for real, it closes.
+        let removed = RELOCATE_BASE.replace(
+            "A global mode analysis then gives the growth rate of each perturbation.\nThe leading eigenvalue crosses the axis at the critical Reynolds number.\n",
+            "",
+        );
+        edit(&md, &removed);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r4"), "done");
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_quote_left_only_in_alt_text_closes() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_alt_text");
+        let document = md.to_str().unwrap();
+        // The paragraph becomes an image: its words are the alt text, which the
+        // page does not show. They are not raw HTML, so the comment is not held open.
+        let image = RELOCATE_BASE.replace(
+            "A global mode analysis then gives the growth rate of each perturbation.\nThe leading eigenvalue crosses the axis at the critical Reynolds number.",
+            "![A global mode analysis then gives the growth rate of each perturbation. The leading eigenvalue crosses the axis at the critical Reynolds number.](figure.png)",
+        );
+        assert_ne!(image, RELOCATE_BASE);
+        edit(&md, &image);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r4"),
+            "done",
+            "the words are not on the page"
+        );
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_future_mtime_does_not_block_settle() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_future_mtime");
+        std::fs::write(&md, DELETED).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&md).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3_600))
+            .unwrap();
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(md.to_str().unwrap(), &allowed).unwrap();
+        assert_eq!(
+            status_of(&store, "r2"),
+            "done",
+            "a time in the future is not a write in progress"
+        );
+        // A time a moment ahead is still a write in progress.
+        std::fs::write(&md, RELOCATE_BASE).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(super::written_recently(&doc));
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_header_check_accepts_names_with_rev() {
+        for name in [
+            "notes.md",
+            "draft rev 2.md",
+            "a rev 2 b rev 12.md",
+            "rev 3: final rev.md",
+        ] {
+            let header = super::inbox_header_start(name, 7, 1);
+            assert!(super::is_inbox_header(&header), "{header}");
+        }
+        assert!(!super::is_inbox_header("# my notes rev two"));
+        assert!(!super::is_inbox_header("my own notes"));
+        // Its own file is written again, whatever the document is called.
+        let dir = scratch("inbox_rev_name");
+        let pdf = dir.join("draft rev 2.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        let mut review = pdf_review();
+        review.file = "draft rev 2.pdf".into();
+        write_review(path, review.clone(), &allowed).unwrap();
+        let second = write_review(path, review, &allowed).unwrap();
+        assert!(second.inbox_warning.is_none(), "{:?}", second.inbox_warning);
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_foreign_inbox_warning_is_returned() {
+        let dir = scratch("inbox_warning");
+        let pdf = dir.join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.1\n%%EOF\n").unwrap();
+        std::fs::write(dir.join("paper_review.txt"), "my own notes\n").unwrap();
+        let canonical = std::fs::canonicalize(&pdf).unwrap();
+        let allowed = admitted([canonical.clone()]);
+        let path = canonical.to_str().unwrap();
+        let saved = write_review(path, pdf_review(), &allowed).unwrap();
+        assert_eq!(
+            saved.inbox_warning.as_deref(),
+            Some("paper_review.txt is not pdf-next's inbox; move it so the agent can read the comments")
+        );
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["inboxWarning"], saved.inbox_warning.clone().unwrap());
+        let on_disk = std::fs::read_to_string(dir.join(".pdf-next/paper.json")).unwrap();
+        assert!(!on_disk.contains("inboxWarning"), "never in the store file");
+        assert!(list_reviews(path, &allowed)
+            .unwrap()
+            .inbox_warning
+            .is_none());
+        // Moved away, the next save writes the inbox and the warning is gone.
+        std::fs::remove_file(dir.join("paper_review.txt")).unwrap();
+        let again = write_review(path, pdf_review(), &allowed).unwrap();
+        assert!(again.inbox_warning.is_none());
+        drop(allowed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_patch_clears_closed_by() {
+        let (dir, md, allowed, doc) = verified_tree("inbox_patch_closed_by");
+        let document = md.to_str().unwrap();
+        edit(&md, DELETED);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(field(&store, "r2", "closedBy"), "pdf-next");
+        let resolution = field(&store, "r2", "resolution");
+        // The agent puts its own words on the close.
+        patch_review_record(
+            document,
+            "r2",
+            &serde_json::json!({ "resolution": "removed the paragraph on purpose" }),
+            &serde_json::json!({ "resolution": resolution }),
+            &allowed,
+            false,
+        )
+        .unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert!(field(&store, "r2", "closedBy").is_null());
+        // The text comes back: an explicit close is not undone.
+        edit(&md, RELOCATE_BASE);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r2"), "done");
+        // The reader's Done button: a status patch on an open comment.
+        patch_review_record(
+            document,
+            "r1",
+            &serde_json::json!({ "status": "done" }),
+            &serde_json::json!({ "status": "open" }),
+            &allowed,
+            false,
+        )
+        .unwrap();
+        edit(&md, DELETED);
+        edit(&md, RELOCATE_BASE);
+        super::settle_document(&doc).unwrap();
+        let store = list_reviews(document, &allowed).unwrap();
+        assert_eq!(status_of(&store, "r1"), "done");
+        assert!(field(&store, "r1", "closedBy").is_null());
+        drop((doc, allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_opening_and_changing_arm_one_settle_per_path() {
+        use std::time::{Duration, Instant};
+        let mut state = super::WatchState::default();
+        let now = Instant::now();
+        let a = PathBuf::from("/tmp/a.md");
+        let b = PathBuf::from("/tmp/b.md");
+        state.settle_again(&a, now);
+        state.settle_again(&b, now);
+        state.settle_again(&a, now + Duration::from_secs(1));
+        state.settle_again(std::path::Path::new("/tmp/c.pdf"), now);
+        assert_eq!(state.settle_later.len(), 2, "one per path, none for a PDF");
+        assert!(state
+            .take_due_settles(now + Duration::from_secs(1))
+            .is_empty());
+        let due = state.take_due_settles(now + Duration::from_millis(2_600));
+        assert_eq!(due, vec![b.clone()], "a later change pushed a back");
+        let due = state.take_due_settles(now + Duration::from_secs(4));
+        assert_eq!(due, vec![a]);
+        assert!(state.settle_later.is_empty());
+
+        // Opening a file arms it.
+        let (dir, md, _allowed) =
+            markdown_tree("inbox_adopt_arms", RELOCATE_BASE, &relocate_store());
+        let watched = Watched::default();
+        adopt(&watched, md.clone(), true).unwrap();
+        assert!(watched.0.lock().unwrap().settle_later.contains_key(&md));
+        drop((watched, _allowed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_header_says_when_pdf_next_closes_an_item() {
+        let (dir, md, allowed) = demo_tree();
+        let doc = allowed.get(&md).unwrap().clone();
+        let view = super::review_brief(&doc, None).unwrap();
+        let header = view.lines().next().unwrap();
+        assert!(header.contains("reviews done"), "{header}");
+        assert!(header.contains("quiet for 2 seconds"), "{header}");
+        assert!(header.contains("seen in place"), "{header}");
+        drop((doc, allowed));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

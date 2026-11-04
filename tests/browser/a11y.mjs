@@ -51,10 +51,10 @@ const tabTo = async (page, ids, limit = 80, key = 'Tab') => {
 // One review per tint, every status, some with requests: the dim text on each row colour.
 const actions = ['improve', 'delete', 'request', 'clarify'];
 const store = {
-  format: 3, revision: 1, nextId: 17,
+  format: 4, revision: 1, nextId: 17,
   reviews: Array.from({ length: 16 }, (_, i) => ({
     id: `r${i + 1}`, file: 'a.md', kind: 'markdown', quote: i % 2 ? 'Second paragraph' : 'brave new',
-    comment: i % 3 ? '' : 'A note', action: actions[i % 4], status: ['open', 'applied', 'resolved'][i % 3],
+    comment: i % 3 ? '' : 'A note', action: actions[i % 4], status: ['open', 'done', 'done'][i % 3],
     resolution: i % 3 === 1 ? 'Done' : '', color: i + 1, ...(i % 4 === 2 ? { requests: ['ask:why', 'tone:jfm'] } : {}),
   })),
 };

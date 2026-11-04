@@ -82,7 +82,7 @@ function denseReviews(file) {
 
 function reviewStore(file, revision, reviews = []) {
   return JSON.stringify({
-    format: 3,
+    format: 4,
     revision,
     nextId: reviews.length + 1,
     document: { task: 'PDF review smoke fixture', pdf: basename(file), project: '.' },
@@ -91,9 +91,9 @@ function reviewStore(file, revision, reviews = []) {
 }
 
 function validateDenseSidecar(file, revision) {
-  const sidecar = join(dirname(file), `${basename(file, extname(file))}_review.json`);
+  const sidecar = join(dirname(file), '.pdf-next', `${basename(file, extname(file))}.json`);
   const store = JSON.parse(readFileSync(sidecar, 'utf8'));
-  if (store.format !== 3 || store.revision !== revision || store.nextId !== 33) {
+  if (store.format !== 4 || store.revision !== revision || store.nextId !== 33) {
     throw new Error('dense-page sidecar format, revision, or nextId changed');
   }
   if (store.reviews.length !== 32 || new Set(store.reviews.map((review) => review.id)).size !== 32) {
@@ -257,7 +257,8 @@ function open(binary, file, seconds, { sourceChecks = true } = {}) {
           const bytes = readFileSync(file);
           let expectedBytes = bytes;
           const stem = basename(file, extname(file));
-          const sidecar = join(dirname(file), `${stem}_review.json`);
+          const sidecar = join(dirname(file), '.pdf-next', `${stem}.json`);
+          mkdirSync(dirname(sidecar), { recursive: true });
           const pause = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
           const stressReload = stem.toLowerCase() === 'dense-page';
           const fixtureReviews = stressReload ? denseReviews(file) : [];
@@ -460,7 +461,8 @@ try {
     const opened = join(copies, basename(file));
     if (basename(opened).toLowerCase() === 'dense-page.pdf') {
       const reviews = denseReviews(opened);
-      writeFileSync(join(copies, 'dense-page_review.json'), reviewStore(opened, 1, reviews));
+      mkdirSync(join(copies, '.pdf-next'), { recursive: true });
+      writeFileSync(join(copies, '.pdf-next', 'dense-page.json'), reviewStore(opened, 1, reviews));
     }
     const { code, output, firstReport, reload } = await open(binary, opened, seconds);
     const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';
@@ -503,6 +505,49 @@ try {
     annotate('smoke delete key', `exit ${code}; ${onDisk}\n${output}`);
     console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
   }
+  // A store from before 0.19 (`{stem}_review.json` beside the document) moves into
+  // `.pdf-next/{stem}.json` when the file opens, and the old file is removed. The
+  // other fixtures start in the new format, so this is the only run that sees the migration.
+  const legacyFolder = join(copies, 'legacy');
+  mkdirSync(legacyFolder);
+  const legacyDoc = join(legacyFolder, 'legacy-notes.md');
+  const legacyStore = join(legacyFolder, 'legacy-notes_review.json');
+  const migratedStore = join(legacyFolder, '.pdf-next', 'legacy-notes.json');
+  copyFileSync(join(fixtures, 'notes.md'), legacyDoc);
+  writeFileSync(legacyStore, JSON.stringify({
+    format: 3,
+    revision: 4,
+    nextId: 3,
+    reviews: [{
+      id: 'r1', file: 'legacy-notes.md', kind: 'markdown', at: { line: 3 }, quote: 'A heading, a paragraph',
+      comment: 'Legacy smoke comment', action: 'polish', status: 'open', resolution: '', color: 1,
+    }, {
+      id: 'r2', file: 'legacy-notes.md', kind: 'markdown', at: { line: 3 }, quote: 'some math',
+      comment: 'Legacy applied comment', action: 'polish', status: 'applied', resolution: 'done', color: 2,
+    }],
+  }));
+  {
+    const { code, output } = await open(binary, legacyDoc, seconds, { sourceChecks: false });
+    const verdict = output.split('\n').find((line) => line.startsWith('smoke:')) || '';
+    let migrated = null;
+    try {
+      migrated = JSON.parse(readFileSync(migratedStore, 'utf8'));
+    } catch {
+      // Reported below as a missing store.
+    }
+    const comments = (migrated?.reviews ?? []).map((review) => `${review.id}:${review.comment}:${review.status}`).join('|');
+    const detail = `new store ${migrated ? `format ${migrated.format}, ${migrated.reviews.length} reviews` : 'missing'}, old file ${
+      existsSync(legacyStore) ? 'still there' : 'removed'}`;
+    if (code === 0 && verdict.startsWith('smoke: ok') && migrated?.format === 4 && !existsSync(legacyStore) &&
+        comments === 'r1:Legacy smoke comment:open|r2:Legacy applied comment:done') {
+      console.log(`  PASS  legacy store migration\n        ${verdict}; ${detail}`);
+    } else {
+      failed += 1;
+      console.log(`  FAIL  legacy store migration  (exit ${code}); ${detail}; ${comments}`);
+      annotate('smoke legacy store migration', `exit ${code}; ${detail}; ${comments}\n${output}`);
+      console.log(output.trimEnd().split('\n').map((line) => `        ${line}`).join('\n'));
+    }
+  }
 } finally {
   rmSync(copies, { recursive: true, force: true });
 }
@@ -518,5 +563,5 @@ for (const [name, value] of [['startup', median(timings.startup)], ['reload', Ma
     timings[name].map((sample) => Math.round(sample)).join(', ') || 'none'})`);
 }
 
-console.log(`\n${files.length + 1 - failed}/${files.length + 1} passed${slow ? `, ${slow} over budget` : ''}`);
+console.log(`\n${files.length + 2 - failed}/${files.length + 2} passed${slow ? `, ${slow} over budget` : ''}`);
 process.exit(failed === 0 && slow === 0 ? 0 : 1);

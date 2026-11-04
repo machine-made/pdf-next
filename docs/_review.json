@@ -1,8 +1,8 @@
 {
-  "$comment": "Format 3 review sidecar example for paper.pdf. The adjacent file is paper_review.json. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. status is open, applied, resolved or question (the agent asked the reader; the text is in question, at most 2000 chars). The app saves the reader's answer in reply (at most 2000 chars) and sets status back to open. rev is the store revision of the record's last change, set on every write (a record without it counts as changed); stamped is the revision at which pdf-next last set every rev. before (optional, at most 20000 chars) is the Markdown source of lines at.line..at.end when the review was made. action is one of request (the buttons in requests), improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete. requests (optional) lists the review card's buttons as group:name words: ask:why|how|more|example|source|derive, change:simplify|shorten|expand|check|figure, scope:phrase|paragraph|section (one), tone:formal|plain|jfm (one). An ask:* request means the text is unclear: the agent rewrites the text so it answers the question and says in resolution what it changed.",
-  "format": 3,
+  "$comment": "Format 4 review store example for paper.pdf. The store is .pdf-next/paper.json next to the document; the agent reads the open comments in paper_review.txt, not this file. Keep one canonical reviews array. The app and agents preserve unknown extension fields. The revision increments after every successful write; nextId is monotonic and IDs are never reused. Markdown records use at.line; PDF records use at.page. status is open or done. pdf-next sets a Markdown comment done (closedBy pdf-next, resolution says why) only when its quote was seen in place earlier (verifiedDigest) and is now edited or removed in the source, and opens it again if the quote returns unchanged; a comment the reader reopened (reopenedAt) is left alone on the text it was reopened on and is examined again after the next change, and a comment whose quote pdf-next has never seen in place (unverifiable) is closed this way only after a later change, once its quote has been seen in place; a quote still found in the raw source (HTML tags and emphasis marks taken out) keeps the comment open; a patch that changes quote, anchor or at resets verifiedDigest, unverifiable, reopenedAt and closedBy, and a patch that sets status or resolution clears closedBy (the reader's or agent's own close is never reopened); closedBy, reopenedAt, verifiedDigest and unverifiable are written by pdf-next only; pdf-next also waits until the file has been quiet for 2 seconds; a PDF comment is done only after a successful build (pdf-next reviews done --built). Formats 1 to 3 are read and rewritten as format 4; applied and resolved read as done, and a question reads as open with the question and the answer added to comment. The agent asks the reader in its terminal, never through pdf-next. rev is the store revision of the record's last change, set on every write (a record without it counts as changed); stamped is the revision at which pdf-next last set every rev. before (optional, at most 20000 chars) is the Markdown source of lines at.line..at.end when the review was made. action is one of request (the buttons in requests), improve (instruction in comment), polish, clarify, shorten, expand, check, define, gloss, bold, italic, delete. requests (optional) lists the review card's buttons as group:name words: ask:why|how|more|example|source|derive, change:simplify|shorten|expand|check|figure, scope:phrase|paragraph|section (one), tone:formal|plain|jfm (one). An ask:* request means the text is unclear: the agent rewrites the text so it answers the question and says in resolution what it changed.",
+  "format": 4,
   "revision": 12,
-  "nextId": 3,
+  "nextId": 4,
   "stamped": 12,
   "document": {
     "task": "Review the compiled PDF and edit its LaTeX source.",
@@ -39,10 +39,23 @@
       "comment": "",
       "action": "request",
       "requests": ["ask:why", "scope:paragraph"],
-      "status": "question",
-      "question": "Do you mean why the residual is the right test, or why it passes here?",
-      "resolution": "",
+      "status": "done",
+      "resolution": "Stated the residual norm and the tolerance.",
+      "build": { "success": true, "command": "latexmk -pdf paper.tex" },
       "color": 4,
+      "rev": 12
+    },
+    {
+      "id": "r3",
+      "file": "paper.pdf",
+      "kind": "pdf",
+      "at": { "page": 9 },
+      "quote": "the residual check passes",
+      "comment": "asked: Do you mean why the residual is the right test, or why it passes here? | answer: Why it passes here.",
+      "action": "improve",
+      "status": "open",
+      "resolution": "",
+      "color": 5,
       "rev": 12
     }
   ]

@@ -77,7 +77,7 @@ async function until(script, what, timeout = 15_000) {
   console.log(`  waited for ${what}; last: ${JSON.stringify(last)}`);
   return false;
 }
-const store = () => JSON.parse(readFileSync(join(dir, 'notes_review.json'), 'utf8'));
+const store = () => JSON.parse(readFileSync(join(dir, '.pdf-next', 'notes.json'), 'utf8'));
 
 try {
   const started = Date.now();
@@ -108,22 +108,28 @@ try {
   ok(await until("return document.querySelectorAll('#reviewList .review-row').length === 1", 'the review row'), 'Save lists the review in the panel');
   const saved = store();
   const review = saved.reviews[0];
-  ok(saved.format === 3 && saved.nextId === 2 && review?.id === 'r1', 'notes_review.json holds r1');
+  ok(saved.format === 4 && saved.nextId === 2 && review?.id === 'r1', '.pdf-next/notes.json holds r1');
   ok(review.quote === 'vortex rings' && review.comment === 'Name the shedding regime' && review.at.line === 3, `with the quote, comment and source line (${JSON.stringify(review.at)})`);
   ok(review.anchor?.documentRevision?.startsWith('sha256:') && review.anchor.prefix?.includes('sheds'), 'and the document digest and context');
-  const agent = readFileSync(join(dir, 'notes_review.agent.txt'), 'utf8');
-  const lines = agent.trim().split('\n');
-  ok(/^# notes\.md rev \d+:/.test(lines[0]) && lines[0].includes('1 open'), 'notes_review.agent.txt has the header');
+  const inbox = readFileSync(join(dir, 'notes_review.txt'), 'utf8');
+  const lines = inbox.trim().split('\n');
+  ok(/^# notes\.md rev \d+:/.test(lines[0]) && lines[0].includes('1 open') && lines[0].includes('Ask the reader in your terminal'), 'notes_review.txt has the header');
   ok(lines.length === 2 && lines[1] === 'r1 L3 Name the shedding regime | "vortex rings"', `and one line for the open item (${JSON.stringify(lines[1])})`);
 
   const done = spawnSync(bin, ['reviews', 'done', md, 'r1', 'named the regime'], { encoding: 'utf8' });
   ok(done.status === 0, `pdf-next reviews done exits 0 ${done.stderr.trim()}`);
-  ok(store().reviews[0].status === 'applied' && store().reviews[0].resolution === 'named the regime', 'The CLI marks r1 applied on disk');
-  ok(await until("return document.querySelector('#reviewList .review-row')?.dataset.status === 'applied'", 'the row to turn applied'), 'The open window shows r1 applied');
-  ok(await run("return [...document.querySelectorAll('#reviewList .review-row button')].some((b) => b.textContent === 'Resolve')"), 'and offers Resolve');
-  await run("[...document.querySelectorAll('#reviewList .review-row button')].find((b) => b.textContent === 'Resolve').click()");
-  ok(await until("return document.querySelector('#reviewList .review-row')?.dataset.status === 'resolved'", 'resolved'), 'Resolve in the window');
-  ok(store().reviews[0].status === 'resolved', 'writes resolved to the sidecar');
+  ok(store().reviews[0].status === 'done' && store().reviews[0].resolution === 'named the regime', 'The CLI marks r1 done on disk');
+  ok(await until("return document.querySelector('#reviewList .review-row')?.dataset.status === 'done'", 'the row to turn done'), 'The open window shows r1 done');
+  ok(await run("return [...document.querySelectorAll('#reviewList .review-row button')].some((b) => b.textContent === 'Reopen') && ![...document.querySelectorAll('#reviewList .review-row button')].some((b) => b.textContent === 'Resolve')"), 'and offers Reopen, not Resolve');
+
+  // pdf-next closes a comment itself when its quoted text leaves the file.
+  const added = spawnSync(bin, ['reviews', 'add', md, '--line', '5', '--quote', 'A second paragraph', '--comment', 'cut this'], { encoding: 'utf8' });
+  ok(added.status === 0 && added.stdout.trim() === 'r2', `pdf-next reviews add files r2 ${added.stderr.trim()}`);
+  ok(await until("return document.querySelectorAll('#reviewList .review-row').length === 2", 'the second row'), 'The open window lists r2');
+  writeFileSync(md, '# Notes\n\nThe wake of a sphere sheds vortex rings downstream.\n');
+  ok(await until("return [...document.querySelectorAll('#reviewList .review-row')].find((r) => r.dataset.reviewId === 'r2')?.dataset.status === 'done'", 'r2 to close'), 'Removing the quoted text closes r2 in the open window');
+  ok(store().reviews[1].status === 'done' && /^closed by pdf-next/.test(store().reviews[1].resolution), 'and on disk');
+  ok(readFileSync(join(dir, 'notes_review.txt'), 'utf8').trim().split('\n').length === 1, 'and notes_review.txt has nothing open');
 
   await keys([CTRL, '2']);
   ok(await until("return document.body.classList.contains('kind-pdf') && [...document.querySelectorAll('#viewer .page canvas')].some((c) => c.width > 0)", 'a PDF canvas'), 'Ctrl+2 shows the PDF, drawn by PDF.js');

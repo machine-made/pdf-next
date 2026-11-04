@@ -186,22 +186,28 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
   Delete say it for you, with an optional note. The Ask buttons (Why?, How?, More info,
   Example, Source?, Derive) mean "this is unclear, rewrite it so it answers this". With the
   panel closed, a selection is just for copying.
-- **The notes live next to the document**, in `{stem}_review.json` (`paper.pdf` →
-  `paper_review.json`): the quote, its page or line and the text around it, a stable ID, the
-  request, its status and what was done about it. Saving a note never changes the PDF or its
-  source; Delete means "remove this passage from the source". Whoever edits the source (you,
-  a co-author, or an agent) works through the list and marks each item applied; you check the
-  new build and resolve it. A note follows its text as the file changes, even after nearby
-  edits; a quote that was itself reworded is marked with a dashed line between its old
-  neighbours. Reattach pins a note to other text. Remove review shows Undo for ten seconds,
-  and `Ctrl+Z` brings it back with the same ID. Esc, the × or Cancel closes the review box
-  without saving. − and + in the panel head change the text size. Not available for images.
+- **The notes live next to the document**, in a `.pdf-next` folder (`paper.pdf` →
+  `.pdf-next/paper.json`): the quote, its page or line and the text around it, a stable ID, the
+  request, its status and what was done about it. Beside the document pdf-next also keeps
+  `{stem}_review.txt` (`paper_review.txt`), the open notes as plain text: that is the file whoever does the work
+  reads. Saving a note never changes the PDF or its source; Delete means "remove this passage
+  from the source". Whoever edits the source (you, a co-author, or an agent) works through the
+  list. pdf-next closes a Markdown note itself once its quoted text, which it has seen in place,
+  is edited or removed in the file. A note whose words stay (bold, italic, define, gloss, check,
+  expand, a request) stays open until `pdf-next reviews done` closes it, and so does a PDF note,
+  which closes only with a successful build. A note follows its text as
+  the file changes, even after nearby edits; a quote that was itself reworded is marked with a
+  dashed line between its old neighbours. Reattach pins a note to other text. Done closes an open note yourself (a PDF note
+  needs a successful build first); Reopen sends it back. Remove review
+  shows Undo for ten seconds, and `Ctrl+Z` brings it back with the same ID. Esc, the × or Cancel
+  closes the review box without saving. − and + in the panel head change the text size. Not
+  available for images.
 - **Check what changed.** A Markdown note remembers its paragraph as it was (`before`). Once
-  it is applied, the Review panel shows a word-by-word before and after: removed words struck
-  out, new ones highlighted, long unchanged stretches folded to …. Resolve closes it; Reopen
-  asks for a short note on what is still wrong and sends it back. When whoever is editing
-  needs you to decide something, the item turns into a question, marked with a ? on its
-  highlight and in the panel, with a field for your answer.
+  it is done, the Review panel shows a word-by-word before and after: removed words struck
+  out, new ones highlighted, long unchanged stretches folded to …. A done note stays in the
+  list, quieter, and the panel head counts them. Reopen asks for a short note on what is still
+  wrong and sends it back. When whoever is editing needs you to decide something, they ask you
+  in their own terminal; pdf-next has no questions of its own.
 
 ### Everything else
 
@@ -471,24 +477,41 @@ agent has a project instructions file, one line — *"open PDFs with `pdf-next <
 
 #### Review tasks for agents
 
-The review sidecar is a task list for editing the source. An agent needs a few things from it,
-and each has a short form:
+The open notes are a task list for editing the source. The loop for an agent is three steps:
+**read `{stem}_review.txt`, edit the file, ask in the terminal.** When the edit removes or
+rewrites the quoted text, pdf-next closes the note itself; when the words stay, close it with
+`pdf-next reviews done`. The `pdf-next reviews` commands below are for scripts.
 
-- **Read the open items** from `{stem}_review.agent.txt`, which pdf-next rewrites after every
-  change to the store, or print the same text with `pdf-next reviews brief notes.md`. One header
-  line, then one line per open item, in reading order:
+- **Read the open items** from `{stem}_review.txt` next to the document (`notes.md` →
+  `notes_review.txt`), which pdf-next rewrites after every change to the store. The same text
+  is printed by `pdf-next reviews brief notes.md`. One header line, then one line per open
+  item, in reading order; with nothing open it is one line saying so:
 
   ```text
-  # notes.md rev 12: 3 open, 0 applied. Fix each in the source. Done: pdf-next reviews done notes.md <id> "<what you changed>" (or the line "<id> <what you changed>" in notes_review.done). Unclear: pdf-next reviews ask notes.md <id> "<question>"
+  # notes.md rev 12: 3 open. Read the open items, edit notes.md. pdf-next marks a Markdown item done when its quoted text is edited or removed, once the file has been quiet for 2 seconds, and only for an item it has seen in place. Any other item (words kept: bold, italic, define, gloss, check, expand, a request) stays open: close it with pdf-next reviews done notes.md <id> "<what you changed>". Ask the reader in your terminal, not through pdf-next
   r3 L7 move this before the table | "the table below"
   r1 L12 say this is an ideal value | "the exit speed v ∗ of the gas"
   r2 L40-42 delete | "the slab burns from both faces at once, so the burning area stays flat until…"
   ```
 
-  `L12` and `L40-42` are source lines of the `.md` (`p7` is a PDF page), kept current: while
-  pdf-next shows the file it finds each review again after edits and records where it now is.
-  The quote is cut to 80 characters and only helps find the place; read the exact text from the
-  file. A line names its file only when the store holds reviews of more than one file.
+  `L12` and `L40-42` are source lines of the `.md` (`p7` is a PDF page), kept current: whenever
+  the file changes pdf-next finds each open note again and records where it now is. The quote
+  is cut to 80 characters and only helps find the place; read the exact text from the file. A
+  line names its file only when the store holds notes of more than one file.
+- **Edit the file.** For Markdown, change the text the note points to. pdf-next checks every
+  open note against the file when it opens it, when it changes, and at the start of every
+  `pdf-next reviews` command that is not a dry run (`update --dry-run` and `relocate --dry-run`
+  do not run it). A note whose quoted text is still there stays open. A note whose
+  quote was seen in place earlier and is now edited, or gone, becomes `done`, with
+  `closed by pdf-next: …` as its resolution; it opens again if the quote comes back unchanged.
+  A note it cannot place with certainty (a repeated quote with no context, text it cannot render
+  the same way, a file written in the last two seconds or empty) stays open.
+- **Ask the reader in your terminal.** pdf-next has no question flow: `pdf-next reviews ask`
+  exits with an error that says so.
+- **For a PDF**, a rebuilt PDF proves nothing about which note it settles, so a PDF note closes
+  only with the build that succeeded:
+  `pdf-next reviews done paper.pdf r3 "split the long sentence" --built "latexmk -pdf paper.tex"`.
+  `done` also works for Markdown, with the text as the resolution.
 - **Read only what changed**: `pdf-next reviews brief notes.md --since 12` lists the open items
   changed after revision 12, the one in the header you read last. Every item carries `rev`, the
   store revision of its last change.
@@ -497,35 +520,26 @@ and each has a short form:
   and a longer quote). When nothing is open it says so and exits 0.
 
   ```text
-  # notes.md: 3 open. Done: pdf-next reviews done notes.md r3 "<what you changed>" (unclear: pdf-next reviews ask notes.md r3 "<question>")
+  # notes.md: 3 open. Edit the quoted text, then close it: pdf-next reviews done notes.md r3 "<what you changed>" (Ask the reader in your terminal, not through pdf-next)
   r3 L7 move this before the table | "the table below"
   7| See the table below for the cases.
   ```
 
-- **Close an item** with `pdf-next reviews done notes.md r1 "stated the ideal-gas assumption"`,
-  which marks it `applied` with that text as its resolution. For a PDF, add the build command
-  that succeeded: `--built "latexmk -pdf paper.tex"`. An agent that can only write files appends
-  the same line, `r1 stated the ideal-gas assumption`, to `{stem}_review.done`; pdf-next applies
-  it while it has the file open, and every `reviews` command applies it first. The inbox is only
-  read, never rewritten; applying it twice changes nothing, the last line for an ID wins, and an
-  item you reopen stays open until a new line for it arrives.
-- **Ask the reader** when an item cannot be done without them:
-  `pdf-next reviews ask notes.md r4 "Which reference do you mean?"`, or the inbox line
-  `r4 ? Which reference do you mean?`. The item gets status `question` and the text in
-  `question`; it leaves the list, and the header counts it as waiting on the reader. When the
-  reader answers in the app, the answer is saved in `reply` and the item is `open` again, with
-  `you asked "…", reader replied: "…"` in its line. pdf-next before 0.17 does not know
-  `question`: it cannot read a store while an item waits on the reader, and its inbox reads
-  `r4 ? …` as a done note. Use `ask` only when the app and the CLI are 0.17 or later.
-- **Read one whole item** from the store itself. `{stem}_review.json` holds one item per line,
-  so `grep '"id":"r12"' notes_review.json` prints all of it, and every item has every key
-  (`comment` and `resolution` are `""` when empty).
+- **Read one whole item** from the store itself. `.pdf-next/{stem}.json` holds one item per
+  line, so `grep '"id":"r12"' .pdf-next/notes.json` prints all of it, and every item has every
+  key (`comment` and `resolution` are `""` when empty).
 
 Agents never write the JSON store directly: a full rewrite races with the reader adding items in
-the app. `done`, `ask`, `add`, `relocate`, the inbox and `update` take the store's lock.
-
-The `applied` items wait for the reader, who checks the result (the recompiled PDF, or the
-Markdown) and marks them `resolved`, or reopens them.
+the app. `done`, `add`, `relocate` and `update` take the store's lock. Stores and files from
+0.18 and earlier (`{stem}_review.json`, `{stem}_review.agent.txt`, `{stem}_review.done`, the
+`.bak` backups) are read once: pdf-next writes the new store, reads it back and compares the
+note IDs, and only then removes the old files. If the store cannot be written or does not read
+back the same, the new store is removed and the old files stay for the next try. The inbox is
+written after that: if it fails, the old files are still removed and the failure is shown as a
+warning, because the store is already saved. A `_review.done` with lines not yet applied, and a
+`_review.json` that also holds notes of other documents, stay. A
+question (status `question`) becomes an open note with the question and the answer added to its
+comment; `applied` and `resolved` become `done`.
 
 Scripts and agents can file reviews too:
 
@@ -542,7 +556,7 @@ context from the source when the quote is found there.
 After editing a Markdown file without pdf-next open, `pdf-next reviews relocate notes.md` finds
 the open reviews again, as the app would, and records their new lines and context. A quote whose
 own words were edited is looked for near its old line. It prints `moved L3 -> L6`, `unchanged` or
-`not found` per item; applied and resolved items are left alone. `--expected-revision N` refuses
+`not found` per item; done items are left alone. `--expected-revision N` refuses
 to write if the store changed since you read it, and `--dry-run` writes nothing.
 
 For a PDF, find the quote in the LaTeX entry point or its included chapter files. Use its quote,
@@ -555,7 +569,7 @@ For example, save this object in `patch.json` after checking the current revisio
 
 ```json
 {
-  "status": "applied",
+  "status": "done",
   "resolution": "Reworded the paragraph and compiled paper.tex successfully.",
   "source": { "file": "chapters/method.tex" },
   "build": { "success": true, "command": "latexmk -pdf paper.tex" }
@@ -579,14 +593,14 @@ key `file` for the path actually edited. A SyncTeX hint in that field carries
 `method: "synctex"` and `verified: false`; replace it with the source you verified.
 Updates preserve unrelated fields and records. Each supplied field replaces its
 previous value; include the complete object when replacing `anchor`, `source`, or
-`build` so its other keys survive. The sidecar format and a complete record example are in
+`build` so its other keys survive. The store format and a complete record example are in
 [`docs/_review.json`](docs/_review.json).
 
 Use the CLI mutation command instead of editing the JSON directly. A raw writer must preserve
-IDs and unknown fields, write atomically, and check the sidecar revision; writers that skip
+IDs and unknown fields, write atomically, and check the store revision; writers that skip
 that protocol can overwrite concurrent changes.
 
-The `status` is `open`, `applied`, `resolved` or `question` (waiting on the reader). The
+The `status` is `open` or `done`. The
 `action` field says what the reader wants: `improve` (the instruction is in `comment`),
 `polish` (better wording, same meaning), `clarify` (explain the passage better, same facts; `comment` is an optional note), `shorten`, `expand`, `check` (verify the fact, number or
 equation and fix it only if wrong), `define` (add a parenthetical definition `()` after the term;
@@ -607,8 +621,7 @@ The review card also has buttons, clicked instead of typed. They are saved in `r
 
 Buttons with no note save as action `request`; with another action they refine it. An Ask means
 the selected text is unclear to the reader: rewrite the text in the document so that it answers
-the question, within the chosen scope and tone. Do not answer on the side; the done note says
-what you changed. In the agent view:
+the question, within the chosen scope and tone. Do not answer on the side. In the inbox file:
 
 ```text
 r4 L12 make the text say why; make the text say how; scope: whole paragraph | "the residual check passes"
@@ -619,12 +632,13 @@ hyphenation, equations and included files can change how text appears. Check the
 source before editing; an equation symbol needs its equation context and position, so do not
 copy a symbol in isolation. Record the source file that actually changed. A disappeared quote
 does not prove that a Delete request succeeded, and completing a task never removes its record.
-Do not delete records from the sidecar to mark them done: set `applied`. While pdf-next shows the
-file, it keeps the open reviews pinned to their text as you edit, and `list` then prints their
-current lines.
+Do not delete records from the store to mark them done: edit the source, or set `done`. While
+pdf-next shows the file, it keeps the open reviews pinned to their text as you edit, and `list`
+then prints their current lines.
 
-`tools/agent_cost.mjs` measures what an agent reads in a full loop over stores of 10, 50 and 200
-reviews; `node tools/agent_cost.mjs --check` fails when the 50-review loop grows past its budget.
+`tools/agent_cost.mjs` measures what an agent reads over stores of 10, 50 and 200 reviews: the
+inbox file, and the script loops with `brief`, `next` and `done`. `node tools/agent_cost.mjs
+--check` fails when the 50-review inbox or a script loop grows past its budget.
 
 ## Security
 
@@ -641,7 +655,7 @@ every byte of it.
   bytes are served by a purpose-built `doc://` protocol whose handler checks every request
   against the set of files you opened this session and the local image files that an opened
   Markdown file shows — an allowlist in our own Rust code, populated only by the open path and
-  the Markdown renderer. Review commands also access the adjacent review sidecar and query an optional
+  the Markdown renderer. Review commands also access the document's store and inbox file and query an optional
   local SyncTeX mapping; source hints must point to `.tex` files inside the PDF folder.
 - **The one file the app writes is a Markdown file you opened, and only when you edit it.** Direct
   edits go through one Rust command that accepts only a `.md` from the set you opened, refuses
@@ -789,25 +803,25 @@ file that records its source and checksum.
 | Part | Version | What it does in pdf-next | Licence |
 | --- | --- | --- | --- |
 | [Rust](https://www.rust-lang.org) | 1.96 or newer | The native side: files, watching, reviews, Markdown, PDF reduction, printing. | MIT / Apache-2.0 |
-| [Tauri](https://tauri.app) | 2.11.5 | The window, the bridge between Rust and the page, bundles and installers. | MIT / Apache-2.0 |
-| [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao) | 0.55 / 0.35 | Tauri's webview and window layers: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. | MIT / Apache-2.0 |
-| tauri-plugin-dialog | 2.7.2 | The system Open dialog. | MIT / Apache-2.0 |
-| tauri-plugin-single-instance | 2.4.3 | A second `pdf-next file.pdf` opens a tab in the running window. | MIT / Apache-2.0 |
-| [serde](https://serde.rs), serde_json | 1.0 | Reads and writes the review sidecar and every message to the page. | MIT / Apache-2.0 |
-| [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | The `sha256:` digests that tell one version of a file from another. | MIT / Apache-2.0 |
-| [tempfile](https://github.com/Stebalien/tempfile) | 3.27 | Atomic writes: the sidecar, a reduced PDF, a Markdown edit. | MIT / Apache-2.0 |
-| [cap-std](https://github.com/bytecodealliance/cap-std) | 3.4.6 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
-| [open](https://github.com/Byron/open-rs) | 5.4.1 | Hands a checked web link to the default browser. | MIT |
+| [Tauri](https://tauri.app) | 2.12.5 | The window, the bridge between Rust and the page, bundles and installers. | MIT / Apache-2.0 |
+| [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao) | 0.57 / 0.37 | Tauri's webview and window layers: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. | MIT / Apache-2.0 |
+| tauri-plugin-dialog | 2.8.4 | The system Open dialog. | MIT / Apache-2.0 |
+| tauri-plugin-single-instance | 2.5.5 | A second `pdf-next file.pdf` opens a tab in the running window. | MIT / Apache-2.0 |
+| [serde](https://serde.rs), serde_json | 1.0 | Reads and writes the review store and every message to the page. | MIT / Apache-2.0 |
+| [sha2](https://github.com/RustCrypto/hashes) | 0.11.1 | The `sha256:` digests that tell one version of a file from another. | MIT / Apache-2.0 |
+| [tempfile](https://github.com/Stebalien/tempfile) | 3.27 | Atomic writes: the review store and inbox, a reduced PDF, a Markdown edit. | MIT / Apache-2.0 |
+| [cap-std](https://github.com/bytecodealliance/cap-std) | 4.0.3 | Keeps review writes inside the folder of the document that was opened. | Apache-2.0 / MIT |
+| [open](https://github.com/Byron/open-rs) | 5.4.5 | Hands a checked web link to the default browser. | MIT |
 | percent-encoding | 2.3.2 | Encodes local paths for the document protocol. | MIT / Apache-2.0 |
 | [diff-match-patch-rs](https://github.com/AnubhabB/diff-match-patch-rs) | 0.5.1 | `reviews relocate`: finds a review quote whose words were edited, near its old line. | MIT / Apache-2.0 |
-| gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.18 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
+| gio (Linux), objc2 (macOS), windows-sys (Windows) | 0.22 / 0.6 / 0.61 | Move to trash, the macOS drag pasteboard, the Windows console and print checks. | MIT (/ Apache-2.0) |
 
 **Markdown and TeX**
 
 | Part | Version | What it does in pdf-next | Licence |
 | --- | --- | --- | --- |
-| [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) | 0.13.4 | Parses Markdown: CommonMark plus tables, task lists, footnotes, strikethrough, smart punctuation and `$…$` math. | MIT |
-| [ammonia](https://github.com/rust-ammonia/ammonia) | 4.1.4 | Sanitizes the HTML before it reaches the page: no scripts, no event handlers. | MIT / Apache-2.0 |
+| [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) | 0.13.5 | Parses Markdown: CommonMark plus tables, task lists, footnotes, strikethrough, smart punctuation and `$…$` math. | MIT |
+| [ammonia](https://github.com/rust-ammonia/ammonia) | 4.2.4 | Sanitizes the HTML before it reaches the page: no scripts, no event handlers. | MIT / Apache-2.0 |
 | [math-core](https://github.com/tmke8/math-core) | 0.9.0 (pinned) | Turns TeX equations into MathML Core, drawn by the webview itself. | MIT |
 | New Computer Modern Math | in `vendor/math-core` | The equation font. | GUST Font License |
 | Latin Modern Roman | in `vendor/latin-modern` | The default Markdown text font, the TeX look. | GUST Font License |
@@ -816,7 +830,7 @@ file that records its source and checksum.
 | [Monaspace](https://github.com/githubnext/monaspace) | 1.400 | Neon, Argon and Xenon: optional Markdown and code fonts. | SIL OFL 1.1 |
 | Reading fonts from [Google Fonts](https://fonts.google.com), packaged by [Fontsource](https://fontsource.org) | Fontsource 5.3.0 (Source Serif 4, Source Sans 3: 5.3.1) | Literata, Merriweather, Source Serif 4, Libre Baskerville, Lora, EB Garamond, Crimson Pro, Newsreader, Spectral, Atkinson Hyperlegible Next, Lexend, Inter, Source Sans 3, Geist, Manrope and Space Grotesk: optional Markdown fonts, latin and latin-ext subsets in `vendor/fonts` (`tools/update_fonts.sh`). | SIL OFL 1.1 |
 | [dockview](https://github.com/dockview/dockview) | 8.8.0 | The pane layout: tiles with tabs, split and moved by dragging. | MIT |
-| [diff-match-patch](https://github.com/google/diff-match-patch) | 1.0.5 | The word-by-word before/after of an applied review. | Apache-2.0 |
+| [diff-match-patch](https://github.com/google/diff-match-patch) | 1.0.5 | The word-by-word before/after of a done review. | Apache-2.0 |
 
 **PDF**
 

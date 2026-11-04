@@ -26,11 +26,9 @@ pub(crate) struct Rendered {
     pub(crate) lines: Vec<u32>,
 }
 
-/// The rendered text of `source`, as the app's `collectTextParts` joins it:
-/// text inside one block runs together, a space stands where the source has
-/// white space or a block ends. Images and raw HTML have no text.
-pub(crate) fn rendered(source: &str) -> Rendered {
-    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+/// The Markdown features the app's renderer turns on.
+fn parser_options() -> pulldown_cmark::Options {
+    use pulldown_cmark::Options;
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -38,6 +36,15 @@ pub(crate) fn rendered(source: &str) -> Rendered {
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_SMART_PUNCTUATION);
     options.insert(Options::ENABLE_MATH);
+    options
+}
+
+/// The rendered text of `source`, as the app's `collectTextParts` joins it:
+/// text inside one block runs together, a space stands where the source has
+/// white space or a block ends. Images and raw HTML have no text.
+pub(crate) fn rendered(source: &str) -> Rendered {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let options = parser_options();
     let offsets = crate::line_start_offsets(source);
     let line = |at: usize| crate::line_at_offset(&offsets, at) as u32;
     let merged: Vec<_> = pulldown_cmark::TextMergeWithOffset::new(
@@ -193,6 +200,83 @@ pub(crate) enum Found {
     /// More than one place fits; these are the candidates.
     Ambiguous(Vec<(usize, usize)>),
     Unlocated,
+}
+
+/// How many times the whitespace-normalised quote stands in the text, whatever
+/// its context. A comment whose quote is still there is not gone.
+pub(crate) fn count_exact(text: &[char], quote: &str) -> usize {
+    let want = normalize(quote);
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(at) = find_from(text, &want, from) {
+        count += 1;
+        from = at + 1;
+    }
+    count
+}
+
+/// The raw HTML blocks of `source` as the parser finds them, one string per
+/// block (its lines run together). Words in an image's alt text, a link's
+/// destination or a code block are not part of any. Separate blocks stay
+/// separate, so words from two of them never read as one run.
+fn raw_html_blocks(source: &str) -> Vec<String> {
+    use pulldown_cmark::{Event, Parser};
+    let mut blocks = Vec::new();
+    let mut open = false;
+    for event in Parser::new_ext(source, parser_options()) {
+        if let Event::Html(text) = event {
+            if !open {
+                blocks.push(String::new());
+                open = true;
+            }
+            if let Some(block) = blocks.last_mut() {
+                block.push_str(&text);
+            }
+        } else {
+            open = false;
+        }
+    }
+    blocks
+}
+
+/// Whether the quote stands in one raw HTML block of the source once HTML tags and
+/// Markdown emphasis marks (`*`, `_`, `` ` ``, `~`) are taken out of both. For
+/// text the renderer does not show: the inside of a raw HTML block.
+pub(crate) fn quote_in_raw(source: &str, quote: &str) -> bool {
+    fn strip(text: &str, tag_gap: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut in_tag = false;
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if in_tag {
+                if c == '>' {
+                    in_tag = false;
+                    out.push_str(tag_gap);
+                }
+            } else if c == '<'
+                && chars
+                    .peek()
+                    .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!'))
+            {
+                in_tag = true;
+            } else if !matches!(c, '*' | '_' | '`' | '~') {
+                out.push(c);
+            }
+        }
+        out.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+    let want = strip(quote, "");
+    if want.is_empty() {
+        return false;
+    }
+    let blocks = raw_html_blocks(source);
+    // A tag may or may not stand for a space between words.
+    ["", " "]
+        .iter()
+        .any(|gap| blocks.iter().any(|block| strip(block, gap).contains(&want)))
 }
 
 fn find_from(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
@@ -513,6 +597,39 @@ mod tests {
             (out.lines[two], out.block_lines[two]),
             (7, 6),
             "a list is one top-level block"
+        );
+    }
+
+    #[test]
+    fn a_quote_is_in_raw_only_inside_raw_html() {
+        use super::quote_in_raw;
+        let html =
+            "<div>A sentence that\nonly the <em>HTML</em> block holds.</div>\n\nPlain text.\n";
+        assert!(quote_in_raw(html, "only the HTML block holds"));
+        let inline = "Text with <span>inline html</span> inside.\n";
+        assert!(
+            !quote_in_raw(inline, "inline html"),
+            "inline text is rendered, not raw"
+        );
+        // Words that stay in an image's alt text or a link's destination are not shown as text.
+        let alt = "![a vortex street](wake.png)\n";
+        assert!(!quote_in_raw(alt, "a vortex street"));
+        let destination = "[the wake](https://example.com/the-wake-grows)\n";
+        assert!(!quote_in_raw(destination, "the-wake-grows"));
+        let title = "[link](https://example.com \"a quotable title\")\n";
+        assert!(!quote_in_raw(title, "a quotable title"));
+        let code = "```\n<div>fenced code</div>\n```\n";
+        assert!(
+            !quote_in_raw(code, "fenced code"),
+            "a fenced block is code, not raw HTML"
+        );
+        assert!(!quote_in_raw(html, ""));
+        // Two separate raw HTML blocks are not one run of text.
+        let blocks = "<div>ends with these words</div>\n\n<div>of the other block</div>\n";
+        assert!(quote_in_raw(blocks, "these words"));
+        assert!(
+            !quote_in_raw(blocks, "words of the other"),
+            "words of two blocks are not contiguous"
         );
     }
 

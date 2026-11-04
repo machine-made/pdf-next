@@ -11,6 +11,7 @@ import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } 
 import { watchPdfRendering } from './pdf-rendering.mjs';
 import { paginate, validPageView } from './md-pages.mjs';
 import { FORMAT_LABELS, blockSpan, deleteEdit, figureWidthEdit, formatEdit, parentheticalEdit, sourceSpan } from './md-edit.mjs';
+import { CARET_MESSAGES, backspaceEdit, continuesTyping, forwardDeleteEdit, insertEdit, nodeAtOffset, offsetInText, relocate } from './caret-edit.mjs';
 import { colourCode } from './code-colour.mjs';
 import { createPalette, isTextField, selectChoices } from './palette.mjs';
 import { createNavigator } from './navigate.mjs';
@@ -236,6 +237,8 @@ const state = {
   mdFind: null,
   // `sha256:` of the Markdown file as read, the `documentRevision` of new reviews.
   markdownDigest: null,
+  // The caret in the rendered Markdown: { path, offset } with the offset in the source, or null.
+  caret: null,
   pendingNote: null,
   pendingRequests: [],
   pendingNotePdf: null,
@@ -365,7 +368,7 @@ const nav = createNavigator({
     (state.file?.kind === 'pdf' ? ui.container : ui.markdownStage).focus({ preventScroll: true });
   },
   openLink: (url) => void invoke('open_link', { url }).catch((error) => setStatus(String(error), { error: true })),
-  showRendered: () => state.markdownRaw && setRaw(false, { persist: false }),
+  showRendered: () => state.markdownRaw && setRaw(false),
   colors: () => PAGE_COLORS[state.mode] || null,
   onResize: scheduleWrap,
   status: (message) => setStatus(message),
@@ -576,7 +579,7 @@ function restorePlace(view) {
     return;
   }
   state.restoringMarkdownView = null;
-  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw), { persist: false });
+  if (Boolean(view.raw) !== state.markdownRaw) setRaw(Boolean(view.raw));
   if (view.scale !== state.markdownScale) setMarkdownScale(view.scale);
   ui.markdownStage.scrollTop = view.top;
   ui.markdownStage.scrollLeft = view.left;
@@ -1013,7 +1016,7 @@ const COMMENT_SAVE_MS = 400;
 
 /// Rendered or raw. Both nodes stay in the DOM with the same content, so the
 /// toggle is a visibility flip — no re-render, no IPC round trip.
-function setRaw(on, { persist = true } = {}) {
+function setRaw(on) {
   state.markdownRaw = on;
   ui.markdown.hidden = on;
   ui.markdownRaw.hidden = !on;
@@ -1025,14 +1028,6 @@ function setRaw(on, { persist = true } = {}) {
   ui.raw.setAttribute('aria-pressed', String(on));
   if (!on) {
     schedulePaginate();
-  }
-  if (!persist) {
-    return;
-  }
-  try {
-    localStorage.setItem('pdf-next.md-raw', on ? '1' : '');
-  } catch {
-    // Preference only.
   }
 }
 
@@ -1241,6 +1236,8 @@ function paginateMarkdown({ keepPosition = true } = {}) {
     });
     article.replaceChildren(...(pages.length ? pages : nodes));
   }
+  // Moving the text nodes drops the caret: put it back in the same place.
+  restoreMarkdownCaret();
 
   if (held) {
     const edge = stage.getBoundingClientRect().top;
@@ -1370,7 +1367,7 @@ async function showMarkdown(file, view, generation, fit, place = null) {
   ui.markdownRaw.textContent = doc.raw;
   state.markdownDigest = doc.digest;
   state.markdownSource = doc.raw;
-  setRaw(view?.raw ?? state.markdownRaw, { persist: false });
+  setRaw(Boolean(view?.raw));
   setMarkdownScale(view?.scale || place?.scale || 1);
 
   // The anchors are read where the renderer put them, before any block moves.
@@ -1404,6 +1401,8 @@ async function showMarkdown(file, view, generation, fit, place = null) {
   if (state.mdFind && !reviewed) {
     buildMarkdownFind(true);
   }
+  // Marks, find and pages move the text nodes, so the caret goes back last.
+  restoreMarkdownCaret();
   // Measured with the content laid out; used by undock as well as the fit.
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -1435,7 +1434,7 @@ async function showJson(file, view, generation, fit) {
   }
   ui.markdown.textContent = '';
   ui.markdownRaw.textContent = raw;
-  setRaw(true, { persist: false });
+  setRaw(true);
   setMarkdownScale(view?.scale || 1);
   state.natural = {
     width: MARKDOWN_WINDOW_WIDTH,
@@ -1817,6 +1816,11 @@ async function showInActiveTab(path) {
 /// any other file closes its tab.
 async function trashShownFile() {
   const file = state.file;
+  // The file is being written: trashing it now would race the write.
+  if (writeBusy || writeQueue.length) {
+    setStatus('Wait for the write to end', { error: true });
+    return;
+  }
   if (!file) {
     return;
   }
@@ -1826,6 +1830,11 @@ async function trashShownFile() {
     permanent = (await invoke('trash_plan', { path: file.path })) === 'permanent';
   } catch (error) {
     setStatus(`Could not delete ${file.name}: ${error}`, { error: true });
+    return;
+  }
+  // A write may have started while the plan was being made: check again before asking.
+  if (writeBusy || writeQueue.length) {
+    setStatus('Wait for the write to end', { error: true });
     return;
   }
   const question = permanent
@@ -2106,7 +2115,7 @@ async function applyTarget(target) {
   nav.push();
   if (state.file?.kind === 'markdown') {
     // Line anchors live on the rendered article, not the raw source column.
-    setRaw(false, { persist: false });
+    setRaw(false);
     // Find marks stay: state.mdFind still points at them.
     unwrapMarks(ui.markdown, 'mark.aim:not(.find)');
     let from = null;
@@ -2244,6 +2253,13 @@ function icon(href) {
 
 const SESSION_KEY = 'pdf-next.session';
 
+function withoutRaw(view) {
+  if (!view || typeof view !== 'object') return view;
+  const copy = { ...view };
+  delete copy.raw;
+  return copy;
+}
+
 function saveSession() {
   if (typeof localStorage === 'undefined' || launch?.smoke) return;
   try {
@@ -2253,12 +2269,12 @@ function saveSession() {
     }
     const views = {};
     for (const [k, v] of state.views.entries()) {
-      views[k] = v;
+      views[k] = withoutRaw(v);
     }
     const current = state.tabs[state.active];
     if (current && state.file?.path === current.path) {
       const live = captureView();
-      if (live) views[current.path] = live;
+      if (live) views[current.path] = withoutRaw(live);
     }
     const payload = {
       tabs: state.tabs.map((t) => ({ path: t.path, name: t.name, kind: t.kind })),
@@ -2284,7 +2300,7 @@ async function restoreSession() {
   if (!saved || !Array.isArray(saved.tabs) || !saved.tabs.length) return false;
   if (saved.views && typeof saved.views === 'object') {
     for (const [k, v] of Object.entries(saved.views)) {
-      if (v && typeof v === 'object') state.views.set(k, v);
+      if (v && typeof v === 'object') state.views.set(k, withoutRaw(v));
     }
   }
   const validTabs = [];
@@ -3312,7 +3328,7 @@ function openFind() {
     return;
   }
   if (state.file.kind === 'markdown' && state.markdownRaw) {
-    setRaw(false, { persist: false });
+    setRaw(false);
   }
   ui.find.hidden = false;
   ui.findInput.focus();
@@ -4192,7 +4208,7 @@ async function saveNote() {
         },
       });
       setStatus(`Marked for deletion · ${id}`, {
-        action: { label: 'Undo', run: () => void undoLast() },
+        action: { label: 'Undo', run: () => void requestUndo() },
       });
     } else {
       setStatus(sourceHintUnavailable
@@ -4276,8 +4292,8 @@ let commentSaveTimer = 0;
 let commentFlushPromise = null;
 let commentFlushAgain = false;
 const pendingComments = new Map();
-// What the reader is typing into a review row besides its comment: a reply to
-// the agent's question, or the note for a reopen. Kept across repaints.
+// What the reader is typing into a review row besides its comment: the note
+// for a reopen. Kept across repaints.
 const reviewTextDrafts = new Map();
 const reviewDiffCache = new Map();
 
@@ -4313,6 +4329,13 @@ function applyReviewStore(store, { authoritative = false } = {}) {
     : Math.max(1, ...reviews.map((review) => reviewIdNum(review.id) + 1));
   state.reviewRevision = Number.isSafeInteger(revision) ? revision : 0;
   state.reviewDocumentPath = state.file?.path || null;
+  // The store was saved but the agent's inbox file was not (a file of someone
+  // else's stands there). The caller sets its own message right after this
+  // returns, so the warning goes up after it.
+  if (typeof store?.inboxWarning === 'string' && store.inboxWarning) {
+    const warning = store.inboxWarning;
+    window.setTimeout(() => setStatus(warning, { error: true, sticky: true }), 0);
+  }
   if (!paintDrawsPanel) {
     renderReviewList();
   }
@@ -4396,9 +4419,9 @@ async function reloadReviewsFromDisk() {
 
 function renderReviewList() {
   const active = document.activeElement;
-  const activeTextarea = active?.matches?.('.review-comment, .review-reply, .review-reopen-note') ? active : null;
+  const activeTextarea = active?.matches?.('.review-comment, .review-reopen-note') ? active : null;
   const activeId = activeTextarea?.closest('.review-row')?.dataset.reviewId;
-  const activeClass = ['review-comment', 'review-reply', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
+  const activeClass = ['review-comment', 'review-reopen-note'].find((name) => activeTextarea?.classList.contains(name));
   const selectionStart = activeTextarea?.selectionStart;
   const selectionEnd = activeTextarea?.selectionEnd;
   ui.reviewList.textContent = '';
@@ -4412,13 +4435,8 @@ function renderReviewList() {
     (state.reviewActionFilter === 'all' || reviewAction(review) === state.reviewActionFilter) &&
     (state.reviewStatusFilter === 'all' || (review.status || 'open') === state.reviewStatusFilter));
   ui.reviewCount.textContent = `${visible.length}/${records.length}`;
-  const questions = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'question').length;
-  if (questions) {
-    const asked = document.createElement('span');
-    asked.className = 'review-question-count';
-    asked.textContent = ` · ${questions} question${questions === 1 ? '' : 's'}`;
-    ui.reviewCount.append(asked);
-  }
+  const closed = records.filter((review) => !review._draftOnly && reviewStatus(review) === 'done').length;
+  if (closed) ui.reviewCount.append(document.createTextNode(` · ${closed} done`));
   if (!visible.length) {
     const empty = document.createElement('p');
     empty.className = 'review-empty';
@@ -4433,7 +4451,6 @@ function renderReviewList() {
     row.dataset.reviewTint = String(reviewTint(review));
     row.dataset.action = review.action || 'improve';
     row.dataset.status = reviewStatus(review);
-    if (reviewStatus(review) === 'question' && !review._draftOnly) row.classList.add('question');
     const stateKey = reviewStateKey(state.file?.path, review.id);
     const conflict = state.reviewConflicts.get(stateKey);
     if (conflict) row.classList.add('conflict');
@@ -4466,9 +4483,8 @@ function renderReviewList() {
     status.className = 'review-status';
     status.textContent = review._draftOnly
       ? 'Removed on disk · your unsaved draft is preserved'
-      : `${reviewStatus(review) === 'question' ? 'question · the agent waits for your answer' : reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
+      : `${reviewStatus(review)}${review.resolution ? ` · ${review.resolution}` : ''}`;
     row.append(status);
-    if (!review._draftOnly) appendReviewQuestion(row, review);
     if (locationStatus === 'preserved') {
       const location = document.createElement('div');
       location.className = 'review-location';
@@ -4539,16 +4555,7 @@ function renderReviewList() {
       void flushCommentSave();
     });
     row.append(comment);
-    if (review.reply && reviewStatus(review) !== 'question') {
-      const reply = document.createElement('div');
-      reply.className = 'review-reply-text';
-      const label = document.createElement('span');
-      label.className = 'review-reply-label';
-      label.textContent = 'You answered';
-      reply.append(label, document.createTextNode(review.reply));
-      row.append(reply);
-    }
-    if (!review._draftOnly && reviewStatus(review) === 'applied') appendReviewDiff(row, review);
+    if (!review._draftOnly && reviewStatus(review) === 'done') appendReviewDiff(row, review);
 
     const actions = document.createElement('div');
     actions.className = 'review-actions';
@@ -4563,6 +4570,18 @@ function renderReviewList() {
         void reattachReview(review);
       });
       actions.append(reattach);
+      // The reader's own close: a status patch like Reopen, so pdf-next never
+      // reopens it, and a PDF comment without a build says why it cannot close.
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'review-done';
+      done.textContent = 'Done';
+      done.title = 'Close this review yourself';
+      done.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void patchReview(review, { status: 'done' }, `Review ${review.id} done`);
+      });
+      actions.append(done);
     }
     if (review._draftOnly) {
       const copy = document.createElement('button');
@@ -4600,21 +4619,10 @@ function renderReviewList() {
       });
       actions.append(useDisk, saveDraft);
     }
-    const settled = !review._draftOnly && ['applied', 'resolved'].includes(reviewStatus(review));
+    const settled = !review._draftOnly && reviewStatus(review) === 'done';
     if (settled && state.reopenReviewId === review.id) {
       row.append(reopenForm(review));
     } else if (settled) {
-      if (reviewStatus(review) === 'applied') {
-        const resolve = document.createElement('button');
-        resolve.type = 'button';
-        resolve.textContent = 'Resolve';
-        resolve.title = 'The change is right: close this review';
-        resolve.addEventListener('click', (event) => {
-          event.stopPropagation();
-          void patchReview(review, { status: 'resolved' }, 'Review resolved');
-        });
-        actions.append(resolve);
-      }
       const reopen = document.createElement('button');
       reopen.type = 'button';
       reopen.textContent = 'Reopen';
@@ -4667,10 +4675,10 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   const box = document.createElement('div');
   box.className = `review-${kind}-box`;
   const field = document.createElement('textarea');
-  field.className = kind === 'reply' ? 'review-reply' : 'review-reopen-note';
+  field.className = 'review-reopen-note';
   field.rows = 2;
   field.placeholder = placeholder;
-  field.setAttribute('aria-label', kind === 'reply' ? 'Your answer to the agent' : 'What is still wrong');
+  field.setAttribute('aria-label', 'What is still wrong');
   field.value = reviewTextDrafts.get(key) ?? '';
   field.addEventListener('click', (event) => event.stopPropagation());
   field.addEventListener('input', () => reviewTextDrafts.set(key, field.value));
@@ -4709,34 +4717,6 @@ function reviewTextField(review, kind, { placeholder, label, send, cancel = null
   actions.append(button);
   box.append(field, actions);
   return box;
-}
-
-/// The agent's question, for an item it handed back to the reader.
-function appendReviewQuestion(row, review) {
-  if (reviewStatus(review) !== 'question') return;
-  const asked = document.createElement('div');
-  asked.className = 'review-question';
-  const label = document.createElement('span');
-  label.className = 'review-question-label';
-  label.textContent = 'The agent asks';
-  asked.append(label, document.createTextNode(String(review.question || '(no question text)')));
-  row.append(asked, reviewTextField(review, 'reply', {
-    placeholder: 'Your answer (Enter to send)', label: 'Send', send: (text, key) => sendReviewReply(review, text, key),
-  }));
-}
-
-async function sendReviewReply(review, text, key) {
-  if (!text) {
-    setStatus('Write an answer first');
-    return;
-  }
-  const path = state.file?.path;
-  // The answer is to this question: a reworded one, or a store write by the
-  // agent elsewhere, is not a conflict, a changed question is.
-  const ok = await patchReview(review, { reply: text, status: 'open' }, `Answer sent · ${review.id} is open again`, {
-    also: { question: review.question ?? null },
-  });
-  if (ok && state.file?.path === path) reviewTextDrafts.delete(key);
 }
 
 function reopenForm(review) {
@@ -5039,7 +5019,7 @@ async function deleteReview(id) {
       });
     }
     setStatus(`Review ${id} removed`, {
-      action: expectedRecord ? { label: 'Undo', run: () => void undoLast() } : null,
+      action: expectedRecord ? { label: 'Undo', run: () => void requestUndo() } : null,
     });
   } catch (error) {
     if (state.generation === generation && state.file?.path === path) {
@@ -5048,16 +5028,13 @@ async function deleteReview(id) {
   }
 }
 
-/// Compare-and-swap one record: each patched field, and each field in `also`,
-/// must still hold the value shown.
-async function patchReview(review, patch, message, { also = {} } = {}) {
+/// Compare-and-swap one record: each patched field must still hold the value
+/// shown.
+async function patchReview(review, patch, message) {
   if (!state.file) return false;
   const path = state.file.path;
   const generation = state.generation;
-  const expected = {
-    ...Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null])),
-    ...also,
-  };
+  const expected = Object.fromEntries(Object.keys(patch).map((key) => [key, Object.hasOwn(review, key) ? review[key] : null]));
   try {
     const store = await invoke('patch_review', { document: path, id: review.id, patch, expected });
     if (state.generation !== generation || state.file?.path !== path) return false;
@@ -5210,10 +5187,6 @@ function makeReviewBadge(review) {
   badge.textContent = reviewLabel(review, state.reviews);
   badge.dataset.reviewId = review.id;
   badge.dataset.reviewTint = String(reviewTint(review));
-  if (reviewStatus(review) === 'question') {
-    badge.dataset.reviewStatus = 'question';
-    badge.title = `The agent asks: ${review.question || ''}`;
-  }
   return badge;
 }
 
@@ -5274,7 +5247,6 @@ function applyReviewTint(el, id) {
   const review = state.reviews.find((item) => item.id === id);
   el.dataset.reviewTint = String(reviewTint(review || id));
   if (reviewAction(review) === 'delete') el.dataset.reviewAction = 'delete';
-  if (reviewStatus(review) === 'question') el.dataset.reviewStatus = 'question';
 }
 
 function clearReviewTint(el) {
@@ -5518,7 +5490,7 @@ function paintMarkdownMarks() {
     } else if (found.legacy) {
       byLines.set(review, null);
     }
-    const gone = reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review));
+    const gone = reviewAction(review) === 'delete' && reviewStatus(review) === 'done';
     // `lines`: no context was saved, so the line range stands in for the text.
     locations.set(
       reviewStateKey(state.file.path, review.id),
@@ -5544,7 +5516,7 @@ function paintMarkdownMarks() {
       return last;
     });
     hosts.set(item.review, first && markdownBadgeHost(first));
-    if (first && item.review.before && reviewStatus(item.review) === 'applied') {
+    if (first && item.review.before && reviewStatus(item.review) === 'done') {
       spans.set(reviewStateKey(state.file.path, item.review.id),
         atRange(lineNear(first, ui.markdown), lineNear(last ?? first, ui.markdown), 'line'));
     }
@@ -5713,7 +5685,7 @@ async function paintPdfMarks() {
   for (const review of state.reviews) {
     const start = review.at?.page;
     const anchor = review.anchor || { position: start ? { page: start } : null };
-    if (reviewAction(review) === 'delete' && ['applied', 'resolved'].includes(reviewStatus(review))) {
+    if (reviewAction(review) === 'delete' && reviewStatus(review) === 'done') {
       locationUpdates.set(reviewStateKey(state.file.path, review.id), 'preserved');
       continue;
     }
@@ -5968,41 +5940,6 @@ async function applyDirectFormat(format) {
   await writeMarkdownEdit(edit, `${FORMAT_LABELS[format]}${edit.removed ? ' removed' : ''}`);
 }
 
-/// Write one edit, then show the file as it now is. Undo writes the inverse,
-/// against the digest this edit produced, so it never undoes over a change
-/// made since.
-async function writeMarkdownEdit({ start, expected, replacement }, label) {
-  const file = state.file;
-  if (!file || expected === replacement) return;
-  const path = file.path;
-  try {
-    const next = await invoke('edit_markdown', {
-      path, expectedDigest: state.markdownDigest, start, expectedText: expected, replacement,
-    });
-    pushUndo({
-      path,
-      label: label.toLowerCase(),
-      run: async () => {
-        await invoke('edit_markdown', {
-          path, expectedDigest: next, start, expectedText: replacement, replacement: expected,
-        });
-        if (state.file?.path === path) {
-          await openFile(state.file, { preserveView: true });
-          setStatus(`Undone: ${label}`);
-        }
-      },
-    });
-    if (state.file?.path === path) {
-      await openFile(state.file, { preserveView: true });
-    }
-    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void undoLast() } });
-  } catch (error) {
-    if (state.file?.path === path) {
-      setStatus(`Could not edit the file: ${String(error)}`, { error: true });
-    }
-  }
-}
-
 /// Edit text: the source of the selection, or of its whole paragraph when the
 /// selection crosses markup, in a small editor.
 function openEditBox() {
@@ -6054,23 +5991,476 @@ async function saveEditBox() {
   }
   const replacement = ui.editText.value;
   closeEditBox();
-  await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit');
+  const result = await writeMarkdownEdit({ start: pending.start, expected: pending.expected, replacement }, 'Edit',
+    'an edit from the Edit box was not written');
+  // A write that was not made keeps the text in the box, so the save can be tried again.
+  if (result?.refused && state.file?.path === pending.path) {
+    state.pendingEdit = pending;
+    ui.editText.value = replacement;
+    ui.editBox.hidden = false;
+  }
 }
 
-/// Right-click Delete: in rendered Markdown with direct edits on, deletes the
-/// selected text immediately and pushes an Undo entry; otherwise creates a
-/// 1-click delete review with Undo.
-async function deleteSelectionNow() {
+// ── Typing in the rendered Markdown ───────────────────────────────────────
+// The article is contenteditable, so the browser draws the caret and moves it
+// with the mouse and the arrows. The browser never changes the text: beforeinput
+// is cancelled, and each change becomes one edit of the .md, written by Rust and
+// shown by a re-render. The caret is kept as a source offset, with the digest of
+// the file it was read at, so it survives a re-render. Every write, undo
+// included, goes through one queue, one at a time, in order.
+
+const CARET_SKIP = 'math, pre, code, a[href], table, .md-figure, img[data-doc]';
+const EDITING_OFF = 'Editing the Markdown file is off in Settings; add a review instead';
+const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+const writeQueue = [];
+let writeBusy = false;
+// Counts the caret changes a user makes (a click, a selection, a key that moves or types). A write that runs while
+// the user clicks keeps the click's caret: it sets its own caret after itself only when this count has not moved.
+let caretVersion = 0;
+function setUserCaret(caret) {
+  caretVersion += 1;
+  state.caret = caret;
+}
+
+function skippedAt(node) {
+  const el = node?.nodeType === 3 ? node.parentElement : node;
+  return Boolean(el?.closest?.(CARET_SKIP));
+}
+
+/// The collapsed selection as a text node and a place in it, or null. A caret
+/// on an element (a click on the padding) is no caret.
+function domCaret() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !selection.isCollapsed) return null;
+  const { anchorNode, anchorOffset } = selection;
+  if (!anchorNode || anchorNode.nodeType !== 3 || !ui.markdown.contains(anchorNode)) return null;
+  return { node: anchorNode, at: anchorOffset };
+}
+
+/// The DOM caret as a source caret, read against the file on screen:
+/// { path, digest, offset, start, end, text, at }, or { offset: null, error }.
+/// `start`/`end` bound the plain-text run the caret sits in.
+function caretFromDom() {
+  const dom = domCaret();
+  if (!dom || state.file?.kind !== 'markdown' || typeof state.markdownSource !== 'string') return null;
+  const path = state.file.path;
+  const digest = state.markdownDigest;
+  if (skippedAt(dom.node)) return { path, digest, offset: null, error: 'skipped' };
+  const line = lineNear(dom.node, ui.markdown);
+  const mapped = line
+    ? offsetInText(state.markdownSource, line, dom.node.textContent, dom.at)
+    : { error: 'markup' };
+  return {
+    path,
+    digest,
+    offset: mapped.offset ?? null,
+    start: mapped.start,
+    end: mapped.end,
+    text: dom.node.textContent,
+    at: dom.at,
+    error: mapped.error,
+  };
+}
+
+/// The rendered text nodes of the block at source `line`, outside math, code,
+/// links, tables and figures, in reading order.
+function blockTextNodes(line) {
+  let start = null;
+  let stop = null;
+  for (const marker of ui.markdown.querySelectorAll('[data-line]')) {
+    if (Number(marker.dataset.line) <= line) {
+      start = marker;
+    } else {
+      stop = marker;
+      break;
+    }
+  }
+  if (!start) return [];
+  const walker = document.createTreeWalker(ui.markdown, NodeFilter.SHOW_TEXT);
+  walker.currentNode = start;
+  const nodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (stop && stop.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) break;
+    if (node.textContent.trim() && !skippedAt(node)) nodes.push(node);
+  }
+  return nodes;
+}
+
+/// Puts the DOM caret back where the source caret is, after a re-render. When the
+/// file changed under the caret, it is found again by the text around it, unless
+/// a write is queued: that write then refuses the caret, so no key lands in the
+/// changed file. With focus in a field outside the text, the window selection is
+/// left alone.
+function restoreMarkdownCaret() {
+  const caret = state.caret;
+  if (!caret || caret.path !== state.file?.path || caret.offset == null || state.markdownRaw) return;
+  const raw = state.markdownSource;
+  let offset = caret.offset;
+  if (caret.digest !== state.markdownDigest) {
+    if (writeBusy || writeQueue.length) return;
+    const moved = caret.text == null ? null : relocate(raw, caret.text, caret.at, caret.offset);
+    if (!moved) {
+      state.caret = null;
+      setStatus('The text around the caret is gone: click where you want to type', { error: true });
+      return;
+    }
+    offset = moved.offset;
+  }
+  const nodes = blockTextNodes(raw.slice(0, offset).split('\n').length);
+  const place = nodeAtOffset(raw, offset, nodes.map((node) => node.textContent));
+  if (!place) {
+    state.caret = null;
+    setStatus('The caret could not be placed after the edit: click in the text to continue', { error: true });
+    return;
+  }
+  const node = nodes[place.index];
+  // Focus in another field (find, a note, the Edit box, the review panel): its selection and focus stay where the
+  // reader is typing. The caret is only kept, for the next time the text has focus.
+  const active = document.activeElement;
+  const elsewhere = active && active !== document.body && active !== document.documentElement && !ui.markdown.contains(active);
+  if (!elsewhere) {
+    const range = document.createRange();
+    range.setStart(node, place.at);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  state.caret = {
+    path: caret.path,
+    offset,
+    start: place.start,
+    end: place.end,
+    digest: state.markdownDigest,
+    text: node.textContent,
+    at: place.at,
+  };
+}
+
+/// Keys go to the caret when focus is in the rendered Markdown, or when nothing
+/// has focus and the selection is in it.
+function caretKeyTarget() {
+  if (state.file?.kind !== 'markdown' || state.markdownRaw || typeof state.markdownSource !== 'string') return false;
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== document.documentElement) {
+    return ui.markdown.contains(active);
+  }
+  const anchor = window.getSelection()?.anchorNode;
+  return Boolean(anchor && ui.markdown.contains(anchor));
+}
+
+/// True when the caret, or a selection, is in a text node of the rendered Markdown and keys go there.
+function caretInText() {
+  const anchor = window.getSelection()?.anchorNode;
+  return caretKeyTarget() && anchor?.nodeType === 3 && ui.markdown.contains(anchor);
+}
+
+/// Takes a key for the rendered text: true when it is taken. Changes to the text
+/// are queued and written in order; keys wait while a write runs. Delete is never
+/// left to the window while a write is in flight, so it cannot reach the trash.
+/// False leaves the key to the window's own shortcuts (Delete with no caret in the
+/// text still asks about the trash).
+function handleCaretKey(event) {
+  const key = event.key;
+  // Composition and dead keys belong to the browser; the composed text comes at compositionend.
+  if (event.isComposing || event.keyCode === 229 || key === 'Dead' || key === 'Process') return false;
+  const busy = writeBusy || writeQueue.length > 0;
+  const editing = key.length === 1 || key === 'Backspace' || key === 'Delete' || key === 'Enter';
+  if (!editing) {
+    if (busy && MOVE_KEYS.has(key)) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
+  if (key === 'Enter') {
+    if (!busy && !domCaret()) return false;
+    event.preventDefault();
+    setStatus('A new paragraph is not typed in the rendered view: edit the raw text (Ctrl+U)', { error: true });
+    return true;
+  }
+  const selection = window.getSelection();
+  // A selection made while a write runs is not acted on at the caret the write is moving away from.
+  if (busy && selection && !selection.isCollapsed) {
+    event.preventDefault();
+    setStatus('Wait for the write to end, then select again', { error: true });
+    return true;
+  }
+  if (!busy && selection && !selection.isCollapsed) {
+    event.preventDefault();
+    if (!directEditsEnabled()) {
+      // Ordinary text stays off, but deleting a selection can still be asked of the agent as a review.
+      if ((key === 'Backspace' || key === 'Delete') && state.reviewOpen && reviewFromSelection()) {
+        void deleteSelectionNow();
+      } else {
+        setStatus(EDITING_OFF, { error: true });
+      }
+    } else if (key === 'Backspace' || key === 'Delete') {
+      void deleteSelectionNow({ keys: 1 });
+    } else {
+      const target = markdownEditTarget();
+      if (!target) {
+        setStatus('Select text in the rendered Markdown to replace it', { error: true });
+      } else if (skippedAt(target.range.commonAncestorContainer)) {
+        setStatus(CARET_MESSAGES.skipped, { error: true });
+      } else {
+        enqueueSelection(selectionSnapshot(target), key, 1);
+      }
+    }
+    return true;
+  }
+  if (!busy && !domCaret()) return false;
+  // With editing off, a printable key is not text: it is left to the window's reading shortcuts (+, -, Space, j, k, g).
+  if (!busy && !directEditsEnabled() && key.length === 1) return false;
+  event.preventDefault();
+  if (!directEditsEnabled()) {
+    setStatus(EDITING_OFF, { error: true });
+    return true;
+  }
+  // Idle: the DOM is current, so the caret is read from it. Busy: the queue's
+  // own caret is ahead of the DOM, and it stays the one in use.
+  if (!busy) setUserCaret(caretFromDom());
+  enqueueWrite(() => applyCaretKey(key), 1);
+  return true;
+}
+
+/// The picked selection as the source of a queued write: its line, its end and its quote.
+function selectionSnapshot(target) {
+  return {
+    line: target.picked.at.line,
+    end: target.picked.at.end,
+    quote: target.picked.quote,
+    digest: state.markdownDigest,
+  };
+}
+
+function enqueueSelection(snapshot, key, keys) {
+  window.getSelection()?.removeAllRanges();
+  enqueueWrite(() => applySelectionKey(snapshot, key), keys);
+}
+
+/// A key typed over, or deleting, the selection as it was when the key came.
+async function applySelectionKey(snapshot, key) {
+  if (state.file?.kind !== 'markdown') return { refused: 'The file on screen is not Markdown' };
+  // The selection was read at snapshot.digest; if the file has been read again since, its offsets are not this file's.
+  if (snapshot.digest !== state.markdownDigest) {
+    return { refused: 'The file changed on disk, so the selection was not written' };
+  }
+  const raw = state.markdownSource;
+  const span = sourceSpan(raw, snapshot.line, snapshot.end, snapshot.quote);
+  if (span.error) {
+    return {
+      refused: span.error === 'repeated'
+        ? 'That text appears more than once in its paragraph: select a longer passage'
+        : 'The selection crosses formatting or a link: use Edit text… (Ctrl+E)',
+    };
+  }
+  if (key === 'Backspace' || key === 'Delete') {
+    const removed = deleteEdit(raw, span);
+    return writeNow({ ...removed, digest: snapshot.digest, after: { offset: removed.start } }, 'Delete');
+  }
+  // The bounds are the typed text; the run they belong to is read again when the file is shown.
+  return writeNow({
+    start: span.start,
+    expected: raw.slice(span.start, span.end),
+    replacement: key,
+    digest: snapshot.digest,
+    after: { offset: span.start + key.length, start: span.start, end: span.start + key.length },
+  }, 'Typing');
+}
+
+/// Runs queued tasks one at a time, in order. A task returns { refused: message }
+/// when its write was not made. The tasks still queued behind it are then dropped,
+/// because the caret or the offsets they were queued with are no longer known: each
+/// dropped task is told so (its `drop` is called, so an awaited edit resolves), and
+/// the status line says how many typed keys and which other edits were dropped. A
+/// task with `keep` is run anyway (a re-render that must happen after a refusal).
+/// A task is refused, too, when the file on screen is no longer the one it was queued in.
+function enqueueWrite(run, keys = 0, options = {}) {
+  // The file on screen when the change was made: the task runs only while that file is still the one shown.
+  writeQueue.push({ run, keys, path: state.file?.path ?? null, ...options });
+  void drainWrites();
+}
+
+async function drainWrites() {
+  if (writeBusy) return;
+  writeBusy = true;
+  try {
+    while (writeQueue.length) {
+      const task = writeQueue.shift();
+      // A task that throws is a refusal: nothing else may be left queued with no drain running.
+      let result;
+      if (!task.keep && task.path !== (state.file?.path ?? null)) {
+        // Another file is on screen now, perhaps one with the same text and so the same digest.
+        result = { refused: 'Another file is shown now, so the change made in the first one was not written' };
+      } else {
+        try {
+          result = await task.run();
+        } catch (error) {
+          result = { refused: `Could not edit the file: ${String(error)}` };
+        }
+      }
+      if (result?.refused) {
+        const kept = writeQueue.filter((item) => item.keep);
+        const dropped = writeQueue.filter((item) => !item.keep);
+        writeQueue.length = 0;
+        writeQueue.push(...kept);
+        let keys = task.keys;
+        const notWritten = [];
+        for (const item of dropped) {
+          keys += item.keys;
+          if (!item.keys) notWritten.push(item.notWritten ?? 'an edit was not written');
+          item.drop?.(result.refused);
+        }
+        const parts = [result.refused];
+        if (keys) parts.push(`${keys} typed ${keys === 1 ? 'key was' : 'keys were'} not written`);
+        parts.push(...notWritten);
+        setStatus(parts.join('; '), { error: true });
+      }
+    }
+  } finally {
+    writeBusy = false;
+  }
+}
+
+/// Queues one edit of the file; resolves with its result (see drainWrites). The
+/// digest is taken now, with the offsets the caller computed: a write queued
+/// behind another one must not be applied to a file that has changed since. A
+/// dropped edit resolves with the refusal; `notWritten` says what it was in the status.
+function writeMarkdownEdit(edit, label, notWritten = `an edit (${label}) was not written`) {
+  const pinned = { ...edit, digest: edit.digest ?? state.markdownDigest };
+  return new Promise((resolve) => {
+    enqueueWrite(async () => {
+      let result;
+      try {
+        result = await writeNow(pinned, label);
+      } catch (error) {
+        result = { refused: `Could not edit the file: ${String(error)}` };
+      }
+      resolve(result);
+      return result;
+    }, 0, { notWritten, drop: (message) => resolve({ refused: message }) });
+  });
+}
+
+/// Writes one edit now. Only the queue calls it. Undo writes the inverse, against
+/// the digest each write returned, so it never undoes over a change made since.
+/// `edit.after`, when there is one, is the caret once the file is shown again.
+/// `edit.digest` is the file the caret was read at; Rust refuses a write against
+/// any other file. Typed characters at one place in quick succession join one
+/// undo entry, up to a run limit (see continuesTyping). Resolves 'ok', 'skipped',
+/// or { refused: message }.
+async function writeNow(edit, label) {
+  const { start, expected, replacement } = edit;
+  const after = edit.after ?? null;
+  const file = state.file;
+  if (!file || expected === replacement) return 'skipped';
+  const path = file.path;
+  const digest = edit.digest ?? state.markdownDigest;
+  if (digest !== state.markdownDigest) return { refused: 'The file changed on disk, so the change was not written' };
+  // The caret count as it was when the write began. A click during the write moves it, and the click's caret is kept.
+  const caretVersionAtStart = caretVersion;
+  try {
+    const next = await invoke('edit_markdown', {
+      path, expectedDigest: digest, start, expectedText: expected, replacement,
+    });
+    const now = performance.now();
+    const top = undoStack.at(-1);
+    if (top?.path === path && continuesTyping(top, edit, now - top.at)) {
+      top.edits.push(edit);
+      top.digest = next;
+      top.after = after;
+      top.at = now;
+    } else {
+      const entry = {
+        path,
+        label: label.toLowerCase(),
+        typing: after !== null && expected === '' && replacement !== '',
+        edits: [edit],
+        digest: next,
+        after,
+        at: now,
+        run: async () => {
+          let digest = entry.digest;
+          for (const step of [...entry.edits].reverse()) {
+            digest = await invoke('edit_markdown', {
+              path, expectedDigest: digest, start: step.start, expectedText: step.replacement, replacement: step.expected,
+            });
+          }
+          if (state.file?.path === path) {
+            state.caret = null;
+            await openFile(state.file, { preserveView: true });
+            setStatus(`Undone: ${label}`);
+          }
+        },
+      };
+      pushUndo(entry);
+    }
+    if (state.file?.path === path) {
+      if (caretVersion === caretVersionAtStart) state.caret = after === null ? null : { path, ...after, digest: next };
+      await openFile(state.file, { preserveView: true });
+    }
+    setStatus(`${label} · saved to ${file.name}`, { action: { label: 'Undo', run: () => void requestUndo() } });
+    return 'ok';
+  } catch (error) {
+    const text = String(error);
+    return { refused: `Could not edit the file: ${/changed/i.test(text) ? 'the file changed on disk' : text}` };
+  }
+}
+
+/// Ctrl+Z and the Undo buttons: the undo waits for the queued writes, then runs.
+function requestUndo() {
+  enqueueWrite(async () => {
+    if (!(await undoLast())) setStatus('Nothing to undo');
+    return 'ok';
+  });
+}
+
+/// A key for the caret, queued with the caret it is typed at (see restoreMarkdownCaret).
+async function applyCaretKey(key) {
+  const caret = state.caret;
+  if (!caret || caret.path !== state.file?.path) return { refused: CARET_MESSAGES.empty };
+  if (caret.offset == null) return { refused: CARET_MESSAGES[caret.error] ?? CARET_MESSAGES.markup };
+  if (caret.digest !== state.markdownDigest) {
+    state.caret = null;
+    return { refused: 'The file changed on disk; click where you want to type' };
+  }
+  const raw = state.markdownSource;
+  let edit;
+  let label;
+  if (key === 'Backspace') {
+    edit = backspaceEdit(raw, caret);
+    label = 'Backspace';
+  } else if (key === 'Delete') {
+    edit = forwardDeleteEdit(raw, caret);
+    label = 'Delete';
+  } else {
+    edit = insertEdit(caret, key);
+    label = 'Typing';
+  }
+  if (edit.error) return { refused: CARET_MESSAGES[edit.error] };
+  edit.digest = caret.digest;
+  return writeNow(edit, label);
+}
+
+/// Right-click Delete, the palette, and Delete or Backspace on a selection: removes
+/// the selected text from the file. With review on, a selection that cannot be
+/// traced to the source asks for a delete review instead.
+async function deleteSelectionNow(options) {
   hideReviewChrome();
+  const keys = options?.keys ?? 0;
   const target = markdownEditTarget();
+  if (target && skippedAt(target.range.commonAncestorContainer)) {
+    setStatus(CARET_MESSAGES.skipped, { error: true });
+    return;
+  }
   if (target) {
-    const raw = state.markdownSource;
-    const { line, end } = target.picked.at;
-    const span = sourceSpan(raw, line, end, target.picked.quote);
-    if (!span.error) {
-      const edit = deleteEdit(raw, span);
-      window.getSelection()?.removeAllRanges();
-      await writeMarkdownEdit(edit, 'Delete');
+    const idle = !writeBusy && writeQueue.length === 0;
+    const span = idle
+      ? sourceSpan(state.markdownSource, target.picked.at.line, target.picked.at.end, target.picked.quote)
+      : null;
+    if (!span?.error) {
+      enqueueSelection(selectionSnapshot(target), 'Delete', keys);
       return;
     }
     if (!state.reviewOpen) {
@@ -6661,6 +7051,119 @@ document.addEventListener('pointerdown', (event) => {
   }
 });
 
+// The browser may draw the caret in the article, but it never changes the
+// text: every typed change goes through handleCaretKey. Composition is the
+// exception: the browser draws it, and the composed text is written at compositionend.
+ui.markdown.addEventListener('beforeinput', (event) => {
+  if (event.isComposing || String(event.inputType).startsWith('insertCompositionText')) return;
+  event.preventDefault();
+});
+// Composed text (an accent from a dead key, say) is one insert, taken when the composition ends. It is written at
+// the text caret read when the composition began (composingAt). A composition that begins while a write runs and
+// over text takes the queue's caret instead (QUEUED): its insert waits behind that write, so the order holds. A
+// refusal is queued too, as a task that is never dropped, so a write's status cannot replace it. The browser has put
+// the composing text in the DOM, so every refusal shows the file again from its own text.
+const QUEUED = { queued: true };
+let composing = false;
+let composingAt = null;
+let composingRefusal = null;
+ui.markdown.addEventListener('compositionstart', () => {
+  composing = true;
+  composingAt = null;
+  composingRefusal = null;
+  const selection = window.getSelection();
+  // A click in math, code, a link or a table leaves the caret on the article itself: the skipped case.
+  const skipped = Boolean(selection?.isCollapsed && selection.anchorNode === ui.markdown);
+  if (writeBusy || writeQueue.length) {
+    if (domCaret()) composingAt = QUEUED;
+    else composingRefusal = skipped ? CARET_MESSAGES.skipped : 'Wait for the write to end, then type again';
+    return;
+  }
+  if (domCaret()) {
+    setUserCaret(caretFromDom());
+    composingAt = state.caret;
+  }
+  if (!composingAt) composingRefusal = skipped ? CARET_MESSAGES.skipped : 'Select no text and click where you want to type';
+});
+ui.markdown.addEventListener('compositionend', (event) => {
+  composing = false;
+  const at = composingAt;
+  const refusal = composingRefusal;
+  composingAt = null;
+  composingRefusal = null;
+  if (!event.data || state.file?.kind !== 'markdown' || state.markdownRaw) return;
+  // A composition that began before the presentation is cancelled, not written: show the file again from its own text.
+  if (presentation) {
+    enqueueWrite(async () => {
+      await refreshRendered();
+      return 'ok';
+    }, 0, { keep: true });
+    return;
+  }
+  const refuse = (message) => {
+    enqueueWrite(async () => {
+      setStatus(message, { error: true });
+      await refreshRendered();
+      return 'ok';
+    }, 0, { keep: true });
+  };
+  if (!directEditsEnabled()) {
+    refuse(EDITING_OFF);
+    return;
+  }
+  if (!at) {
+    refuse(refusal ?? 'Select no text and click where you want to type');
+    return;
+  }
+  if (at !== QUEUED && at.offset == null) {
+    refuse(CARET_MESSAGES[at.error] ?? CARET_MESSAGES.markup);
+    return;
+  }
+  enqueueWrite(async () => {
+    const result = await applyCaretKey(event.data);
+    if (result?.refused) await refreshRendered();
+    return result;
+  }, 1);
+});
+/// Shows the open Markdown file again from its own text: a refused composition leaves its accent in the rendered text.
+async function refreshRendered() {
+  const file = state.file;
+  if (file?.kind === 'markdown' && !state.markdownRaw) await openFile(file, { preserveView: true });
+}
+// A click on math, code, a link or a table puts no caret there. A double-click
+// puts one where it is and selects no word. The article takes focus, so that a
+// Delete now is a Delete in the text (and does nothing there).
+ui.markdown.addEventListener('mousedown', (event) => {
+  if (event.button !== 0 || state.markdownRaw || state.file?.kind !== 'markdown') return;
+  if (event.target instanceof Element && event.target.closest(CARET_SKIP)) {
+    event.preventDefault();
+    // Focus puts the caret at the start of the text; a caret on the article itself (no text node) keeps keys out of the text.
+    ui.markdown.focus({ preventScroll: true });
+    window.getSelection()?.collapse(ui.markdown, 0);
+    setUserCaret(null);
+    setStatus(CARET_MESSAGES.skipped);
+    return;
+  }
+  if (event.detail < 2) return;
+  const point = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+  if (!point || !ui.markdown.contains(point.startContainer)) return;
+  event.preventDefault();
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(point);
+  ui.markdown.focus({ preventScroll: true });
+});
+// A click anywhere else leaves the caret where it was, not in the file.
+document.addEventListener('pointerdown', (event) => {
+  if (!(event.target instanceof Node) || !ui.markdown.contains(event.target)) setUserCaret(null);
+}, true);
+// The source caret follows the DOM caret while no edit is being written, so a
+// reload (or a re-render) puts the caret back where the reader left it.
+document.addEventListener('selectionchange', () => {
+  // During a composition the browser has put the composed text in the DOM: the caret is read at its start.
+  if (!composing && !writeBusy && writeQueue.length === 0 && domCaret()) setUserCaret(caretFromDom());
+});
+
 // Single-click selects a figure in Markdown for drag-resizing; double-click
 // (or Ctrl/Cmd-click) opens the figure full size in a tab of its own.
 ui.markdown.addEventListener('click', (event) => {
@@ -6940,7 +7443,7 @@ const palette = createPalette({
     { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
     { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf', run: reduceOpenPdf },
     { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: hasFile, run: trashShownFile },
-    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: () => undoLast().then((done) => done || setStatus('Nothing to undo')) },
+    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: requestUndo },
     { label: 'Check for updates', group: 'File', icon: '#i-update', run: () => checkForUpdates() },
     { label: 'Find', group: 'View', shortcut: 'Ctrl+F', icon: '#i-find', when: reviewable, run: openFind },
     { label: 'Zoom in', group: 'View', shortcut: '+', icon: '#i-zoom-in', when: hasFile, run: () => stepZoom(1) },
@@ -6972,7 +7475,7 @@ const palette = createPalette({
       label: `${FORMAT_LABELS[format]} the selection`, group: 'Markdown', shortcut, when: editable, run: () => applyDirectFormat(format),
     })),
     { label: 'Edit the selected text…', group: 'Markdown', shortcut: 'Ctrl+E', when: editable, run: openEditBox },
-    { label: 'Delete the selection', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
+    { label: 'Remove the selection from the file', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
     { label: 'Open the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => reviewable() && !state.reviewOpen, run: toggleReviewPanel },
     { label: 'Close the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => state.reviewOpen, run: toggleReviewPanel },
     { label: 'Add a review of the selection', group: 'Review', shortcut: 'Ctrl+Shift+N', icon: '#i-add-review', when: reviewSelection, run: () => openNoteBox() },
@@ -7134,6 +7637,13 @@ async function startPresentation() {
   toggleSettings(false);
   if (!ui.find.hidden) closeFind();
   hideReviewChrome();
+  // A composition in progress is cancelled, not written: the composed text is in the article, not in the file.
+  if (composing) {
+    composing = false;
+    composingAt = null;
+    composingRefusal = null;
+    await refreshRendered();
+  }
   presentation = {
     kind,
     path: state.file.path,
@@ -7147,13 +7657,15 @@ async function startPresentation() {
     scrollTop: ui.markdownStage.scrollTop,
   };
   document.body.classList.add('presenting');
+  // A slide is read, not typed into: the article takes no caret until the presentation ends.
+  ui.markdown.contentEditable = 'false';
   if (state.wrap) setWrap(false);
   if (kind === 'pdf') {
     applyPdfSpread();
     pdfViewer.currentScaleValue = 'page-fit';
     pdfViewer.currentPageNumber = presentation.page;
   } else {
-    if (state.markdownRaw) setRaw(false, { persist: false });
+    if (state.markdownRaw) setRaw(false);
     setPageView('single', { persist: false, apply: false });
     paginateMarkdown();
     fitPresentation();
@@ -7175,6 +7687,7 @@ async function stopPresentation() {
   if (!saved) return;
   presentation = null;
   document.body.classList.remove('presenting');
+  ui.markdown.contentEditable = 'true';
   const here = () => state.file?.path === saved.path;
   const restore = () => {
     if (!here()) return;
@@ -7189,7 +7702,7 @@ async function stopPresentation() {
     setMarkdownScale(saved.scale);
     setPageView(saved.view, { persist: false, apply: false });
     paginateMarkdown({ keepPosition: false });
-    if (saved.raw) setRaw(true, { persist: false });
+    if (saved.raw) setRaw(true);
   }
   restore();
   if (!saved.fullscreen) {
@@ -7216,7 +7729,8 @@ window.addEventListener('resize', () => {
 window.addEventListener('keydown', (event) => {
   if (!presentation || event.ctrlKey || event.metaKey || event.altKey) return;
   // The palette or Settings opened over the slides keeps its keys.
-  if (palette.isOpen || !ui.settingsPanel.hidden || isTextField(event.target)) return;
+  // The article is a text field for the browser, but while presenting its keys are the presentation's.
+  if (palette.isOpen || !ui.settingsPanel.hidden || (isTextField(event.target) && !ui.markdown.contains(event.target))) return;
   const steps = {
     ArrowRight: 1, ArrowDown: 1, PageDown: 1, Enter: 1, n: 1, j: 1, ' ': event.shiftKey ? -1 : 1,
     ArrowLeft: -1, ArrowUp: -1, PageUp: -1, Backspace: -1, p: -1, k: -1, Home: -Infinity, End: Infinity,
@@ -7244,7 +7758,9 @@ window.addEventListener('keydown', (event) => {
     closeNoteBox();
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' && !isTextField(event.target)) {
+  // The rendered article is a text field for the browser, but Ctrl+K stays the palette there.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'k' &&
+      (!isTextField(event.target) || ui.markdown.contains(event.target))) {
     event.preventDefault();
     palette.toggle();
     return;
@@ -7379,7 +7895,7 @@ window.addEventListener('keydown', (event) => {
     if (selectedPane === 'split') {
       setStatus('Formatting edits the file in the main pane: open this file there to format it', { error: true });
     } else if (!directEditsEnabled()) {
-      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+      setStatus(EDITING_OFF, { error: true });
     } else if (key === 'e') {
       openEditBox();
     } else {
@@ -7429,13 +7945,21 @@ window.addEventListener('keydown', (event) => {
   if (typing) {
     return;
   }
+  // Typing in the rendered Markdown edits the file (see Typing in the rendered Markdown).
+  // AltGr reaches the page as ctrl+alt on Windows: a one-character key is a character, not a shortcut.
+  // A character made with AltGr (ctrl+alt on Windows, the AltGraph state elsewhere) or with Option on macOS (alt
+  // alone) is text, not a shortcut. Other ctrl+alt and alt keys stay shortcuts.
+  const plainAlt = key.length === 1 && !event.metaKey && (Boolean(event.getModifierState?.('AltGraph')) ||
+    (state.platform === 'windows' && event.ctrlKey && event.altKey) ||
+    (state.platform === 'macos' && event.altKey && !event.ctrlKey));
+  if (!presentation && !event.metaKey && (!(event.ctrlKey || event.altKey) || plainAlt) && caretKeyTarget() && handleCaretKey(event)) {
+    return;
+  }
   // Ctrl+Z (Cmd+Z) undoes the last change made through the app to this file.
   // In a text field it stays the field's own undo, by the return above.
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === 'z') {
     event.preventDefault();
-    void undoLast().then((done) => {
-      if (!done) setStatus('Nothing to undo');
-    });
+    requestUndo();
     return;
   }
   // Delete on an active selection deletes the selected text (or marks it for
@@ -7444,8 +7968,14 @@ window.addEventListener('keydown', (event) => {
   if ((key === 'delete' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) ||
       (state.platform === 'macos' && event.metaKey && key === 'backspace')) {
     event.preventDefault();
-    if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
+    if (writeBusy || writeQueue.length) {
+      setStatus('Wait for the write to end', { error: true });
+    } else if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
       void deleteSelectionNow();
+    } else if (state.file?.kind === 'markdown' && !state.markdownRaw && ui.markdown.contains(document.activeElement)) {
+      // Focus is in the text and there is no caret or selection to delete (a click in math, code, a link or a table):
+      // the trash is for Delete when focus is elsewhere.
+      setStatus(CARET_MESSAGES.skipped);
     } else {
       void trashShownFile();
     }
@@ -7475,8 +8005,8 @@ window.addEventListener('keydown', (event) => {
   // Left and Right step through the tabs whenever there are tabs to step
   // through. With a single file open there is nothing to switch to, so they go
   // back to walking the folder — which is what they are for in a folder of
-  // figures opened one at a time.
-  if (state.tabs.length > 1 && (key === 'arrowright' || key === 'arrowleft')) {
+  // figures opened one at a time. With the caret in the rendered text they move the caret instead.
+  if (state.tabs.length > 1 && (key === 'arrowright' || key === 'arrowleft') && !caretInText()) {
     event.preventDefault();
     cycleTab(key === 'arrowright' ? 1 : -1);
     return;
@@ -7509,6 +8039,12 @@ window.addEventListener('keydown', (event) => {
         });
         break;
       default:
+        // A printable key no shortcut took, with the caret in the text and editing off (handleCaretKey passed it on):
+        // it would have been typed, so say why it is not.
+        if (key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !directEditsEnabled() && caretInText()) {
+          event.preventDefault();
+          setStatus(EDITING_OFF, { error: true });
+        }
         return;
     }
     event.preventDefault();
@@ -7696,12 +8232,12 @@ try {
   setMode(null);
 }
 
-// Raw markdown is a way of reading, not a per-file quirk, so it is a global
-// preference like the page mode.
+// An older build stored raw as a global preference. A fresh open is rendered,
+// so that saved choice must not come back.
 try {
-  setRaw(localStorage.getItem('pdf-next.md-raw') === '1', { persist: false });
+  localStorage.removeItem('pdf-next.md-raw');
 } catch {
-  setRaw(false, { persist: false });
+  // Preference only.
 }
 for (const select of [ui.mdFont, ui.mdSize, ui.mdWidth]) {
   let saved = null;

@@ -60,23 +60,26 @@ await settle(100);
 ok((await rows()).join() === 'r12', 'Filter by action: Request');
 await page.selectOption('#reviewActionFilter', 'all');
 await page.evaluate(() => {
-  window.__store.reviews[2].status = 'applied';
-  window.__store.reviews[3].status = 'resolved';
+  window.__store.reviews[2].status = 'done';
+  window.__store.reviews[3].status = 'done';
   window.__store.revision += 1;
   window.__emit('reviews-changed', { path: '/d/a.md' });
 });
 await settle(300);
-await page.selectOption('#reviewStatusFilter', 'applied');
+await page.selectOption('#reviewStatusFilter', 'done');
 await settle(100);
-ok((await rows()).join() === 'r3', 'An agent write shows up; filter by status: Applied');
-ok(await page.$eval('#reviewList .review-row[data-review-id="r3"]', (r) => [...r.querySelectorAll('button')].map((b) => b.textContent).includes('Resolve')), 'An applied review offers Resolve');
-await page.click('#reviewList .review-row[data-review-id="r3"] button:has-text("Resolve")');
-await settle();
-ok((await store()).reviews[2].status === 'resolved' && (await rows()).length === 0, 'Resolve resolves it, and the Applied filter empties');
-ok(await page.textContent('#reviewList') === 'No reviews match these filters.', 'An empty filter says so');
-await page.selectOption('#reviewStatusFilter', 'resolved');
+ok((await rows()).join() === 'r3,r4', 'A closed comment shows up; filter by status: Done');
+ok(await page.textContent('#reviewCount') === '2/12 · 2 done', 'The head counts the done comments');
+ok(await page.$eval('#reviewList .review-row[data-review-id="r3"]', (r) => {
+  const names = [...r.querySelectorAll('button')].map((b) => b.textContent);
+  return names.includes('Reopen') && !names.includes('Resolve');
+}), 'A done comment offers Reopen and no Resolve: pdf-next closes comments itself');
+await page.selectOption('#reviewStatusFilter', 'open');
 await settle(100);
-ok((await rows()).join() === 'r3,r4', 'Filter by status: Resolved');
+ok(await page.textContent('#reviewList') !== 'No reviews match these filters.' && (await rows()).length === 10, 'Filter by status: Open lists the open ones'
+);
+await page.selectOption('#reviewStatusFilter', 'done');
+await settle(100);
 await page.click('#reviewList .review-row[data-review-id="r4"] button:has-text("Reopen")');
 await settle(100);
 await page.keyboard.type('Not checked yet');

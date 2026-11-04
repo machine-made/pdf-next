@@ -28,13 +28,13 @@ preference, review text size, Markdown font, size and width, interface font,
 figure settings and the in-place editing switch in local browser storage. The open tabs, their
 scroll and zoom positions and the split view are kept there too (key `pdf-next.session`), so they
 reopen on launch; nothing is sent anywhere. Reviews are saved
-beside the document as `{stem}_review.json`, with a transaction `.json.lock`
-file and a last-valid `.json.bak` backup. A legacy migration also keeps a
-`.json.pre-v3.bak` copy. Source hints and agent build results stay in the sidecar.
-After each change to the reviews, the app writes a short text view of the open
-items beside them as `{stem}_review.agent.txt`, and it reads
-`{stem}_review.done` when an agent leaves lines there; it never writes to that
-file.
+beside the document in a `.pdf-next` folder as `.pdf-next/{stem}.json`, with a
+transaction `.json.lock` file; no backup copies are written. Source hints and
+agent build results stay in the store. After each change to the reviews, the
+app writes a short text view of the open items beside the document as
+`{stem}_review.txt`. When it finds a store from an earlier version
+(`{stem}_review.json`), it writes the new store, reads it back, and only then
+removes the old files it wrote.
 When you edit a Markdown file in place (Bold, Italic, Edit text…), the app
 writes that file, and only that file, after checking it is the version on
 screen. Settings turns this off.
