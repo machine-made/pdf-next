@@ -3957,6 +3957,8 @@ function hasLocator(record) {
 let reviewAnchorRect = null;
 
 function openNoteBox(action = 'improve') {
+  // A slide is read, not annotated: a note could insert text into the file.
+  if (presentation) return;
   const picked = describeSelection({ context: true });
   const range = selectionInDocument();
   const rect =
@@ -4071,6 +4073,7 @@ function updateNotePlaceholder() {
 }
 
 async function insertNoteParenthetical() {
+  if (presentation) return;
   const picked = state.pendingNote;
   const text = ui.noteText.value.trim();
   if (!picked || picked.kind !== 'markdown' || !state.file || state.file.kind !== 'markdown') {
@@ -5896,7 +5899,8 @@ function renderedMarkdownSelection() {
 }
 
 function markdownEditTarget() {
-  if (state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
+  // A slide is read, not edited: no selection in it is a source of a write.
+  if (presentation || state.file?.kind !== 'markdown' || state.markdownRaw || !directEditsEnabled() ||
       typeof state.markdownSource !== 'string') {
     return null;
   }
@@ -5981,7 +5985,7 @@ function closeEditBox() {
 
 async function saveEditBox() {
   const pending = state.pendingEdit;
-  if (!pending || state.file?.path !== pending.path) {
+  if (presentation || !pending || state.file?.path !== pending.path) {
     closeEditBox();
     return;
   }
@@ -6410,7 +6414,10 @@ async function writeNow(edit, label) {
 
 /// Ctrl+Z and the Undo buttons: the undo waits for the queued writes, then runs.
 function requestUndo() {
+  // A slide is read, not edited: an undo would write the file (or the inbox) from it.
+  if (presentation) return;
   enqueueWrite(async () => {
+    if (presentation) return 'ok';
     if (!(await undoLast())) setStatus('Nothing to undo');
     return 'ok';
   });
@@ -6447,6 +6454,7 @@ async function applyCaretKey(key) {
 /// the selected text from the file. With review on, a selection that cannot be
 /// traced to the source asks for a delete review instead.
 async function deleteSelectionNow(options) {
+  if (presentation) return;
   hideReviewChrome();
   const keys = options?.keys ?? 0;
   const target = markdownEditTarget();
@@ -6686,6 +6694,7 @@ function formatBytes(bytes) {
 
 /// Write `{stem}_reduced.pdf` beside the open PDF (original untouched).
 async function reduceOpenPdf() {
+  if (presentation) return;
   if (!state.file || state.file.kind !== 'pdf') {
     setStatus('Open a PDF first');
     return;
@@ -6973,6 +6982,8 @@ function positionFigureResizer() {
 }
 
 function selectFigureForResize(image) {
+  // A slide is read, not edited: no figure is picked for a resize in it.
+  if (presentation) return;
   if (state.selectedFigure && state.selectedFigure !== image) {
     state.selectedFigure.classList.remove('md-figure-selected');
   }
@@ -6984,7 +6995,7 @@ function selectFigureForResize(image) {
 if (ui.figureResizerGrip) {
   ui.figureResizerGrip.addEventListener('pointerdown', (event) => {
     const image = state.selectedFigure;
-    if (event.button !== 0 || !image || !image.isConnected) return;
+    if (presentation || event.button !== 0 || !image || !image.isConnected) return;
     event.preventDefault();
     event.stopPropagation();
     ui.figureResizerGrip.setPointerCapture(event.pointerId);
@@ -7007,7 +7018,7 @@ if (ui.figureResizerGrip) {
       ui.figureResizerGrip.removeEventListener('pointercancel', onUp);
       schedulePaginate();
       const line = lineNear(image, ui.markdown);
-      if (line && directEditsEnabled() && typeof state.markdownSource === 'string') {
+      if (line && !presentation && directEditsEnabled() && typeof state.markdownSource === 'string') {
         const edit = figureWidthEdit(state.markdownSource, line, lastPct);
         if (edit && !edit.error) {
           await writeMarkdownEdit(edit, `Figure width ${lastPct}%`);
@@ -7422,8 +7433,8 @@ const palette = createPalette({
   const markdown = () => kind() === 'markdown';
   const reviewable = () => kind() === 'pdf' || kind() === 'markdown';
   const rendered = () => markdown() && !state.markdownRaw;
-  const editable = () => rendered() && Boolean(renderedMarkdownSelection());
-  const reviewSelection = () => reviewable() && Boolean(reviewFromSelection());
+  const editable = () => !presentation && rendered() && Boolean(renderedMarkdownSelection());
+  const reviewSelection = () => !presentation && reviewable() && Boolean(reviewFromSelection());
   const figureLabels = { width: 'Figure width', height: 'Figure height', align: 'Figure place', caption: 'Figure captions' };
   const modeLabels = [[null, 'Clear'], ['night', 'Night'], ['invert', 'Invert'], ['sepia', 'Sepia']];
   const directEdits = (on) => {
@@ -7441,9 +7452,9 @@ const palette = createPalette({
     { label: 'Print…', group: 'File', shortcut: 'Ctrl+P', icon: '#i-print', when: hasFile, run: printDocument },
     { label: 'Copy the full path', group: 'File', icon: '#i-copy-path', when: hasFile, run: () => copyFileText('path') },
     { label: 'Copy the file name', group: 'File', icon: '#i-copy-name', when: hasFile, run: () => copyFileText('name') },
-    { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf', run: reduceOpenPdf },
-    { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: hasFile, run: trashShownFile },
-    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', run: requestUndo },
+    { label: 'Reduce PDF size', group: 'File', icon: '#i-reduce', when: () => kind() === 'pdf' && !presentation, run: reduceOpenPdf },
+    { label: 'Move the file to the trash…', group: 'File', shortcut: 'Delete', when: () => hasFile() && !presentation, run: trashShownFile },
+    { label: 'Undo', group: 'File', shortcut: 'Ctrl+Z', when: () => !presentation, run: requestUndo },
     { label: 'Check for updates', group: 'File', icon: '#i-update', run: () => checkForUpdates() },
     { label: 'Find', group: 'View', shortcut: 'Ctrl+F', icon: '#i-find', when: reviewable, run: openFind },
     { label: 'Zoom in', group: 'View', shortcut: '+', icon: '#i-zoom-in', when: hasFile, run: () => stepZoom(1) },
@@ -7475,7 +7486,7 @@ const palette = createPalette({
       label: `${FORMAT_LABELS[format]} the selection`, group: 'Markdown', shortcut, when: editable, run: () => applyDirectFormat(format),
     })),
     { label: 'Edit the selected text…', group: 'Markdown', shortcut: 'Ctrl+E', when: editable, run: openEditBox },
-    { label: 'Remove the selection from the file', group: 'Markdown', shortcut: 'Delete', when: () => Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection()), run: deleteSelectionNow },
+    { label: 'Remove the selection from the file', group: 'Markdown', shortcut: 'Delete', when: () => !presentation && (Boolean(markdownEditTarget()) || (state.reviewOpen && reviewSelection())), run: deleteSelectionNow },
     { label: 'Open the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => reviewable() && !state.reviewOpen, run: toggleReviewPanel },
     { label: 'Close the review panel', group: 'Review', shortcut: 'Ctrl+Shift+R', icon: '#i-review', when: () => state.reviewOpen, run: toggleReviewPanel },
     { label: 'Add a review of the selection', group: 'Review', shortcut: 'Ctrl+Shift+N', icon: '#i-add-review', when: reviewSelection, run: () => openNoteBox() },
@@ -7640,6 +7651,8 @@ async function startPresentation() {
   toggleSettings(false);
   if (!ui.find.hidden) closeFind();
   hideReviewChrome();
+  closeEditBox();
+  closeNoteBox();
   presentationStarting = true;
   try {
     const began = state.file.path;
@@ -7981,7 +7994,9 @@ window.addEventListener('keydown', (event) => {
   if ((key === 'delete' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) ||
       (state.platform === 'macos' && event.metaKey && key === 'backspace')) {
     event.preventDefault();
-    if (writeBusy || writeQueue.length) {
+    if (presentation) {
+      // Neither the selection nor the file is deleted from a slide.
+    } else if (writeBusy || writeQueue.length) {
       setStatus('Wait for the write to end', { error: true });
     } else if (markdownEditTarget() || (state.reviewOpen && reviewFromSelection())) {
       void deleteSelectionNow();

@@ -3301,9 +3301,9 @@ if (releaseTag) {
 
 // Round 3: the busy guards, the queue for undo, the messages the review listed, dead keys and AltGr.
 {
-  assert.match(app, /function requestUndo\(\) \{\s*enqueueWrite\(/, 'requestUndo queues the undo behind the writes.');
+  assert.match(app, /function requestUndo\(\) \{[^}]*?enqueueWrite\(/, 'requestUndo queues the undo behind the writes.');
   assert.match(app, /key === 'z'\) \{\s*event\.preventDefault\(\);\s*requestUndo\(\)/, 'Ctrl+Z calls requestUndo.');
-  assert.match(app, /label: 'Undo', group: 'File', shortcut: 'Ctrl\+Z', run: requestUndo/, 'The palette Undo calls requestUndo.');
+  assert.match(app, /label: 'Undo', group: 'File', shortcut: 'Ctrl\+Z',[^}]*?run: requestUndo/, 'The palette Undo calls requestUndo.');
   assert.match(app, /A new paragraph is not typed in the rendered view: edit the raw text \(Ctrl\+U\)/,
     'Enter in the rendered view is refused with this message.');
   assert.match(app, /Wait for the write to end, then select again/, 'A selection made while a write runs is refused with this message.');

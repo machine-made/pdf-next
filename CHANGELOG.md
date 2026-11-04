@@ -32,6 +32,7 @@
 - Changed the toolbar to about ten controls: page view, Markdown type, panes, page mode, the watch interval, copy, print and Reduce PDF are now in a View menu, and docking, fit to content, full screen and Present in a Window menu laid out like the screen
 - Added focus mode: the toolbar fades a couple of seconds into reading and comes back at the top edge, on Alt or on Tab; Settings or the palette turns it off
 - Added full screen with F11, and presentation mode with F5: one page at a time fitted to the screen, stepped with the arrows, Space or a clicker; Esc puts everything back
+- Fixed a presentation writing to the file: Delete over a selected passage removed it from the `.md`, and a figure resize, Undo, an Edit box or a note box left open could also change it. A presentation now writes nothing, and Delete, Undo, trash and Reduce PDF are not offered in it.
 - Added Ctrl+wheel (⌘+wheel on macOS) and trackpad pinch zoom around the point under the cursor, settling on Fit width and Fit page as you pass them; in Markdown it steps the text size and keeps the paragraph in place
 - Changed `+`, `-` and the zoom menu to zoom around the middle of the view
 - Added a remembered place for every file: a reopened PDF comes back to its page, spot and zoom, Markdown to its paragraph and a picture to its zoom, even after a restart
