@@ -6010,6 +6010,7 @@ async function saveEditBox() {
 // included, goes through one queue, one at a time, in order.
 
 const CARET_SKIP = 'math, pre, code, a[href], table, .md-figure, img[data-doc]';
+const EDITING_OFF = 'Editing the Markdown file is off in Settings; add a review instead';
 const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 const writeQueue = [];
 let writeBusy = false;
@@ -6185,7 +6186,7 @@ function handleCaretKey(event) {
       if ((key === 'Backspace' || key === 'Delete') && state.reviewOpen && reviewFromSelection()) {
         void deleteSelectionNow();
       } else {
-        setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+        setStatus(EDITING_OFF, { error: true });
       }
     } else if (key === 'Backspace' || key === 'Delete') {
       void deleteSelectionNow({ keys: 1 });
@@ -6206,7 +6207,7 @@ function handleCaretKey(event) {
   if (!busy && !directEditsEnabled() && key.length === 1) return false;
   event.preventDefault();
   if (!directEditsEnabled()) {
-    setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+    setStatus(EDITING_OFF, { error: true });
     return true;
   }
   // Idle: the DOM is current, so the caret is read from it. Busy: the queue's
@@ -7092,7 +7093,7 @@ ui.markdown.addEventListener('compositionend', (event) => {
     }, 0, { keep: true });
   };
   if (!directEditsEnabled()) {
-    refuse('Editing the Markdown file is off in Settings; add a review instead');
+    refuse(EDITING_OFF);
     return;
   }
   if (!at) {
@@ -7868,7 +7869,7 @@ window.addEventListener('keydown', (event) => {
     if (selectedPane === 'split') {
       setStatus('Formatting edits the file in the main pane: open this file there to format it', { error: true });
     } else if (!directEditsEnabled()) {
-      setStatus('Editing the Markdown file is off in Settings; add a review instead', { error: true });
+      setStatus(EDITING_OFF, { error: true });
     } else if (key === 'e') {
       openEditBox();
     } else {
@@ -8012,6 +8013,12 @@ window.addEventListener('keydown', (event) => {
         });
         break;
       default:
+        // A printable key no shortcut took, with the caret in the text and editing off (handleCaretKey passed it on):
+        // it would have been typed, so say why it is not.
+        if (key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !directEditsEnabled() && caretInText()) {
+          event.preventDefault();
+          setStatus(EDITING_OFF, { error: true });
+        }
         return;
     }
     event.preventDefault();

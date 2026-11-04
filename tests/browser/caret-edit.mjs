@@ -998,31 +998,51 @@ await sixteen.close();
 // Session 1's page is used by the pure-function checks above; closing it adds its page errors to the run, which fails on any.
 await one.close();
 
-// ── Session 17: Direct edits off, caret in the text: reading keys reach their shortcuts; Direct edits on: they type ──
+// ── Session 17: Direct edits off, caret in the text: shortcuts still work; other printable keys say editing is off ──
 const size = (page) => page.$eval('#markdown', (el) => el.style.zoom || '1');
+// A file taller than the window, so j and k have somewhere to scroll.
+const tall = Array.from({ length: 80 }, (_, n) => `Paragraph ${n + 1} has some words in it.`).join('\n\n') + '\n';
 const seventeen = await start({
-  files: { '/d/a.md': raw },
+  files: { '/d/a.md': tall },
   prepare: (page) => page.addInitScript(() => localStorage.setItem('pdf-next.direct-edits', '0')),
 });
 {
   const p17 = seventeen.page;
-  const p = await spot('brave', 'end', p17);
+  const scrolled = () => p17.$eval('#markdownStage', (el) => Math.round(el.scrollTop));
+  const clearStatus = () => p17.evaluate(() => { document.getElementById('status').textContent = ''; });
+  const writes17 = () => p17.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
+  const p = await spot('Paragraph 1 ', 'end', p17);
   await p17.mouse.click(p.x, p.y);
   await p17.waitForTimeout(100);
   const before = await size(p17);
   await p17.keyboard.press('+');
   await p17.waitForTimeout(300);
   const after = await size(p17);
-  const message = await p17.textContent('#status');
   ok(before !== after, `With Direct edits off and a caret in the text, + still zooms the text (${before} -> ${after})`);
-  ok(!message.includes('off in Settings'), `and no editing message appears (${JSON.stringify(message)})`);
+  await p17.evaluate(() => { document.getElementById('markdownStage').scrollTop = 0; });
+  await clearStatus();
   await p17.keyboard.press('j');
+  await p17.waitForTimeout(400);
+  const down = await scrolled();
+  await p17.keyboard.press('j');
+  await p17.waitForTimeout(400);
+  const down2 = await scrolled();
+  await p17.keyboard.press('k');
+  await p17.waitForTimeout(400);
+  const up = await scrolled();
+  ok(down > 0 && down2 > down && up < down2, `j scrolls the text down and k back up (${down}, ${down2}, ${up})`);
+  ok(!(await p17.textContent('#status')).includes('off in Settings'), 'and the shortcuts show no editing message');
+  await clearStatus();
   await p17.keyboard.press('Space');
   await p17.waitForTimeout(200);
-  const writes = await p17.evaluate(() => window.__calls.filter(([cmd]) => cmd === 'edit_markdown').length);
-  ok(!(await p17.textContent('#status')).includes('off in Settings') && writes === 0 && await p17.evaluate(() => window.__files['/d/a.md']) === raw,
-    'j and Space give no editing message and write nothing');
+  ok((await p17.textContent('#status')).includes('Editing the Markdown file is off in Settings'), `Space, which has no shortcut in Markdown, says editing is off (${JSON.stringify(await p17.textContent('#status'))})`);
+  await clearStatus();
+  await p17.keyboard.press('x');
+  await p17.waitForTimeout(200);
+  ok((await p17.textContent('#status')).includes('Editing the Markdown file is off in Settings') && await writes17() === 0
+    && await p17.evaluate(() => window.__files['/d/a.md']) === tall, 'x says editing is off and writes nothing');
   // Delete still says so, as before.
+  await clearStatus();
   await p17.keyboard.press('Backspace');
   await p17.waitForTimeout(200);
   ok((await p17.textContent('#status')).includes('off in Settings'), 'Backspace with Direct edits off still says editing is off');
