@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Website](https://img.shields.io/badge/site-machine--made.github.io%2Fpdf--next-blue)](https://machine-made.github.io/pdf-next/)
 
-`pdf-next` is made by machine-made. You write in one window and read in another. `pdf-next` is the other window.
+`pdf-next` is a PDF, image and Markdown viewer that reloads the moment the file changes. You write in one window and read in another; pdf-next is the other window.
 
 Point it at the PDF your LaTeX or Typst build writes, or at the Markdown file you are
 editing, and it redraws every time the file changes, on the same page, at the same zoom,
