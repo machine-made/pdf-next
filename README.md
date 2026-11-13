@@ -1,17 +1,14 @@
-# pdf-next
+[![CI](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue.svg)](src-tauri/Cargo.toml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Website](https://img.shields.io/badge/site-machine--made.github.io%2Fpdf--next-blue)](https://machine-made.github.io/pdf-next/)
 
-*pdf-next by machine-made.*
-
-You write in one window and read in another. pdf-next is the other window.
+`pdf-next` is made by machine-made. You write in one window and read in another. `pdf-next` is the other window.
 
 Point it at the PDF your LaTeX or Typst build writes, or at the Markdown file you are
 editing, and it redraws every time the file changes, on the same page, at the same zoom,
 in the same spot. You stop switching windows to press reload. Then it gets out of the way:
 no ribbon, no account, nothing to sign in to, and nothing downloaded after you install it.
-
-[![CI](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml/badge.svg)](https://github.com/machine-made/pdf-next/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Website](https://img.shields.io/badge/site-machine--made.github.io%2Fpdf--next-blue)](https://machine-made.github.io/pdf-next/)
 
 It opens PDFs, Markdown and images (`.png`, `.jpg`, `.webp`, `.avif`) on Windows, macOS and
 Linux. It is the desktop sibling of [vscode-pdf Next](https://github.com/machine-made/vscode-pdf-next)
