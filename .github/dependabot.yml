@@ -6,6 +6,8 @@ updates:
     open-pull-requests-limit: 5
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     ignore:
       # picamatl 0.4.x depends on lopdf 0.44. main.rs preflights PDF bytes
       # with the same lopdf that picamatl loads them with, so lopdf stays on
@@ -22,6 +24,8 @@ updates:
     open-pull-requests-limit: 5
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       github-actions-updates:
         patterns:
@@ -32,6 +36,8 @@ updates:
     open-pull-requests-limit: 5
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       npm-updates:
         patterns:
