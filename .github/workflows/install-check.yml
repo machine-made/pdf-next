@@ -112,16 +112,20 @@ jobs:
           set -uo pipefail
           version=${TAG#v}
           for attempt in $(seq 1 20); do
-            if sync=$(pacman -Sy 2>&1) && listed=$(pacman -Si pdf-next 2>&1) \
-               && grep -q "^Version *: *$version-" <<< "$listed"; then
-              echo "The repository lists pdf-next $version (attempt $attempt)."
-              exit 0
-            fi
-            # A tag older than the newest release is not in the database;
-            # its package stays in the directory.
-            if curl -fsI "$SITE/arch/x86_64/pdf-next-$version-1-x86_64.pkg.tar.zst" > /dev/null; then
-              echo "pdf-next $version is in the repository directory (attempt $attempt)."
-              exit 0
+            if sync=$(pacman -Sy 2>&1) && listed=$(pacman -Si pdf-next 2>&1); then
+              newest=$(awk -F' *: *' '/^Version/ {sub(/-[0-9]+$/, "", $2); print $2; exit}' <<< "$listed")
+              if [ "$newest" = "$version" ]; then
+                echo "The repository lists pdf-next $version (attempt $attempt)."
+                exit 0
+              fi
+              # A tag older than the newest release is not in the database;
+              # its package stays in the directory. A database still older
+              # than the tag means Pages has not caught up: keep waiting.
+              if [ "$(vercmp "$newest" "$version")" -gt 0 ] \
+                 && curl -fsI "$SITE/arch/x86_64/pdf-next-$version-1-x86_64.pkg.tar.zst" > /dev/null; then
+                echo "pdf-next $version is in the repository directory; the database lists $newest (attempt $attempt)."
+                exit 0
+              fi
             fi
             echo "Not listed yet (attempt $attempt); waiting 30 s."
             sleep 30

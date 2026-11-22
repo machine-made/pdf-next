@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added a signed pacman repository for Arch Linux and Omarchy: `sudo pacman -S pdf-next` after adding it as the README says. Each release reaches it with the apt repository.
+- Added a signed pacman repository for Arch Linux and Omarchy: `sudo pacman -Syu pdf-next` after adding it as the README says. Each release reaches it with the apt repository.
 
 ## 0.19.0
 

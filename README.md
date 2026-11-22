@@ -279,7 +279,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 | Windows | `winget install RicardoFrantz.pdf-next`, or [download the `.exe` installer](https://github.com/machine-made/pdf-next/releases/latest) |
 | macOS | `brew install --cask machine-made/tap/pdf-next` |
 | Debian, Ubuntu | add the repository below, then `sudo apt install pdf-next` |
-| Arch, Omarchy | add the repository below, then `sudo pacman -S pdf-next` |
+| Arch, Omarchy | add the repository below, then `sudo pacman -Syu pdf-next` |
 
 ### macOS, with Homebrew
 
@@ -359,8 +359,9 @@ sudo sed -i 's#ricardofrantz\.github\.io#machine-made.github.io#' /etc/apt/sourc
 Trust the repository's signing key once (the same key as the apt repository):
 
 ```bash
-curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc -o /tmp/pdf-next.asc
-sudo pacman-key --add /tmp/pdf-next.asc
+key=$(mktemp)
+curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc -o "$key"
+sudo pacman-key --add "$key" && rm -f "$key"
 sudo pacman-key --lsign-key 7AF6A7AFBE85B19258B2E84114E81BC9E259FDE2
 ```
 
