@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.1
 
 - Fixed opening a file from a Linux file manager: the `.desktop` entry now passes the file (`%F`) and lists the PDF, image and Markdown types, so pdf-next appears under Open with.
 - Added a signed pacman repository for Arch Linux and Omarchy: `sudo pacman -Syu pdf-next` after adding it as the README says. Each release reaches it with the apt repository.
