@@ -372,10 +372,14 @@ printf '\n[pdf-next]\nServer = https://machine-made.github.io/pdf-next/arch/$arc
 sudo pacman -Syu pdf-next
 ```
 
-From then on `sudo pacman -Syu` brings each new version, and `sudo pacman -R pdf-next` takes
-it off. Every version from 0.19.0 on stays in the repository, so an older one installs with
+On Omarchy, which refuses a direct `pacman -Syu`, run `omarchy update` and then
+`sudo pacman -S pdf-next` instead.
+
+From then on `sudo pacman -Syu` (on Omarchy, `omarchy update`) brings each new version, and
+`sudo pacman -R pdf-next` takes it off. Every version from 0.19.0 on stays in the repository, so an older one installs with
 `sudo pacman -U https://machine-made.github.io/pdf-next/arch/x86_64/pdf-next-0.19.0-1-x86_64.pkg.tar.zst`.
-To open PDFs with pdf-next by default: `xdg-mime default pdf-next.desktop application/pdf`.
+To open PDFs, Markdown and PNG images with pdf-next by default:
+`xdg-mime default pdf-next.desktop application/pdf text/markdown image/png`.
 
 ### The file itself
 
