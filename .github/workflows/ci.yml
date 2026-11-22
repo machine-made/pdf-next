@@ -164,15 +164,19 @@ jobs:
         run: bunx tauri build --no-bundle
 
       - name: Drive the app
-        run: xvfb-run -a node tests/e2e/app.mjs
+        env:
+          NO_AT_BRIDGE: '1'
+        run: dbus-run-session -- xvfb-run -a node tests/e2e/app.mjs
 
       # Split panes and Night pages once looked right in Chromium and wrong in
       # this window (fixed in 0.17.1); these pictures and their pixel checks
       # are what would have shown it.
       - name: Website screenshots in the real window
         if: always() && steps.build.outcome == 'success'
+        env:
+          NO_AT_BRIDGE: '1'
         run: >-
-          xvfb-run -a -s '-screen 0 3200x2000x24'
+          dbus-run-session -- xvfb-run -a -s '-screen 0 3200x2000x24'
           node tools/screenshots.mjs --bin src-tauri/target/release/pdf-next --out "$RUNNER_TEMP/pdf-next-shots"
 
       - name: Keep the screenshots
@@ -248,6 +252,10 @@ jobs:
         run: node tools/smoke.mjs
 
       # No display on a Linux runner; the viewer needs one to have a webview.
+      # Nor a session bus: without one GTK waits about 25 s for the
+      # accessibility bus on every launch (9.8 min for the fixtures, not 33 s).
       - name: Open every fixture
         if: matrix.platform == 'ubuntu-latest'
-        run: xvfb-run -a node tools/smoke.mjs
+        env:
+          NO_AT_BRIDGE: '1'
+        run: dbus-run-session -- xvfb-run -a node tools/smoke.mjs

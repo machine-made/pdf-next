@@ -66,8 +66,10 @@ jobs:
       - name: Screenshots in the released app
         id: shots
         if: env.TAG != ''
+        env:
+          NO_AT_BRIDGE: '1'
         run: >-
-          xvfb-run -a -s '-screen 0 3200x2000x24'
+          dbus-run-session -- xvfb-run -a -s '-screen 0 3200x2000x24'
           node tools/screenshots.mjs --bin "$(command -v pdf-next)" --out "$RUNNER_TEMP/shots"
 
       - name: Use them on the site
