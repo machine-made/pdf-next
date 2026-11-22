@@ -224,6 +224,20 @@ jobs:
       - name: Bundle
         run: bun run build
 
+      # A file manager passes the file through %F and lists pdf-next under
+      # "Open with" only for the types in MimeType; 0.19.0 shipped neither.
+      - name: Check the .desktop file in the .deb
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          desktop=$(dpkg-deb --fsys-tarfile src-tauri/target/release/bundle/deb/*.deb \
+            | tar -xO ./usr/share/applications/pdf-next.desktop)
+          echo "$desktop"
+          grep -qx 'Exec=pdf-next %F' <<< "$desktop"
+          for type in application/pdf image/png image/jpeg text/markdown; do
+            grep -q "^MimeType=.*$type;" <<< "$desktop" || { echo "::error::MimeType lacks $type"; exit 1; }
+          done
+
       - name: Scan the Windows bundles with Defender
         if: matrix.platform == 'windows-latest'
         shell: pwsh
