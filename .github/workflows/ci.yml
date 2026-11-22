@@ -248,6 +248,10 @@ jobs:
         run: node tools/smoke.mjs
 
       # No display on a Linux runner; the viewer needs one to have a webview.
+      # Nor a session bus: without one GTK waits about 25 s for the
+      # accessibility bus on every launch.
       - name: Open every fixture
         if: matrix.platform == 'ubuntu-latest'
-        run: xvfb-run -a node tools/smoke.mjs
+        env:
+          NO_AT_BRIDGE: '1'
+        run: dbus-run-session -- xvfb-run -a node tools/smoke.mjs
