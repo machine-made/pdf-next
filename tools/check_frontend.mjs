@@ -50,8 +50,18 @@ const nsisTemplate = await readFile('src-tauri/windows/installer.nsi', 'utf8');
 const releaseWorkflow = await readFile('.github/workflows/release.yml', 'utf8');
 assert.match(releaseWorkflow, /run: node tools\/check_frontend\.mjs/,
   'Release builds must run frontend regressions before publishing.');
-assert.match(releaseWorkflow, /run: cargo test --locked/,
-  'Release builds must run Rust regressions before publishing.');
+// Rust regressions run before every release: in ci.yml, which tag.yml runs
+// before it tags, or in release.yml itself for a tag pushed by hand.
+assert.match(releaseWorkflow, /- name: Rust regressions\n        if: github\.event_name == 'push'\n        working-directory: src-tauri\n        run: cargo test --locked/,
+  'A tag pushed by hand runs the Rust regressions in the release build.');
+{
+  const tagWorkflow = await readFile('.github/workflows/tag.yml', 'utf8');
+  const ciWorkflow = await readFile('.github/workflows/ci.yml', 'utf8');
+  assert.match(tagWorkflow, /  ci:\n[^\n]*\n    uses: \.\/\.github\/workflows\/ci\.yml/, 'tag.yml runs ci.yml.');
+  assert.match(tagWorkflow, /  tag:\n[^\n]*\n    needs: ci\n/, 'tag.yml tags only after ci.yml passed.');
+  assert.match(tagWorkflow, /gh workflow run release\.yml --ref "\$tag"/, 'tag.yml starts the release with workflow_dispatch.');
+  assert.match(ciWorkflow, /run: cargo test\b/, 'ci.yml runs the Rust regressions.');
+}
 for (const [job, workflow] of [['release-notes', 'release-notes'], ['install-check', 'install-check']]) {
   assert.match(releaseWorkflow, new RegExp(`\\n  ${job}:\\n    needs: [^\\n]*publish[^\\n]*\\n    if: always\\(\\) && needs\\.publish\\.result == 'success'[^\\n]*\\n    uses: \\./\\.github/workflows/${workflow}\\.yml`),
     `release.yml runs ${workflow}.yml once the release is published.`);

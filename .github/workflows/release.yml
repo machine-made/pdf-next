@@ -62,7 +62,11 @@ jobs:
       - name: Frontend regressions and release version
         run: node tools/check_frontend.mjs
 
+      # tag.yml tags a commit only after ci.yml, which runs these tests, passed
+      # on it, and starts this run with workflow_dispatch. A tag pushed by
+      # hand had no such run, so it still runs them here.
       - name: Rust regressions
+        if: github.event_name == 'push'
         working-directory: src-tauri
         run: cargo test --locked
 
