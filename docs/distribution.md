@@ -295,3 +295,31 @@ release is unaffected.
 
 An `.rpm` is built too, but no yum repository is published. The same pattern
 would work — `createrepo_c` in place of `dpkg-scanpackages` — if anyone asks.
+
+## pacman
+
+The pacman repository for Arch Linux and Omarchy is the `arch/x86_64/`
+directory of the same `gh-pages` branch, served at
+<https://machine-made.github.io/pdf-next/arch/x86_64>.
+`.github/workflows/pacman.yml` adds each release after the apt job
+(`release.yml` calls it; the two, and the website job, share one concurrency
+group because all three push to `gh-pages`). In an `archlinux:base-devel`
+container it builds `packaging/arch/PKGBUILD` with the tag's version: the
+package repacks the release's `.deb`, whose binary links only against
+libraries Arch ships under the same names (`webkit2gtk-4.1`, `gtk3`,
+`libsoup3`). The package and the database are signed with
+`APT_GPG_PRIVATE_KEY`, so one public key, `pdf-next.asc`, serves apt and
+pacman. `repo-add` writes `pdf-next.db` and `pdf-next.files` as symlinks; the
+job replaces them with copies, because GitHub Pages does not serve symlinks.
+Every package stays in the directory, and the database names only the newest.
+To add a release again:
+
+```
+gh workflow run pacman.yml -R machine-made/pdf-next -f tag=v0.19.0
+```
+
+`install-check.yml` installs the release in a clean `archlinux` container the
+way the README says and checks `pdf-next --version`.
+
+To build the package on an Arch machine without the repository, run
+`makepkg -si` in `packaging/arch/`.

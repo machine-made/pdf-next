@@ -279,6 +279,7 @@ and draws pages the same way, with Mozilla PDF.js (`pdfjs-dist@6.3.289`) in a wo
 | Windows | `winget install RicardoFrantz.pdf-next`, or [download the `.exe` installer](https://github.com/machine-made/pdf-next/releases/latest) |
 | macOS | `brew install --cask machine-made/tap/pdf-next` |
 | Debian, Ubuntu | add the repository below, then `sudo apt install pdf-next` |
+| Arch, Omarchy | add the repository below, then `sudo pacman -Syu pdf-next` |
 
 ### macOS, with Homebrew
 
@@ -352,6 +353,29 @@ place:
 ```bash
 sudo sed -i 's#ricardofrantz\.github\.io#machine-made.github.io#' /etc/apt/sources.list.d/pdf-next.list && sudo apt update
 ```
+
+### Arch Linux and Omarchy, with pacman
+
+Trust the repository's signing key once (the same key as the apt repository):
+
+```bash
+key=$(mktemp)
+curl -fsSL https://machine-made.github.io/pdf-next/pdf-next.asc -o "$key"
+sudo pacman-key --add "$key" && rm -f "$key"
+sudo pacman-key --lsign-key 7AF6A7AFBE85B19258B2E84114E81BC9E259FDE2
+```
+
+Add the repository to the end of `/etc/pacman.conf` and install:
+
+```bash
+printf '\n[pdf-next]\nServer = https://machine-made.github.io/pdf-next/arch/$arch\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu pdf-next
+```
+
+From then on `sudo pacman -Syu` brings each new version, and `sudo pacman -R pdf-next` takes
+it off. Every version from 0.19.0 on stays in the repository, so an older one installs with
+`sudo pacman -U https://machine-made.github.io/pdf-next/arch/x86_64/pdf-next-0.19.0-1-x86_64.pkg.tar.zst`.
+To open PDFs with pdf-next by default: `xdg-mime default pdf-next.desktop application/pdf`.
 
 ### The file itself
 

@@ -324,6 +324,17 @@ jobs:
     secrets:
       APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
 
+  # After apt: both push to gh-pages, and their shared concurrency group only
+  # keeps one waiting run.
+  pacman:
+    needs: [publish, apt]
+    if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/pacman.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+
   # The notes above come from the tag's CHANGELOG.md; this sets every release,
   # this one included, to main's, which is what release-notes.yml keeps them at.
   release-notes:
@@ -332,10 +343,10 @@ jobs:
     uses: ./.github/workflows/release-notes.yml
 
   # The website's screenshots, taken again in the .deb just published. After
-  # apt: both push to gh-pages, and their shared concurrency group only keeps
-  # one waiting run.
+  # apt and pacman: all three push to gh-pages, and their shared concurrency
+  # group only keeps one waiting run.
   website:
-    needs: [publish, apt]
+    needs: [publish, apt, pacman]
     if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/pages.yml
     with:
@@ -344,7 +355,7 @@ jobs:
   # Installs what was just published, as a user would. A failure here leaves
   # the release published and fails this run with what broke.
   install-check:
-    needs: [publish, apt]
+    needs: [publish, apt, pacman]
     if: always() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/install-check.yml
     with:

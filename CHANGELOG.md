@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added a signed pacman repository for Arch Linux and Omarchy: `sudo pacman -Syu pdf-next` after adding it as the README says. Each release reaches it with the apt repository.
+
 ## 0.19.0
 
 - Fixed Markdown files opening raw: every file now opens rendered, whether it is new, opened from Open recent, reopened in a tab or restored with the session. Ctrl+U switches only the open file to raw.
