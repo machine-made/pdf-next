@@ -231,7 +231,7 @@ jobs:
         run: |
           set -euo pipefail
           desktop=$(dpkg-deb --fsys-tarfile src-tauri/target/release/bundle/deb/*.deb \
-            | tar -xO ./usr/share/applications/pdf-next.desktop)
+            | tar -xO --wildcards '*usr/share/applications/pdf-next.desktop')
           echo "$desktop"
           grep -qx 'Exec=pdf-next %F' <<< "$desktop"
           for type in application/pdf image/png image/jpeg text/markdown; do
