@@ -1,0 +1,27 @@
+# Arch Linux package for pdf-next, built from the released .deb.
+#
+# The .deb's binary links only against libraries Arch ships under the same
+# sonames (webkit2gtk-4.1, gtk3, libsoup3), so it is repacked, not rebuilt.
+# .github/workflows/pacman.yml sets pkgver and the checksum from the release
+# tag and publishes the package to the pacman repository on gh-pages.
+# Local build: makepkg -si (in this directory).
+
+pkgname=pdf-next
+pkgver=0.19.0
+pkgrel=1
+pkgdesc='Tiny PDF, image and markdown viewer with one-second live reload'
+arch=('x86_64')
+url='https://github.com/machine-made/pdf-next'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'gdk-pixbuf2' 'hicolor-icon-theme')
+options=('!strip' '!debug')
+source=("${url}/releases/download/v${pkgver}/${pkgname}_${pkgver}_amd64.deb"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/machine-made/pdf-next/v${pkgver}/LICENSE")
+noextract=("${pkgname}_${pkgver}_amd64.deb")
+sha256sums=('f0933fda961c01539adc204740008eaabf5912833571d54b5fba205587d507cf'
+            '7d7de84951ee3de828796c0786e633b2fbf5d9b0ab371e522cdc3d7b70068313')
+
+package() {
+  bsdtar -xOf "${pkgname}_${pkgver}_amd64.deb" 'data.tar.*' | bsdtar -xf - -C "$pkgdir"
+  install -Dm644 "LICENSE-${pkgver}" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

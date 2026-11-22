@@ -1,0 +1,116 @@
+name: pacman repository
+
+# The pacman repository for Arch Linux and Omarchy lives next to the apt one,
+# under arch/x86_64/ on the gh-pages branch, served by GitHub Pages. It repacks
+# the release's .deb with packaging/arch/PKGBUILD: the binary links only
+# against libraries Arch ships under the same names. Every package and the
+# database are signed with the apt key, so pdf-next.asc covers both.
+# release.yml calls this after apt; run it by hand to add a release again.
+# Without APT_GPG_PRIVATE_KEY it says so and stops, because pacman refuses
+# unsigned packages by default.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      APT_GPG_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to add, for example v0.19.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  pacman:
+    name: pacman repository
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    # Shared with apt.yml and pages.yml: all three push to gh-pages.
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check for the signing key
+        id: key
+        env:
+          HAS_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
+        run: |
+          echo "present=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          [ "$HAS_KEY" = true ] || echo "::warning::APT_GPG_PRIVATE_KEY is not set; skipping the pacman repository."
+
+      # git before checkout, or checkout falls back to a download with no .git.
+      - name: Install the build tools
+        if: steps.key.outputs.present == 'true'
+        run: pacman -Syu --noconfirm --needed git pacman-contrib namcap
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.present == 'true'
+        with:
+          path: source
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.present == 'true'
+        with:
+          ref: gh-pages
+          path: pages
+
+      - name: Build, sign and add the package
+        if: steps.key.outputs.present == 'true'
+        env:
+          PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=${TAG#v}
+          repo=$GITHUB_WORKSPACE/pages/arch/x86_64
+
+          # makepkg refuses to run as root.
+          useradd --create-home builder
+          build=/home/builder/pdf-next
+          install -d -o builder "$build"
+          install -o builder -m 644 source/packaging/arch/PKGBUILD "$build/PKGBUILD"
+          sed -i "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/" "$build/PKGBUILD"
+          # The checksums are of the files this release just published.
+          su builder -c "cd $build && updpkgsums && makepkg --noconfirm --nodeps"
+          package=$(ls "$build"/pdf-next-"$version"-1-x86_64.pkg.tar.zst)
+          namcap "$package" || true
+
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$PRIVATE_KEY" | gpg --batch --quiet --import
+          fingerprint=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+
+          mkdir -p "$repo"
+          # Every version stays in the directory, so `pacman -U <url>` installs
+          # an older one; the database names only the newest.
+          cp "$package" "$repo/"
+          package=$repo/$(basename "$package")
+          gpg --batch --yes --local-user "$fingerprint" --detach-sign "$package"
+          GPGKEY=$fingerprint repo-add --sign "$repo/pdf-next.db.tar.gz" "$package"
+          rm -f "$repo"/*.old "$repo"/*.old.sig
+          # repo-add writes pdf-next.db and pdf-next.files as symlinks; GitHub
+          # Pages does not serve symlinks, so they become copies.
+          for link in pdf-next.db pdf-next.db.sig pdf-next.files pdf-next.files.sig; do
+            cp --remove-destination "$(readlink -f "$repo/$link")" "$repo/$link"
+          done
+          gpg --armor --export "$fingerprint" > pages/pdf-next.asc
+          rm -rf "$GNUPGHOME"
+
+          cd pages
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "pdf-next $version for pacman" || { echo 'Nothing changed.'; exit 0; }
+          git push
