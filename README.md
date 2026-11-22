@@ -368,7 +368,7 @@ Add the repository to the end of `/etc/pacman.conf` and install:
 
 ```bash
 printf '\n[pdf-next]\nServer = https://machine-made.github.io/pdf-next/arch/$arch\n' | sudo tee -a /etc/pacman.conf
-sudo pacman -Sy pdf-next
+sudo pacman -Syu pdf-next
 ```
 
 From then on `sudo pacman -Syu` brings each new version, and `sudo pacman -R pdf-next` takes

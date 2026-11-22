@@ -137,7 +137,7 @@ jobs:
           if pacman -Si pdf-next | grep -q "^Version *: *$version-"; then
             log=$(pacman -Syu --noconfirm pdf-next 2>&1)
           else
-            log=$(pacman -Syu --noconfirm && pacman -U --noconfirm "$SITE/arch/x86_64/pdf-next-$version-1-x86_64.pkg.tar.zst" 2>&1)
+            log=$( { pacman -Syu --noconfirm && pacman -U --noconfirm "$SITE/arch/x86_64/pdf-next-$version-1-x86_64.pkg.tar.zst"; } 2>&1)
           fi || fail "pacman install failed: $(tail -5 <<< "$log" | tr '\n' ' ')"
           printed=$(pdf-next --version 2>&1) || fail "pdf-next --version exited with $?: $printed"
           echo "$printed"

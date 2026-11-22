@@ -106,7 +106,12 @@ jobs:
           cp "$package" "$repo/"
           package=$repo/$(basename "$package")
           gpg --batch --yes --local-user "$fingerprint" --detach-sign "$package"
-          GPGKEY=$fingerprint repo-add --sign "$repo/pdf-next.db.tar.gz" "$package"
+          # The database is rebuilt from the newest package in the directory:
+          # repo-add replaces an entry even with an older version, so adding an
+          # old tag again would offer every user a downgrade.
+          rm -f "$repo"/pdf-next.db* "$repo"/pdf-next.files*
+          newest=$(ls "$repo"/pdf-next-*-x86_64.pkg.tar.zst | sort -V | tail -1)
+          GPGKEY=$fingerprint repo-add --sign "$repo/pdf-next.db.tar.gz" "$newest"
           rm -f "$repo"/*.old "$repo"/*.old.sig
           # repo-add writes pdf-next.db and pdf-next.files as symlinks; GitHub
           # Pages does not serve symlinks, so they become copies.
