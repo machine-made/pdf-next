@@ -56,7 +56,8 @@ for (const [job, workflow] of [['release-notes', 'release-notes'], ['install-che
   assert.match(releaseWorkflow, new RegExp(`\\n  ${job}:\\n    needs: [^\\n]*publish[^\\n]*\\n    if: always\\(\\) && needs\\.publish\\.result == 'success'[^\\n]*\\n    uses: \\./\\.github/workflows/${workflow}\\.yml`),
     `release.yml runs ${workflow}.yml once the release is published.`);
 }
-assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt\]/, 'The install check waits for apt.');
+assert.match(releaseWorkflow, /install-check:\n    needs: \[publish, apt, pacman\]/, 'The install check waits for apt and pacman.');
+assert.match(releaseWorkflow, /\n  pacman:\n    needs: \[publish, apt\]\n[^\n]*\n    uses: \.\/\.github\/workflows\/pacman\.yml/, 'release.yml adds the release to the pacman repository after apt.');
 {
   const notesWorkflow = await readFile('.github/workflows/release-notes.yml', 'utf8');
   assert.match(notesWorkflow, /paths: \[CHANGELOG\.md,/, 'Release notes follow CHANGELOG.md changes on main.');
@@ -3957,7 +3958,9 @@ console.log(`Frontend contracts passed (PDF.js ${vendored}).`);
   assert.match(ci, /node tools\/screenshots\.mjs --bin src-tauri\/target\/release\/pdf-next/, 'CI takes the screenshots in the app it built.');
   assert.match(pages, /node tools\/screenshots\.mjs/, 'A release retakes the website screenshots.');
   assert.match(pages, /concurrency:\s*\n\s*group: apt-repository/, 'The website never pushes to gh-pages while apt does.');
-  assert.match(release, /website:\s*\n\s*needs: \[publish, apt\][\s\S]*?uses: \.\/\.github\/workflows\/pages\.yml/, 'release.yml publishes the website after apt.');
+  assert.match(release, /website:\s*\n\s*needs: \[publish, apt, pacman\][\s\S]*?uses: \.\/\.github\/workflows\/pages\.yml/, 'release.yml publishes the website after apt and pacman.');
+  const pacman = await readFile('.github/workflows/pacman.yml', 'utf8');
+  assert.match(pacman, /concurrency:\s*\n\s*group: apt-repository/, 'The pacman repository never pushes to gh-pages while apt or the website does.');
 }
 
 // Release names: from 0.17 on, every minor version has a one-word name, used in its release titles.
