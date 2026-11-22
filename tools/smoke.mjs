@@ -438,10 +438,10 @@ console.log(`smoke: ${binary}\n`);
 // cold webview does not fail a run. Linux under Xvfb measured 1.3 s and 0.8 s;
 // the budgets leave room for slow runners and catch only a real regression.
 const firstDraw = /^(notes|math|images)\.md$|\.png$/i;
-// GitHub's Linux runners draw under Xvfb without a GPU: a first report took
-// 36 s there for 0.16.5 and 0.17.0 alike, against ~1.2 s on a desktop.
+// A first report took 36 s on GitHub's Linux runners until the smoke test ran
+// in a D-Bus session (GTK waited for the accessibility bus); it is ~1 s now.
 const budgets = {
-  linux: process.env.CI ? { startup: 60_000, reload: 30_000 } : { startup: 10_000, reload: 8_000 },
+  linux: { startup: 10_000, reload: 8_000 },
   darwin: { startup: 15_000, reload: 8_000 },
   win32: { startup: 20_000, reload: 10_000 },
 }[process.platform] || { startup: 20_000, reload: 10_000 };

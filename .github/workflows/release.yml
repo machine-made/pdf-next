@@ -138,9 +138,13 @@ jobs:
         shell: pwsh
         run: ./tools/defender-scan.ps1
 
+      # A session bus too: without one GTK waits about 25 s for the
+      # accessibility bus on every launch (9.8 min for the fixtures, not 33 s).
       - name: Open a document in the bundle that was just built
         if: matrix.platform == 'ubuntu-latest'
-        run: xvfb-run -a node tools/smoke.mjs
+        env:
+          NO_AT_BRIDGE: '1'
+        run: dbus-run-session -- xvfb-run -a node tools/smoke.mjs
 
   # Windows code signing through the SignPath Foundation (free for open
   # source; the certificate names "SignPath Foundation" as publisher). Off
