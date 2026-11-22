@@ -65,16 +65,14 @@ jobs:
           ref: gh-pages
           path: pages
 
-      - name: Build, sign and add the package
+      # Without the signing key in its environment: makepkg runs the PKGBUILD.
+      - name: Build the package
         if: steps.key.outputs.present == 'true'
         env:
-          PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           version=${TAG#v}
-          repo=$GITHUB_WORKSPACE/pages/arch/x86_64
-
           # makepkg refuses to run as root.
           useradd --create-home builder
           build=/home/builder/pdf-next
@@ -83,8 +81,18 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/" "$build/PKGBUILD"
           # The checksums are of the files this release just published.
           su builder -c "cd $build && updpkgsums && makepkg --noconfirm --nodeps"
-          package=$(ls "$build"/pdf-next-"$version"-1-x86_64.pkg.tar.zst)
-          namcap "$package" || true
+          namcap "$build/pdf-next-$version-1-x86_64.pkg.tar.zst" || true
+
+      - name: Sign and add the package
+        if: steps.key.outputs.present == 'true'
+        env:
+          PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=${TAG#v}
+          repo=$GITHUB_WORKSPACE/pages/arch/x86_64
+          package=$(ls /home/builder/pdf-next/pdf-next-"$version"-1-x86_64.pkg.tar.zst)
 
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME
