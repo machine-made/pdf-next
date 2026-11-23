@@ -1,4 +1,4 @@
-// Ctrl+wheel, ⌘+wheel and trackpad pinch. A pinch reaches a webview as wheel
+// Ctrl+wheel, ⌘+wheel (macOS) and trackpad pinch. A pinch reaches a webview as wheel
 // events with ctrlKey set, and WebKit also sends gesturestart/change/end; both
 // end up here as one stream of scale factors. `start` decides what the gesture
 // zooms and returns a session ({ update(factor), commit() }), or null; the
@@ -15,6 +15,13 @@ export function wheelFactor({ deltaY = 0, deltaMode = 0 }) {
   const delta = deltaY * (deltaMode === 1 ? 33 : deltaMode === 2 ? 400 : 1);
   if (Math.abs(delta) >= 50) return delta < 0 ? 1.25 : 0.8;
   return Math.exp(-delta / 100);
+}
+
+/// Whether a wheel event carries the zoom key: Ctrl everywhere, ⌘ on macOS
+/// only. Elsewhere Meta is Super, which a desktop or a shared-input tool
+/// (Deskflow) can leave reported as held; the plain wheel must still scroll.
+export function zoomKey(event, mac = false) {
+  return Boolean(event.ctrlKey || (mac && event.metaKey));
 }
 
 /// Inside the zoom range, widened to take in `from` when the gesture started
@@ -38,7 +45,7 @@ export function snapScale(scale, fits = {}) {
   return best;
 }
 
-export function pinchZoom(target, { start, settle = 150 }) {
+export function pinchZoom(target, { start, settle = 150, mac = () => false }) {
   let session = null;
   let timer = 0;
   let gesture = 0;
@@ -57,7 +64,7 @@ export function pinchZoom(target, { start, settle = 150 }) {
     timer = window.setTimeout(commit, settle);
   };
   target.addEventListener('wheel', (event) => {
-    if (!event.ctrlKey && !event.metaKey) return;
+    if (!zoomKey(event, mac())) return;
     event.preventDefault();
     if (!gesture) step(event, wheelFactor(event));
   }, { passive: false });
