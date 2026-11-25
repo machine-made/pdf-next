@@ -18,7 +18,7 @@ import { createNavigator } from './navigate.mjs';
 import { createFocusMode, isFullscreen, setFullscreen, wirePopover } from './quiet.mjs';
 import { diffView, passageSource, passageText, wordDiff } from './review-diff.mjs';
 import { folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from './places.mjs';
-import { clampScale, pinchZoom, snapScale } from './zoom.mjs';
+import { clampScale, pinchZoom, snapScale, zoomKey } from './zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -2901,13 +2901,16 @@ document.addEventListener('keydown', (event) => {
   items[event.key === 'ArrowDown' ? 0 : items.length - 1]?.focus();
 });
 
+/// A wheel event with the zoom key held zooms; the tab strip and the menus leave it alone.
+const zoomWheel = (event) => zoomKey(event, state.platform === 'macos');
+
 // The wheel over the tab strip walks the tabs, wrapping at the ends. A
 // trackpad sends a stream of small deltas, so they are summed until they
 // make one notch's worth; a mouse wheel moves one tab per notch.
 let tabWheel = 0;
 let tabWheelAt = 0;
 ui.tabs.addEventListener('wheel', (event) => {
-  if (state.tabs.length < 2 || event.ctrlKey) {
+  if (state.tabs.length < 2 || zoomWheel(event)) {
     return;
   }
   event.preventDefault();
@@ -2967,7 +2970,7 @@ function stepSelect(select, direction) {
 
 function onMenuWheel(event) {
   const control = event.currentTarget;
-  if (control.disabled || event.ctrlKey) return;
+  if (control.disabled || zoomWheel(event)) return;
   event.preventDefault();
   const direction = wheelNotch(control, event);
   if (!direction) return;
@@ -6680,7 +6683,7 @@ ui.zoomIn.addEventListener('click', () => stepZoom(1));
 ui.zoomOut.addEventListener('click', () => stepZoom(-1));
 wireMenuWheel();
 // On the window, so a pinch anywhere never zooms the webview's own page.
-pinchZoom(window, { start: startPinch });
+pinchZoom(window, { start: startPinch, mac: () => state.platform === 'macos' });
 for (const scroller of [ui.container, ui.markdownStage, ui.imageStage]) {
   scroller.addEventListener('scroll', schedulePlace, { passive: true });
 }

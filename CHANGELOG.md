@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed the mouse wheel zooming the text on Linux and Windows when no key is held but the system reports Super (Meta) as held, as a shared-keyboard tool such as Deskflow can leave it. Ctrl+wheel zooms everywhere; ⌘+wheel zooms on macOS only.
+- Fixed ⌘+wheel on macOS also walking the tabs or stepping a toolbar menu under the pointer; with the zoom key held the wheel only zooms.
+
 ## 0.19.1
 
 - Fixed opening a file from a Linux file manager: the `.desktop` entry now passes the file (`%F`) and lists the PDF, image and Markdown types, so pdf-next appears under Open with.

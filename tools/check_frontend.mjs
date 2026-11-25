@@ -19,7 +19,7 @@ import { fuzzyScore, isTextField, matchCommand, rankCommands, selectChoices, sho
 import { mapCollapsedIndex, reconcilePendingComment, reconcilePendingComments } from '../src/review-sync.mjs';
 import { columnAt, linkDestination, locateDestination } from '../src/navigate.mjs';
 import { PLACES_KEY, PLACES_MAX, folderOf, forgetPlace, notePlace, openedLabel, placeOf, readPlaces, recentPlaces } from '../src/places.mjs';
-import { ZOOM_MAX, ZOOM_MIN, clampScale, snapScale, wheelFactor } from '../src/zoom.mjs';
+import { ZOOM_MAX, ZOOM_MIN, clampScale, pinchZoom, snapScale, wheelFactor, zoomKey } from '../src/zoom.mjs';
 import {
   REVIEW_SIZE_DEFAULT,
   REVIEW_SIZE_STEPS,
@@ -3909,7 +3909,30 @@ assert.match(app, /const quote = selection\.toString\(\)\.replace\(\/\\s\+\/g, '
     'The zoom stays in range, or where it started when that was outside it.');
   assert.deepEqual(snapScale(1.47, { 'page-width': 1.5, 'page-fit': 1.2 }), { scale: 1.5, preset: 'page-width' });
   assert.deepEqual(snapScale(1.4, { 'page-width': 1.5 }), { scale: 1.4, preset: null }, 'Further away it does not snap.');
-  assert.match(app, /pinchZoom\(window, \{ start: startPinch \}\)/, 'A pinch anywhere is caught, so the webview never zooms its own page.');
+  assert.match(app, /pinchZoom\(window, \{ start: startPinch, mac: \(\) => state\.platform === 'macos' \}\)/,
+    'A pinch anywhere is caught, so the webview never zooms its own page; ⌘ counts only on macOS.');
+  assert.equal(zoomKey({ ctrlKey: true }), true, 'Ctrl+wheel zooms everywhere.');
+  assert.equal(zoomKey({ metaKey: true }, true), true, '⌘+wheel zooms on macOS.');
+  assert.equal(zoomKey({ metaKey: true }), false, 'Elsewhere a Meta (Super) reported as held does not turn the wheel into zoom.');
+  assert.equal(zoomKey({}, true), false, 'A plain wheel scrolls.');
+  // The gate itself: a plain wheel, or Meta off macOS, never starts a zoom.
+  const handlers = {};
+  const prevented = [];
+  const starts = [];
+  pinchZoom({ addEventListener: (type, handler) => { handlers[type] = handler; } }, {
+    start: (event) => { starts.push(event.name); return null; },
+  });
+  for (const event of [
+    { name: 'plain', deltaY: 100 },
+    { name: 'meta', deltaY: 100, metaKey: true },
+    { name: 'ctrl', deltaY: 100, ctrlKey: true },
+  ]) {
+    handlers.wheel({ ...event, preventDefault: () => prevented.push(event.name) });
+  }
+  assert.deepEqual(starts, ['ctrl'], 'Only Ctrl+wheel starts a zoom off macOS.');
+  assert.deepEqual(prevented, ['ctrl'], 'A wheel that does not zoom keeps its scroll.');
+  assert.match(app, /state\.tabs\.length < 2 \|\| zoomWheel\(event\)/, 'The zoom key over the tab strip zooms, not walks the tabs.');
+  assert.match(app, /control\.disabled \|\| zoomWheel\(event\)/, 'The zoom key over a menu zooms, not steps the menu.');
   assert.match(app, /label: 'Open recent…', group: 'File'[^\n]*palette\.open\('Open recent: '\)/, 'The palette opens the recent files.');
   assert.match(page, /<section id="recent"[^>]*hidden>/, 'The recent list starts hidden.');
   assert.match(readme, /remembers your place/i);
